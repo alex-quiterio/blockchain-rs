@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::fmt;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use crate::crypto;
-use crate::model::{Block, Transaction, COINBASE};
+use super::block::{Block, Transaction, COINBASE};
+use super::crypto;
+use super::ledger::Ledger;
 
 pub const DEFAULT_DIFFICULTY: usize = 4;
 pub const DEFAULT_REWARD: u64 = 50;
@@ -17,6 +17,7 @@ pub enum ChainError {
     BadNonce { expected: u64, got: u64 },
     InsufficientFunds { balance: u64, amount: u64 },
     UnexpectedCoinbase,
+    InvalidChain,
 }
 
 impl fmt::Display for ChainError {
@@ -30,59 +31,16 @@ impl fmt::Display for ChainError {
                 write!(f, "balance {balance} is less than {amount}")
             }
             Self::UnexpectedCoinbase => write!(f, "coinbase transactions are only made by mining"),
+            Self::InvalidChain => write!(f, "chain does not validate"),
         }
     }
 }
 
-/// Balances and nonces that result from applying transactions in order.
-#[derive(Debug, Clone, Default)]
-pub struct Ledger {
-    balances: HashMap<String, u64>,
-    nonces: HashMap<String, u64>,
-}
+impl std::error::Error for ChainError {}
 
-impl Ledger {
-    pub fn balance(&self, address: &str) -> u64 {
-        self.balances.get(address).copied().unwrap_or(0)
-    }
-
-    pub fn next_nonce(&self, address: &str) -> u64 {
-        self.nonces.get(address).copied().unwrap_or(0)
-    }
-
-    fn credit(&mut self, address: &str, amount: u64) {
-        *self.balances.entry(address.to_string()).or_insert(0) += amount;
-    }
-
-    /// Checks a signed transfer against this state and applies it.
-    pub fn apply_transfer(&mut self, tx: &Transaction) -> Result<(), ChainError> {
-        if tx.is_coinbase() {
-            return Err(ChainError::UnexpectedCoinbase);
-        }
-        if !crypto::is_valid_address(&tx.to) {
-            return Err(ChainError::InvalidAddress(tx.to.clone()));
-        }
-        if tx.amount == 0 {
-            return Err(ChainError::ZeroAmount);
-        }
-        if !crypto::verify(&tx.from, &tx.payload(), &tx.signature) {
-            return Err(ChainError::BadSignature);
-        }
-        let expected = self.next_nonce(&tx.from);
-        if tx.nonce != expected {
-            return Err(ChainError::BadNonce { expected, got: tx.nonce });
-        }
-        let balance = self.balance(&tx.from);
-        if balance < tx.amount {
-            return Err(ChainError::InsufficientFunds { balance, amount: tx.amount });
-        }
-        self.balances.insert(tx.from.clone(), balance - tx.amount);
-        self.credit(&tx.to, tx.amount);
-        self.nonces.insert(tx.from.clone(), expected + 1);
-        Ok(())
-    }
-}
-
+/// The aggregate root: confirmed blocks, the mempool and the ledger they produce.
+/// Every change goes through its methods, so the three never disagree.
+#[derive(Clone)]
 pub struct Blockchain {
     blocks: Vec<Block>,
     mempool: Vec<Transaction>,
@@ -103,6 +61,12 @@ impl Blockchain {
             difficulty,
             reward,
         }
+    }
+
+    /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
+    pub fn restore(blocks: Vec<Block>, difficulty: usize, reward: u64) -> Result<Self, ChainError> {
+        let ledger = replay(&blocks, difficulty, reward).ok_or(ChainError::InvalidChain)?;
+        Ok(Self { blocks, mempool: Vec::new(), ledger, difficulty, reward })
     }
 
     pub fn blocks(&self) -> &[Block] {
@@ -157,10 +121,41 @@ impl Blockchain {
 
         let prev_hash = self.blocks.last().expect("genesis exists").hash.clone();
         let block = mine_block(index, Utc::now(), prev_hash, transactions, self.difficulty);
+        self.blocks.push(block);
         self.mempool.clear();
         self.ledger = ledger;
-        self.blocks.push(block);
         Ok(self.blocks.last().expect("just pushed"))
+    }
+
+    /// The longest-chain rule: adopts `blocks` if it is valid and longer than ours.
+    /// Every block carries the same work, so the longest chain is the one with the most work.
+    /// Transfers from our blocks that `blocks` drops go back to the mempool if they still apply.
+    pub fn replace(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
+        if blocks.len() <= self.blocks.len() {
+            return Ok(false);
+        }
+        let ledger =
+            replay(&blocks, self.difficulty, self.reward).ok_or(ChainError::InvalidChain)?;
+
+        let shared = self
+            .blocks
+            .iter()
+            .zip(&blocks)
+            .take_while(|(ours, theirs)| ours.hash == theirs.hash)
+            .count();
+        let orphaned: Vec<Transaction> = self.blocks[shared..]
+            .iter()
+            .flat_map(|block| block.transactions.iter().skip(1))
+            .chain(&self.mempool)
+            .cloned()
+            .collect();
+
+        self.blocks = blocks;
+        self.ledger = ledger;
+        let mut pending = self.ledger.clone();
+        self.mempool =
+            orphaned.into_iter().filter(|tx| pending.apply_transfer(tx).is_ok()).collect();
+        Ok(true)
     }
 
     /// Replays the whole chain: links, hashes, proof of work, rewards, signatures and balances.
@@ -176,49 +171,49 @@ impl Default for Blockchain {
 }
 
 pub fn validate_blocks(blocks: &[Block], difficulty: usize, reward: u64) -> bool {
+    replay(blocks, difficulty, reward).is_some()
+}
+
+/// Checks every block in order and returns the resulting ledger, or `None` if any check fails.
+fn replay(blocks: &[Block], difficulty: usize, reward: u64) -> Option<Ledger> {
+    if blocks.is_empty() {
+        return None;
+    }
     let mut ledger = Ledger::default();
     for (i, block) in blocks.iter().enumerate() {
         if block.index != i as u64
             || block.hash != hash_block(block)
             || !meets_difficulty(&block.hash, difficulty)
         {
-            return false;
+            return None;
         }
         if i == 0 {
             if !block.transactions.is_empty() {
-                return false;
+                return None;
             }
             continue;
         }
         if block.prev_hash != blocks[i - 1].hash {
-            return false;
+            return None;
         }
-        let Some((coinbase, transfers)) = block.transactions.split_first() else {
-            return false;
-        };
+        let (coinbase, transfers) = block.transactions.split_first()?;
         if !coinbase.is_coinbase()
             || coinbase.amount != reward
             || coinbase.nonce != block.index
             || !crypto::is_valid_address(&coinbase.to)
         {
-            return false;
+            return None;
         }
         ledger.credit(&coinbase.to, coinbase.amount);
         if transfers.iter().any(|tx| ledger.apply_transfer(tx).is_err()) {
-            return false;
+            return None;
         }
     }
-    true
+    Some(ledger)
 }
 
 pub fn hash_block(block: &Block) -> String {
-    block_hash(
-        block.index,
-        &block.timestamp,
-        &block.prev_hash,
-        &block.transactions,
-        block.nonce,
-    )
+    block_hash(block.index, &block.timestamp, &block.prev_hash, &block.transactions, block.nonce)
 }
 
 fn block_hash(
@@ -263,12 +258,7 @@ mod tests {
         (address, crypto::parse_secret_key(&secret).unwrap())
     }
 
-    fn transfer(
-        key: &ed25519_dalek::SigningKey,
-        to: &str,
-        amount: u64,
-        nonce: u64,
-    ) -> Transaction {
+    fn transfer(key: &ed25519_dalek::SigningKey, to: &str, amount: u64, nonce: u64) -> Transaction {
         let from = crypto::address_of(key);
         let signature = crypto::sign(key, &Transaction::signing_payload(&from, to, amount, nonce));
         Transaction { from, to: to.to_string(), amount, nonce, signature }
@@ -362,5 +352,124 @@ mod tests {
         blocks[1].transactions[0].amount = 1_000;
         blocks[1].hash = hash_block(&blocks[1]);
         assert!(!validate_blocks(&blocks, 2, 50));
+    }
+
+    #[test]
+    fn restore_rebuilds_balances() {
+        let mut chain = chain();
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        chain.mine(&alice).unwrap();
+        chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
+        chain.mine(&alice).unwrap();
+
+        let restored = Blockchain::restore(chain.blocks().to_vec(), 2, 50).unwrap();
+        assert_eq!(restored.balance(&alice), 80);
+        assert_eq!(restored.balance(&bob), 20);
+        assert_eq!(restored.next_nonce(&alice), 1);
+    }
+
+    #[test]
+    fn restore_refuses_tampered_or_empty_blocks() {
+        let mut chain = chain();
+        chain.mine(&wallet().0).unwrap();
+        let mut blocks = chain.blocks().to_vec();
+        blocks[1].transactions[0].amount = 1_000;
+        assert_eq!(Blockchain::restore(blocks, 2, 50).err(), Some(ChainError::InvalidChain));
+        assert_eq!(Blockchain::restore(Vec::new(), 2, 50).err(), Some(ChainError::InvalidChain));
+    }
+
+    #[test]
+    fn restore_refuses_different_rules() {
+        let mut chain = chain();
+        chain.mine(&wallet().0).unwrap();
+        // No SHA-256 hash is all zeros, so these blocks can't meet a difficulty of 64.
+        assert!(Blockchain::restore(chain.blocks().to_vec(), 64, 50).is_err());
+        assert!(Blockchain::restore(chain.blocks().to_vec(), 2, 25).is_err());
+    }
+
+    #[test]
+    fn replace_adopts_a_longer_valid_chain() {
+        let mut ours = chain();
+        let mut theirs = chain();
+        let (alice, _) = wallet();
+        let (bob, _) = wallet();
+        ours.mine(&alice).unwrap();
+        theirs.mine(&bob).unwrap();
+        theirs.mine(&bob).unwrap();
+
+        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.blocks(), theirs.blocks());
+        assert_eq!(ours.balance(&alice), 0);
+        assert_eq!(ours.balance(&bob), 100);
+        assert!(ours.is_valid());
+    }
+
+    #[test]
+    fn replace_keeps_ours_when_theirs_is_not_longer() {
+        let mut ours = chain();
+        let mut theirs = chain();
+        ours.mine(&wallet().0).unwrap();
+        theirs.mine(&wallet().0).unwrap();
+        let before = ours.blocks().to_vec();
+
+        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(false));
+        assert_eq!(ours.replace(vec![theirs.blocks()[0].clone()]), Ok(false));
+        assert_eq!(ours.blocks(), before);
+    }
+
+    #[test]
+    fn replace_refuses_an_invalid_longer_chain() {
+        let mut ours = chain();
+        let mut theirs = chain();
+        let (alice, _) = wallet();
+        ours.mine(&alice).unwrap();
+        theirs.mine(&wallet().0).unwrap();
+        theirs.mine(&wallet().0).unwrap();
+        let mut forged = theirs.blocks().to_vec();
+        forged[2].transactions[0].amount = 1_000;
+
+        assert_eq!(ours.replace(forged), Err(ChainError::InvalidChain));
+        assert_eq!(ours.balance(&alice), 50);
+    }
+
+    #[test]
+    fn replace_returns_dropped_transfers_to_the_mempool() {
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut ours = chain();
+        ours.mine(&alice).unwrap();
+        let mut theirs = ours.clone();
+
+        // Our fork confirms Alice's payment; their longer fork never saw it.
+        let payment = transfer(&alice_key, &bob, 20, 0);
+        ours.submit(payment.clone()).unwrap();
+        ours.mine(&alice).unwrap();
+        theirs.mine(&bob).unwrap();
+        theirs.mine(&bob).unwrap();
+
+        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.pending(), [payment]);
+        assert_eq!(ours.balance(&alice), 50);
+        assert_eq!(ours.next_nonce(&alice), 1);
+    }
+
+    #[test]
+    fn replace_drops_transfers_the_new_chain_already_confirmed() {
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut ours = chain();
+        ours.mine(&alice).unwrap();
+        let mut theirs = ours.clone();
+
+        let payment = transfer(&alice_key, &bob, 20, 0);
+        ours.submit(payment.clone()).unwrap();
+        theirs.submit(payment).unwrap();
+        theirs.mine(&bob).unwrap();
+        theirs.mine(&bob).unwrap();
+
+        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(true));
+        assert!(ours.pending().is_empty());
+        assert_eq!(ours.balance(&bob), 120);
     }
 }

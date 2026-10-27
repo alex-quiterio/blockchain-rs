@@ -7,11 +7,13 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use blockchain::chain::Blockchain;
-use blockchain::server::{router, AppState};
+use blockchain::api::{router, AppState};
+use blockchain::application::NodeService;
+use blockchain::infrastructure::InMemoryRepository;
 
 fn app() -> Router {
-    router(AppState::new(Blockchain::new(2, 50)))
+    let node = NodeService::open(Box::new(InMemoryRepository::default()), 2, 50).unwrap();
+    router(AppState::new(node))
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -101,4 +103,40 @@ async fn rejects_bad_addresses() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = call(&app, "POST", "/mine", Some(json!({ "miner": "nobody" }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn nodes_settle_on_the_longest_chain() {
+    let (ours, theirs) = (app(), app());
+    let (_, miner) = call(&ours, "POST", "/wallets", None).await;
+    let miner = json!({ "miner": miner["address"] });
+    call(&ours, "POST", "/mine", Some(miner.clone())).await;
+    call(&theirs, "POST", "/mine", Some(miner.clone())).await;
+    call(&theirs, "POST", "/mine", Some(miner)).await;
+
+    let (_, their_chain) = call(&theirs, "GET", "/chain", None).await;
+    let (status, body) = call(&ours, "POST", "/chain", Some(their_chain.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "replaced": true, "length": 3 }));
+    let (_, our_chain) = call(&ours, "GET", "/chain", None).await;
+    assert_eq!(our_chain, their_chain);
+
+    // Offering our now-equal chain back changes nothing.
+    let (_, body) = call(&theirs, "POST", "/chain", Some(our_chain)).await;
+    assert_eq!(body, json!({ "replaced": false, "length": 3 }));
+}
+
+#[tokio::test]
+async fn refuses_a_forged_longer_chain() {
+    let (ours, theirs) = (app(), app());
+    let (_, miner) = call(&ours, "POST", "/wallets", None).await;
+    let miner = json!({ "miner": miner["address"] });
+    call(&theirs, "POST", "/mine", Some(miner.clone())).await;
+    call(&theirs, "POST", "/mine", Some(miner)).await;
+
+    let (_, mut chain) = call(&theirs, "GET", "/chain", None).await;
+    chain[2]["transactions"][0]["amount"] = json!(1_000_000);
+    let (status, body) = call(&ours, "POST", "/chain", Some(chain)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "chain does not validate");
 }

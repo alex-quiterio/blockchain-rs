@@ -1,1 +1,3 @@
 /target
+/chain*.json
+/chain*.json.tmp

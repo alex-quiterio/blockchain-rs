@@ -9,10 +9,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 /// Returns `(address, secret_key)`, both hex.
 pub fn generate_keypair() -> (String, String) {
     let key = SigningKey::generate(&mut OsRng);
-    (
-        hex::encode(key.verifying_key().to_bytes()),
-        hex::encode(key.to_bytes()),
-    )
+    (hex::encode(key.verifying_key().to_bytes()), hex::encode(key.to_bytes()))
 }
 
 pub fn parse_secret_key(secret_hex: &str) -> Option<SigningKey> {
@@ -41,9 +38,7 @@ pub fn verify(address: &str, payload: &[u8], signature_hex: &str) -> bool {
     let Some(public) = parse_address(address) else {
         return false;
     };
-    let Some(bytes) = hex::decode(signature_hex)
-        .ok()
-        .and_then(|b| <[u8; 64]>::try_from(b).ok())
+    let Some(bytes) = hex::decode(signature_hex).ok().and_then(|b| <[u8; 64]>::try_from(b).ok())
     else {
         return false;
     };

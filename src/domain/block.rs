@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+// Value objects of the domain. They derive serde because their JSON form is also how
+// blocks are hashed, stored and exchanged between nodes.
+
 /// Sender used for the block reward, which has no signature.
 pub const COINBASE: &str = "coinbase";
 
@@ -39,43 +42,4 @@ pub struct Block {
     /// Proof-of-work counter.
     pub nonce: u64,
     pub hash: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WalletResponse {
-    pub address: String,
-    /// Only for local experiments: a real wallet never sends its key over the wire.
-    pub secret_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SignRequest {
-    pub secret_key: String,
-    pub to: String,
-    pub amount: u64,
-    /// Defaults to the sender's next nonce.
-    pub nonce: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MineRequest {
-    pub miner: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BalanceResponse {
-    pub address: String,
-    pub balance: u64,
-    pub next_nonce: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ValidityResponse {
-    pub valid: bool,
-    pub length: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ErrorResponse {
-    pub message: String,
 }

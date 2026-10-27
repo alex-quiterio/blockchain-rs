@@ -5,15 +5,17 @@ use axum::{
     Json,
 };
 
-use crate::chain::ChainError;
-use crate::crypto;
-use crate::model::{
-    BalanceResponse, Block, ErrorResponse, MineRequest, SignRequest, Transaction,
-    ValidityResponse, WalletResponse,
+use super::dto::{
+    BalanceResponse, ErrorResponse, MineRequest, ReplaceResponse, SignRequest, ValidityResponse,
+    WalletResponse,
 };
-use crate::server::AppState;
+use super::AppState;
+use crate::application::NodeError;
+use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::ChainError;
+use crate::domain::crypto;
 
-/// Maps chain errors onto HTTP status codes and JSON error bodies.
+/// Maps domain and application errors onto HTTP status codes and JSON error bodies.
 pub struct ApiError {
     status: StatusCode,
     message: String,
@@ -38,6 +40,17 @@ impl From<ChainError> for ApiError {
     }
 }
 
+impl From<NodeError> for ApiError {
+    fn from(err: NodeError) -> Self {
+        match err {
+            NodeError::Chain(e) => e.into(),
+            NodeError::Storage(_) => {
+                Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: err.to_string() }
+            }
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(ErrorResponse { message: self.message })).into_response()
@@ -45,12 +58,24 @@ impl IntoResponse for ApiError {
 }
 
 pub async fn get_chain(State(state): State<AppState>) -> Json<Vec<Block>> {
-    Json(state.chain.lock().unwrap().blocks().to_vec())
+    Json(state.node.blocks())
+}
+
+/// Offers this node another node's chain. It's adopted only if it is valid and longer.
+pub async fn replace_chain(
+    State(state): State<AppState>,
+    Json(blocks): Json<Vec<Block>>,
+) -> Result<Json<ReplaceResponse>, ApiError> {
+    let node = state.node.clone();
+    let (replaced, length) = tokio::task::spawn_blocking(move || node.replace(blocks))
+        .await
+        .expect("replace task panicked")?;
+    Ok(Json(ReplaceResponse { replaced, length }))
 }
 
 pub async fn get_validity(State(state): State<AppState>) -> Json<ValidityResponse> {
-    let chain = state.chain.lock().unwrap();
-    Json(ValidityResponse { valid: chain.is_valid(), length: chain.blocks().len() })
+    let (valid, length) = state.node.validity();
+    Json(ValidityResponse { valid, length })
 }
 
 pub async fn create_wallet() -> (StatusCode, Json<WalletResponse>) {
@@ -62,15 +87,8 @@ pub async fn get_balance(
     State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Result<Json<BalanceResponse>, ApiError> {
-    if !crypto::is_valid_address(&address) {
-        return Err(ChainError::InvalidAddress(address).into());
-    }
-    let chain = state.chain.lock().unwrap();
-    Ok(Json(BalanceResponse {
-        balance: chain.balance(&address),
-        next_nonce: chain.next_nonce(&address),
-        address,
-    }))
+    let account = state.node.account(&address)?;
+    Ok(Json(BalanceResponse { address, balance: account.balance, next_nonce: account.next_nonce }))
 }
 
 /// Signs a transfer without submitting it. A convenience for local experiments.
@@ -81,10 +99,7 @@ pub async fn sign_transaction(
     let key = crypto::parse_secret_key(&req.secret_key)
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
     let from = crypto::address_of(&key);
-    let nonce = match req.nonce {
-        Some(n) => n,
-        None => state.chain.lock().unwrap().next_nonce(&from),
-    };
+    let nonce = req.nonce.unwrap_or_else(|| state.node.next_nonce(&from));
     let payload = Transaction::signing_payload(&from, &req.to, req.amount, nonce);
     Ok(Json(Transaction {
         signature: crypto::sign(&key, &payload),
@@ -99,23 +114,21 @@ pub async fn submit_transaction(
     State(state): State<AppState>,
     Json(tx): Json<Transaction>,
 ) -> Result<(StatusCode, Json<Transaction>), ApiError> {
-    state.chain.lock().unwrap().submit(tx.clone())?;
+    state.node.submit(tx.clone())?;
     Ok((StatusCode::ACCEPTED, Json(tx)))
 }
 
 pub async fn get_pending(State(state): State<AppState>) -> Json<Vec<Transaction>> {
-    Json(state.chain.lock().unwrap().pending().to_vec())
+    Json(state.node.pending())
 }
 
 pub async fn mine(
     State(state): State<AppState>,
     Json(req): Json<MineRequest>,
 ) -> Result<(StatusCode, Json<Block>), ApiError> {
-    let chain = state.chain.clone();
-    let block = tokio::task::spawn_blocking(move || {
-        chain.lock().unwrap().mine(&req.miner).cloned()
-    })
-    .await
-    .expect("mining task panicked")?;
+    let node = state.node.clone();
+    let block = tokio::task::spawn_blocking(move || node.mine(&req.miner))
+        .await
+        .expect("mining task panicked")?;
     Ok((StatusCode::CREATED, Json(block)))
 }
