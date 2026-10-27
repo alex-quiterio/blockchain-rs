@@ -7,52 +7,68 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
-    <h1>blockchain-rs</h1>
-    <span id="validity" class="badge">…</span>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2" y="7" width="9" height="10" rx="2" />
+        <rect x="13" y="7" width="9" height="10" rx="2" />
+        <path d="M11 12h2" />
+      </svg>
+      <span>blockchain<b>-rs</b></span>
+    </div>
+    <dl class="stats">
+      <div><dt>Height</dt><dd id="stat-height">–</dd></div>
+      <div><dt>Difficulty</dt><dd id="stat-difficulty">–</dd></div>
+      <div><dt>Supply</dt><dd id="stat-supply">–</dd></div>
+      <div><dt>Mempool</dt><dd id="stat-pending">–</dd></div>
+    </dl>
+    <span id="validity" class="pill"><i></i><span>checking…</span></span>
   </header>
 
-  <main>
-    <section>
-      <h2>Wallets</h2>
-      <div class="row">
-        <input id="wallet-name" placeholder="Name (e.g. Alice)" />
-        <button id="create-wallet">Create wallet</button>
-      </div>
-      <table>
-        <thead><tr><th>Name</th><th>Address</th><th>Balance</th><th>Nonce</th><th></th></tr></thead>
-        <tbody id="wallets"></tbody>
-      </table>
-      <p class="hint">Keys are kept in this browser's localStorage. Fine for a toy chain, never for real money.</p>
-    </section>
+  <main class="layout">
+    <aside class="side">
+      <section class="panel">
+        <h2>Wallets <span id="wallet-count" class="count"></span></h2>
+        <form id="wallet-form" class="inline">
+          <input id="wallet-name" placeholder="Name, e.g. Alice" autocomplete="off" />
+          <button id="create-wallet">New wallet</button>
+        </form>
+        <div id="wallets" class="wallets"></div>
+        <p class="hint">Keys live in this browser's localStorage. Fine for a toy chain, never for real money.</p>
+      </section>
 
-    <section>
-      <h2>Send</h2>
-      <div class="row">
-        <label>From <select id="send-from"></select></label>
-        <label>To <select id="send-to"></select></label>
-        <label>Amount <input id="send-amount" type="number" min="1" value="10" /></label>
-        <button id="send">Sign and send</button>
-      </div>
-    </section>
+      <section class="panel">
+        <h2>Send</h2>
+        <form id="send-form" class="send">
+          <label>From <select id="send-from"></select></label>
+          <label>To <select id="send-to"></select></label>
+          <label class="amount">Amount <input id="send-amount" type="number" min="1" value="10" /></label>
+          <button id="send">Sign &amp; send</button>
+        </form>
+      </section>
 
-    <section>
-      <h2>Mine</h2>
-      <div class="row">
-        <label>Reward to <select id="miner"></select></label>
-        <button id="mine">Mine block</button>
-      </div>
-      <h3>Pending</h3>
-      <ul id="pending" class="txs"></ul>
-    </section>
+      <section class="panel">
+        <h2>Mine</h2>
+        <form id="mine-form" class="inline">
+          <label class="grow">Reward to <select id="miner"></select></label>
+          <button id="mine" class="gold">Mine block</button>
+        </form>
+        <div id="mining" class="mining" hidden></div>
+        <h3>Mempool</h3>
+        <ul id="pending" class="txs"></ul>
+      </section>
+    </aside>
 
-    <section>
-      <h2>Chain</h2>
-      <div id="blocks"></div>
+    <section class="chain">
+      <div class="chain-head">
+        <h2>Chain</h2>
+        <span class="hint">Newest first. Each block carries the hash of the one below it.</span>
+      </div>
+      <ol id="blocks" class="timeline"></ol>
     </section>
   </main>
 
-  <div id="toast" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>

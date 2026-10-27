@@ -2,7 +2,7 @@ use tokio::signal;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::NodeService;
-use blockchain::domain::chain::{DEFAULT_DIFFICULTY, DEFAULT_REWARD};
+use blockchain::domain::rules::ChainRules;
 use blockchain::infrastructure::JsonFileRepository;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
@@ -17,18 +17,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let difficulty = env_or("DIFFICULTY", DEFAULT_DIFFICULTY);
-    let reward = env_or("REWARD", DEFAULT_REWARD);
+    let defaults = ChainRules::default();
+    let rules = ChainRules::new(
+        env_or("DIFFICULTY", defaults.difficulty),
+        env_or("REWARD", defaults.reward),
+    );
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let chain_file = std::env::var("CHAIN_FILE").unwrap_or_else(|_| DEFAULT_CHAIN_FILE.to_string());
 
     let repository = Box::new(JsonFileRepository::new(&chain_file));
-    let node = NodeService::open(repository, difficulty, reward)
-        .map_err(|e| format!("{chain_file}: {e}"))?;
+    let node = NodeService::open(repository, rules).map_err(|e| format!("{chain_file}: {e}"))?;
     tracing::info!("Loaded {} blocks from {chain_file}", node.validity().1);
     let state = AppState::new(node);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("Node listening on {addr} (difficulty {difficulty}, reward {reward})");
+    tracing::info!(
+        "Node listening on {addr} (difficulty {}, reward {})",
+        rules.difficulty,
+        rules.reward
+    );
 
     axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal()).await?;
 

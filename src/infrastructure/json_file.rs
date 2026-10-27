@@ -41,8 +41,10 @@ impl ChainRepository for JsonFileRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::address::Address;
     use crate::domain::chain::Blockchain;
     use crate::domain::crypto;
+    use crate::domain::rules::ChainRules;
 
     /// A path in the system temp dir that is removed when dropped.
     struct TempPath(PathBuf);
@@ -72,14 +74,15 @@ mod tests {
     fn saved_blocks_load_back_identically() {
         let path = TempPath::new("round-trip");
         let repo = JsonFileRepository::new(&path.0);
-        let mut chain = Blockchain::new(2, 50);
-        chain.mine(&crypto::generate_keypair().0).unwrap();
+        let rules = ChainRules::new(2, 50);
+        let mut chain = Blockchain::new(rules);
+        chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
 
         repo.save(chain.blocks()).unwrap();
         let loaded = repo.load().unwrap().unwrap();
         assert_eq!(loaded, chain.blocks());
         // Timestamps must survive to the nanosecond, or the block hashes stop matching.
-        assert!(Blockchain::restore(loaded, 2, 50).is_ok());
+        assert!(Blockchain::restore(loaded, rules).is_ok());
     }
 
     #[test]

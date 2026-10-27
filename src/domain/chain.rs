@@ -1,13 +1,12 @@
+use chrono::Utc;
 use std::fmt;
 
-use chrono::{DateTime, SecondsFormat, Utc};
-
-use super::block::{Block, Transaction, COINBASE};
+use super::address::Address;
+use super::block::{Block, Transaction};
 use super::crypto;
 use super::ledger::Ledger;
-
-pub const DEFAULT_DIFFICULTY: usize = 4;
-pub const DEFAULT_REWARD: u64 = 50;
+use super::mempool::Mempool;
+use super::rules::ChainRules;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ChainError {
@@ -43,99 +42,85 @@ impl std::error::Error for ChainError {}
 #[derive(Clone)]
 pub struct Blockchain {
     blocks: Vec<Block>,
-    mempool: Vec<Transaction>,
+    mempool: Mempool,
     /// State after every confirmed block.
     ledger: Ledger,
-    difficulty: usize,
-    reward: u64,
+    rules: ChainRules,
 }
 
 impl Blockchain {
-    pub fn new(difficulty: usize, reward: u64) -> Self {
-        let timestamp = DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is a valid time");
-        let genesis = mine_block(0, timestamp, "0".repeat(64), Vec::new(), difficulty);
+    pub fn new(rules: ChainRules) -> Self {
         Self {
-            blocks: vec![genesis],
-            mempool: Vec::new(),
+            blocks: vec![Block::genesis(&rules)],
+            mempool: Mempool::default(),
             ledger: Ledger::default(),
-            difficulty,
-            reward,
+            rules,
         }
     }
 
     /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
-    pub fn restore(blocks: Vec<Block>, difficulty: usize, reward: u64) -> Result<Self, ChainError> {
-        let ledger = replay(&blocks, difficulty, reward).ok_or(ChainError::InvalidChain)?;
-        Ok(Self { blocks, mempool: Vec::new(), ledger, difficulty, reward })
+    pub fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
+        let ledger = replay(&blocks, &rules).ok_or(ChainError::InvalidChain)?;
+        Ok(Self { blocks, mempool: Mempool::default(), ledger, rules })
+    }
+
+    pub fn rules(&self) -> ChainRules {
+        self.rules
     }
 
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
     }
 
-    pub fn pending(&self) -> &[Transaction] {
-        &self.mempool
+    pub fn tip(&self) -> &Block {
+        self.blocks.last().expect("a chain always has its genesis block")
     }
 
-    pub fn balance(&self, address: &str) -> u64 {
-        self.ledger.balance(address)
+    pub fn pending(&self) -> &[Transaction] {
+        self.mempool.transactions()
+    }
+
+    pub fn balance(&self, address: &Address) -> u64 {
+        self.ledger.balance(address.as_str())
     }
 
     /// The nonce a new transaction from `address` must carry, counting the mempool.
-    pub fn next_nonce(&self, address: &str) -> u64 {
-        self.ledger.next_nonce(address)
-            + self.mempool.iter().filter(|tx| tx.from == address).count() as u64
+    pub fn next_nonce(&self, address: &Address) -> u64 {
+        self.ledger.next_nonce(address.as_str()) + self.mempool.sent_by(address.as_str())
     }
 
     /// Validates a transaction against confirmed state plus the mempool, then queues it.
     pub fn submit(&mut self, tx: Transaction) -> Result<(), ChainError> {
-        let mut pending = self.ledger.clone();
-        for queued in &self.mempool {
-            pending.apply_transfer(queued)?;
-        }
-        pending.apply_transfer(&tx)?;
-        self.mempool.push(tx);
-        Ok(())
+        self.mempool.admit(tx, &self.ledger)
     }
 
     /// Bundles the reward and every pending transaction into a new block.
-    pub fn mine(&mut self, miner: &str) -> Result<&Block, ChainError> {
-        if !crypto::is_valid_address(miner) {
-            return Err(ChainError::InvalidAddress(miner.to_string()));
-        }
+    pub fn mine(&mut self, miner: &Address) -> Result<&Block, ChainError> {
         let index = self.blocks.len() as u64;
-        let mut transactions = vec![Transaction {
-            from: COINBASE.to_string(),
-            to: miner.to_string(),
-            amount: self.reward,
-            nonce: index,
-            signature: String::new(),
-        }];
-        transactions.extend(self.mempool.iter().cloned());
+        let mut transactions = vec![Transaction::coinbase(miner, self.rules.reward, index)];
+        transactions.extend(self.mempool.transactions().iter().cloned());
 
         let mut ledger = self.ledger.clone();
-        ledger.credit(miner, self.reward);
+        ledger.credit(miner.as_str(), self.rules.reward);
         for tx in &transactions[1..] {
             ledger.apply_transfer(tx)?;
         }
 
-        let prev_hash = self.blocks.last().expect("genesis exists").hash.clone();
-        let block = mine_block(index, Utc::now(), prev_hash, transactions, self.difficulty);
-        self.blocks.push(block);
+        let prev_hash = self.tip().hash.clone();
+        self.blocks.push(Block::mine(index, Utc::now(), prev_hash, transactions, &self.rules));
         self.mempool.clear();
         self.ledger = ledger;
-        Ok(self.blocks.last().expect("just pushed"))
+        Ok(self.tip())
     }
 
     /// The longest-chain rule: adopts `blocks` if it is valid and longer than ours.
     /// Every block carries the same work, so the longest chain is the one with the most work.
     /// Transfers from our blocks that `blocks` drops go back to the mempool if they still apply.
-    pub fn replace(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
+    pub fn adopt_if_longer(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
         if blocks.len() <= self.blocks.len() {
             return Ok(false);
         }
-        let ledger =
-            replay(&blocks, self.difficulty, self.reward).ok_or(ChainError::InvalidChain)?;
+        let ledger = replay(&blocks, &self.rules).ok_or(ChainError::InvalidChain)?;
 
         let shared = self
             .blocks
@@ -146,44 +131,36 @@ impl Blockchain {
         let orphaned: Vec<Transaction> = self.blocks[shared..]
             .iter()
             .flat_map(|block| block.transactions.iter().skip(1))
-            .chain(&self.mempool)
+            .chain(self.mempool.transactions())
             .cloned()
             .collect();
 
+        self.mempool = Mempool::rebuilt(orphaned, &ledger);
         self.blocks = blocks;
         self.ledger = ledger;
-        let mut pending = self.ledger.clone();
-        self.mempool =
-            orphaned.into_iter().filter(|tx| pending.apply_transfer(tx).is_ok()).collect();
         Ok(true)
     }
 
     /// Replays the whole chain: links, hashes, proof of work, rewards, signatures and balances.
     pub fn is_valid(&self) -> bool {
-        validate_blocks(&self.blocks, self.difficulty, self.reward)
+        validate_blocks(&self.blocks, &self.rules)
     }
 }
 
-impl Default for Blockchain {
-    fn default() -> Self {
-        Self::new(DEFAULT_DIFFICULTY, DEFAULT_REWARD)
-    }
-}
-
-pub fn validate_blocks(blocks: &[Block], difficulty: usize, reward: u64) -> bool {
-    replay(blocks, difficulty, reward).is_some()
+pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
+    replay(blocks, rules).is_some()
 }
 
 /// Checks every block in order and returns the resulting ledger, or `None` if any check fails.
-fn replay(blocks: &[Block], difficulty: usize, reward: u64) -> Option<Ledger> {
+fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Ledger> {
     if blocks.is_empty() {
         return None;
     }
     let mut ledger = Ledger::default();
     for (i, block) in blocks.iter().enumerate() {
         if block.index != i as u64
-            || block.hash != hash_block(block)
-            || !meets_difficulty(&block.hash, difficulty)
+            || block.hash != block.computed_hash()
+            || !rules.is_met_by(&block.hash)
         {
             return None;
         }
@@ -198,7 +175,7 @@ fn replay(blocks: &[Block], difficulty: usize, reward: u64) -> Option<Ledger> {
         }
         let (coinbase, transfers) = block.transactions.split_first()?;
         if !coinbase.is_coinbase()
-            || coinbase.amount != reward
+            || coinbase.amount != rules.reward
             || coinbase.nonce != block.index
             || !crypto::is_valid_address(&coinbase.to)
         {
@@ -212,60 +189,36 @@ fn replay(blocks: &[Block], difficulty: usize, reward: u64) -> Option<Ledger> {
     Some(ledger)
 }
 
-pub fn hash_block(block: &Block) -> String {
-    block_hash(block.index, &block.timestamp, &block.prev_hash, &block.transactions, block.nonce)
-}
-
-fn block_hash(
-    index: u64,
-    timestamp: &DateTime<Utc>,
-    prev_hash: &str,
-    transactions: &[Transaction],
-    nonce: u64,
-) -> String {
-    let txs = serde_json::to_string(transactions).expect("transactions serialize");
-    let ts = timestamp.to_rfc3339_opts(SecondsFormat::Nanos, true);
-    crypto::sha256_hex(format!("{index}|{ts}|{prev_hash}|{txs}|{nonce}").as_bytes())
-}
-
-fn meets_difficulty(hash: &str, difficulty: usize) -> bool {
-    hash.len() >= difficulty && hash.bytes().take(difficulty).all(|b| b == b'0')
-}
-
-fn mine_block(
-    index: u64,
-    timestamp: DateTime<Utc>,
-    prev_hash: String,
-    transactions: Vec<Transaction>,
-    difficulty: usize,
-) -> Block {
-    let mut nonce = 0;
-    loop {
-        let hash = block_hash(index, &timestamp, &prev_hash, &transactions, nonce);
-        if meets_difficulty(&hash, difficulty) {
-            return Block { index, timestamp, prev_hash, transactions, nonce, hash };
-        }
-        nonce += 1;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn wallet() -> (String, ed25519_dalek::SigningKey) {
-        let (address, secret) = crypto::generate_keypair();
-        (address, crypto::parse_secret_key(&secret).unwrap())
+    const RULES: ChainRules = ChainRules::new(2, 50);
+
+    fn wallet() -> (Address, ed25519_dalek::SigningKey) {
+        let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
+        (Address::of(&key), key)
     }
 
-    fn transfer(key: &ed25519_dalek::SigningKey, to: &str, amount: u64, nonce: u64) -> Transaction {
-        let from = crypto::address_of(key);
-        let signature = crypto::sign(key, &Transaction::signing_payload(&from, to, amount, nonce));
-        Transaction { from, to: to.to_string(), amount, nonce, signature }
+    fn transfer(
+        key: &ed25519_dalek::SigningKey,
+        to: &Address,
+        amount: u64,
+        nonce: u64,
+    ) -> Transaction {
+        let from = Address::of(key).to_string();
+        let payload = Transaction::signing_payload(&from, to.as_str(), amount, nonce);
+        Transaction {
+            from,
+            to: to.to_string(),
+            amount,
+            nonce,
+            signature: crypto::sign(key, &payload),
+        }
     }
 
     fn chain() -> Blockchain {
-        Blockchain::new(2, 50)
+        Blockchain::new(RULES)
     }
 
     #[test]
@@ -303,8 +256,8 @@ mod tests {
         let (_, mallory_key) = wallet();
         chain.mine(&alice).unwrap();
 
-        let mut tx = transfer(&mallory_key, &crypto::address_of(&mallory_key), 10, 0);
-        tx.from = alice;
+        let mut tx = transfer(&mallory_key, &Address::of(&mallory_key), 10, 0);
+        tx.from = alice.to_string();
         assert_eq!(chain.submit(tx), Err(ChainError::BadSignature));
     }
 
@@ -346,12 +299,12 @@ mod tests {
 
         let mut blocks = chain.blocks().to_vec();
         blocks[2].transactions[1].amount = 50;
-        assert!(!validate_blocks(&blocks, 2, 50));
+        assert!(!validate_blocks(&blocks, &RULES));
 
         let mut blocks = chain.blocks().to_vec();
         blocks[1].transactions[0].amount = 1_000;
-        blocks[1].hash = hash_block(&blocks[1]);
-        assert!(!validate_blocks(&blocks, 2, 50));
+        blocks[1].hash = blocks[1].computed_hash();
+        assert!(!validate_blocks(&blocks, &RULES));
     }
 
     #[test]
@@ -363,7 +316,7 @@ mod tests {
         chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
         chain.mine(&alice).unwrap();
 
-        let restored = Blockchain::restore(chain.blocks().to_vec(), 2, 50).unwrap();
+        let restored = Blockchain::restore(chain.blocks().to_vec(), RULES).unwrap();
         assert_eq!(restored.balance(&alice), 80);
         assert_eq!(restored.balance(&bob), 20);
         assert_eq!(restored.next_nonce(&alice), 1);
@@ -375,8 +328,8 @@ mod tests {
         chain.mine(&wallet().0).unwrap();
         let mut blocks = chain.blocks().to_vec();
         blocks[1].transactions[0].amount = 1_000;
-        assert_eq!(Blockchain::restore(blocks, 2, 50).err(), Some(ChainError::InvalidChain));
-        assert_eq!(Blockchain::restore(Vec::new(), 2, 50).err(), Some(ChainError::InvalidChain));
+        assert_eq!(Blockchain::restore(blocks, RULES).err(), Some(ChainError::InvalidChain));
+        assert_eq!(Blockchain::restore(Vec::new(), RULES).err(), Some(ChainError::InvalidChain));
     }
 
     #[test]
@@ -384,12 +337,12 @@ mod tests {
         let mut chain = chain();
         chain.mine(&wallet().0).unwrap();
         // No SHA-256 hash is all zeros, so these blocks can't meet a difficulty of 64.
-        assert!(Blockchain::restore(chain.blocks().to_vec(), 64, 50).is_err());
-        assert!(Blockchain::restore(chain.blocks().to_vec(), 2, 25).is_err());
+        assert!(Blockchain::restore(chain.blocks().to_vec(), ChainRules::new(64, 50)).is_err());
+        assert!(Blockchain::restore(chain.blocks().to_vec(), ChainRules::new(2, 25)).is_err());
     }
 
     #[test]
-    fn replace_adopts_a_longer_valid_chain() {
+    fn adopt_adopts_a_longer_valid_chain() {
         let mut ours = chain();
         let mut theirs = chain();
         let (alice, _) = wallet();
@@ -398,7 +351,7 @@ mod tests {
         theirs.mine(&bob).unwrap();
         theirs.mine(&bob).unwrap();
 
-        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.blocks(), theirs.blocks());
         assert_eq!(ours.balance(&alice), 0);
         assert_eq!(ours.balance(&bob), 100);
@@ -406,20 +359,20 @@ mod tests {
     }
 
     #[test]
-    fn replace_keeps_ours_when_theirs_is_not_longer() {
+    fn adopt_keeps_ours_when_theirs_is_not_longer() {
         let mut ours = chain();
         let mut theirs = chain();
         ours.mine(&wallet().0).unwrap();
         theirs.mine(&wallet().0).unwrap();
         let before = ours.blocks().to_vec();
 
-        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(false));
-        assert_eq!(ours.replace(vec![theirs.blocks()[0].clone()]), Ok(false));
+        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(false));
+        assert_eq!(ours.adopt_if_longer(vec![theirs.blocks()[0].clone()]), Ok(false));
         assert_eq!(ours.blocks(), before);
     }
 
     #[test]
-    fn replace_refuses_an_invalid_longer_chain() {
+    fn adopt_refuses_an_invalid_longer_chain() {
         let mut ours = chain();
         let mut theirs = chain();
         let (alice, _) = wallet();
@@ -429,12 +382,12 @@ mod tests {
         let mut forged = theirs.blocks().to_vec();
         forged[2].transactions[0].amount = 1_000;
 
-        assert_eq!(ours.replace(forged), Err(ChainError::InvalidChain));
+        assert_eq!(ours.adopt_if_longer(forged), Err(ChainError::InvalidChain));
         assert_eq!(ours.balance(&alice), 50);
     }
 
     #[test]
-    fn replace_returns_dropped_transfers_to_the_mempool() {
+    fn adopt_returns_dropped_transfers_to_the_mempool() {
         let (alice, alice_key) = wallet();
         let (bob, _) = wallet();
         let mut ours = chain();
@@ -448,14 +401,14 @@ mod tests {
         theirs.mine(&bob).unwrap();
         theirs.mine(&bob).unwrap();
 
-        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.pending(), [payment]);
         assert_eq!(ours.balance(&alice), 50);
         assert_eq!(ours.next_nonce(&alice), 1);
     }
 
     #[test]
-    fn replace_drops_transfers_the_new_chain_already_confirmed() {
+    fn adopt_drops_transfers_the_new_chain_already_confirmed() {
         let (alice, alice_key) = wallet();
         let (bob, _) = wallet();
         let mut ours = chain();
@@ -468,7 +421,7 @@ mod tests {
         theirs.mine(&bob).unwrap();
         theirs.mine(&bob).unwrap();
 
-        assert_eq!(ours.replace(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
         assert!(ours.pending().is_empty());
         assert_eq!(ours.balance(&bob), 120);
     }

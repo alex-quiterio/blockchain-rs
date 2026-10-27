@@ -71,9 +71,12 @@ curl -s localhost:3000/balances/$B    # 70
 The code follows domain-driven design. Each layer only depends on the ones above it in this list.
 
 - `src/domain/`: the core rules, with no I/O.
-  - `block.rs`: `Block` and `Transaction` value objects
-  - `chain.rs`: the `Blockchain` aggregate (mempool, mining, validation, the longest-chain rule)
+  - `chain.rs`: the `Blockchain` aggregate root (mining, validation, `adopt_if_longer`)
+  - `block.rs`: `Block` (mines and hashes itself) and `Transaction`
+  - `mempool.rs`: transfers waiting to be mined, admitted only if they apply after the rest of the queue
   - `ledger.rs`: balances and nonces
+  - `rules.rs`: `ChainRules`, the difficulty and reward every node must share
+  - `address.rs`: `Address`, a value object that can only hold a valid public key
   - `crypto.rs`: keys, signing, SHA-256
   - `repository.rs`: the `ChainRepository` port
 - `src/application/`: `NodeService` runs each use case. A change is made on a copy of the chain and only goes live once it's saved, so memory and disk never disagree.

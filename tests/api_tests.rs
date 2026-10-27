@@ -9,10 +9,12 @@ use tower::ServiceExt;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::NodeService;
+use blockchain::domain::rules::ChainRules;
 use blockchain::infrastructure::InMemoryRepository;
 
 fn app() -> Router {
-    let node = NodeService::open(Box::new(InMemoryRepository::default()), 2, 50).unwrap();
+    let node =
+        NodeService::open(Box::new(InMemoryRepository::default()), ChainRules::new(2, 50)).unwrap();
     router(AppState::new(node))
 }
 

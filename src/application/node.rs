@@ -1,10 +1,11 @@
 use std::fmt;
 use std::sync::Mutex;
 
+use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::{Blockchain, ChainError};
-use crate::domain::crypto;
 use crate::domain::repository::{ChainRepository, RepositoryError};
+use crate::domain::rules::ChainRules;
 
 #[derive(Debug)]
 pub enum NodeError {
@@ -45,13 +46,12 @@ impl NodeService {
     /// Restores the saved chain, or starts and saves a new one if nothing is saved yet.
     pub fn open(
         repository: Box<dyn ChainRepository>,
-        difficulty: usize,
-        reward: u64,
+        rules: ChainRules,
     ) -> Result<Self, NodeError> {
         let chain = match repository.load().map_err(NodeError::Storage)? {
-            Some(blocks) => Blockchain::restore(blocks, difficulty, reward)?,
+            Some(blocks) => Blockchain::restore(blocks, rules)?,
             None => {
-                let chain = Blockchain::new(difficulty, reward);
+                let chain = Blockchain::new(rules);
                 repository.save(chain.blocks()).map_err(NodeError::Storage)?;
                 chain
             }
@@ -69,15 +69,12 @@ impl NodeService {
         (chain.is_valid(), chain.blocks().len())
     }
 
-    pub fn account(&self, address: &str) -> Result<Account, ChainError> {
-        if !crypto::is_valid_address(address) {
-            return Err(ChainError::InvalidAddress(address.to_string()));
-        }
+    pub fn account(&self, address: &Address) -> Account {
         let chain = self.chain.lock().unwrap();
-        Ok(Account { balance: chain.balance(address), next_nonce: chain.next_nonce(address) })
+        Account { balance: chain.balance(address), next_nonce: chain.next_nonce(address) }
     }
 
-    pub fn next_nonce(&self, address: &str) -> u64 {
+    pub fn next_nonce(&self, address: &Address) -> u64 {
         self.chain.lock().unwrap().next_nonce(address)
     }
 
@@ -91,15 +88,15 @@ impl NodeService {
     }
 
     /// Mines a block and saves it. Blocks for as long as the proof of work takes.
-    pub fn mine(&self, miner: &str) -> Result<Block, NodeError> {
+    pub fn mine(&self, miner: &Address) -> Result<Block, NodeError> {
         self.commit(|chain| chain.mine(miner).cloned())
     }
 
     /// Offers another node's chain. Returns whether it was adopted and the length afterwards.
-    pub fn replace(&self, blocks: Vec<Block>) -> Result<(bool, usize), NodeError> {
+    pub fn adopt_if_longer(&self, blocks: Vec<Block>) -> Result<(bool, usize), NodeError> {
         self.commit(|chain| {
-            let replaced = chain.replace(blocks)?;
-            Ok((replaced, chain.blocks().len()))
+            let adopted = chain.adopt_if_longer(blocks)?;
+            Ok((adopted, chain.blocks().len()))
         })
     }
 
@@ -112,7 +109,7 @@ impl NodeService {
         let mut chain = self.chain.lock().unwrap();
         let mut next = chain.clone();
         let result = change(&mut next)?;
-        if next.blocks().last().map(|b| &b.hash) != chain.blocks().last().map(|b| &b.hash) {
+        if next.tip().hash != chain.tip().hash {
             self.repository.save(next.blocks()).map_err(NodeError::Storage)?;
         }
         *chain = next;
@@ -125,7 +122,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::domain::crypto;
     use crate::infrastructure::InMemoryRepository;
+
+    const RULES: ChainRules = ChainRules::new(2, 50);
+
+    fn new_address() -> Address {
+        Address::parse(&crypto::generate_keypair().0).unwrap()
+    }
 
     /// Shares one in-memory store between service instances, like a file surviving a restart.
     #[derive(Clone, Default)]
@@ -157,7 +161,7 @@ mod tests {
     }
 
     fn node(repository: impl ChainRepository + 'static) -> NodeService {
-        NodeService::open(Box::new(repository), 2, 50).unwrap()
+        NodeService::open(Box::new(repository), RULES).unwrap()
     }
 
     #[test]
@@ -170,36 +174,36 @@ mod tests {
     #[test]
     fn mined_blocks_survive_a_restart() {
         let repo = SharedRepository::default();
-        let (miner, _) = crypto::generate_keypair();
+        let miner = new_address();
         let first = node(repo.clone());
         first.mine(&miner).unwrap();
         first.mine(&miner).unwrap();
 
         let second = node(repo);
         assert_eq!(second.blocks(), first.blocks());
-        assert_eq!(second.account(&miner).unwrap().balance, 100);
+        assert_eq!(second.account(&miner).balance, 100);
     }
 
     #[test]
     fn a_tampered_store_refuses_to_start() {
         let repo = SharedRepository::default();
-        node(repo.clone()).mine(&crypto::generate_keypair().0).unwrap();
+        node(repo.clone()).mine(&new_address()).unwrap();
         let mut blocks = repo.load().unwrap().unwrap();
         blocks[1].transactions[0].amount = 1_000;
         repo.save(&blocks).unwrap();
 
-        let err = NodeService::open(Box::new(repo), 2, 50).err().unwrap();
+        let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
         assert!(matches!(err, NodeError::Chain(ChainError::InvalidChain)));
     }
 
     #[test]
     fn a_failed_save_leaves_the_chain_unchanged() {
         let node = node(FailingRepository);
-        let (miner, _) = crypto::generate_keypair();
+        let miner = new_address();
 
         assert!(matches!(node.mine(&miner), Err(NodeError::Storage(_))));
         assert_eq!(node.blocks().len(), 1);
-        assert_eq!(node.account(&miner).unwrap().balance, 0);
+        assert_eq!(node.account(&miner).balance, 0);
     }
 
     #[test]
@@ -207,11 +211,10 @@ mod tests {
         let repo = SharedRepository::default();
         let ours = node(repo.clone());
         let theirs = node(InMemoryRepository::default());
-        let (miner, _) = crypto::generate_keypair();
-        theirs.mine(&miner).unwrap();
+        theirs.mine(&new_address()).unwrap();
 
-        assert_eq!(ours.replace(theirs.blocks()).unwrap(), (true, 2));
+        assert_eq!(ours.adopt_if_longer(theirs.blocks()).unwrap(), (true, 2));
         assert_eq!(repo.load().unwrap().unwrap(), theirs.blocks());
-        assert_eq!(ours.replace(vec![]).unwrap(), (false, 2));
+        assert_eq!(ours.adopt_if_longer(vec![]).unwrap(), (false, 2));
     }
 }

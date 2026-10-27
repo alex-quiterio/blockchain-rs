@@ -11,6 +11,7 @@ use super::dto::{
 };
 use super::AppState;
 use crate::application::NodeError;
+use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::ChainError;
 use crate::domain::crypto;
@@ -67,7 +68,7 @@ pub async fn replace_chain(
     Json(blocks): Json<Vec<Block>>,
 ) -> Result<Json<ReplaceResponse>, ApiError> {
     let node = state.node.clone();
-    let (replaced, length) = tokio::task::spawn_blocking(move || node.replace(blocks))
+    let (replaced, length) = tokio::task::spawn_blocking(move || node.adopt_if_longer(blocks))
         .await
         .expect("replace task panicked")?;
     Ok(Json(ReplaceResponse { replaced, length }))
@@ -87,7 +88,7 @@ pub async fn get_balance(
     State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Result<Json<BalanceResponse>, ApiError> {
-    let account = state.node.account(&address)?;
+    let account = state.node.account(&Address::parse(&address)?);
     Ok(Json(BalanceResponse { address, balance: account.balance, next_nonce: account.next_nonce }))
 }
 
@@ -98,12 +99,12 @@ pub async fn sign_transaction(
 ) -> Result<Json<Transaction>, ApiError> {
     let key = crypto::parse_secret_key(&req.secret_key)
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
-    let from = crypto::address_of(&key);
+    let from = Address::of(&key);
     let nonce = req.nonce.unwrap_or_else(|| state.node.next_nonce(&from));
-    let payload = Transaction::signing_payload(&from, &req.to, req.amount, nonce);
+    let payload = Transaction::signing_payload(from.as_str(), &req.to, req.amount, nonce);
     Ok(Json(Transaction {
         signature: crypto::sign(&key, &payload),
-        from,
+        from: from.to_string(),
         to: req.to,
         amount: req.amount,
         nonce,
@@ -126,8 +127,9 @@ pub async fn mine(
     State(state): State<AppState>,
     Json(req): Json<MineRequest>,
 ) -> Result<(StatusCode, Json<Block>), ApiError> {
+    let miner = Address::parse(&req.miner)?;
     let node = state.node.clone();
-    let block = tokio::task::spawn_blocking(move || node.mine(&req.miner))
+    let block = tokio::task::spawn_blocking(move || node.mine(&miner))
         .await
         .expect("mining task panicked")?;
     Ok((StatusCode::CREATED, Json(block)))
