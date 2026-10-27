@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>blockchain-rs</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>blockchain-rs</h1>
+    <span id="validity" class="badge">…</span>
+  </header>
+
+  <main>
+    <section>
+      <h2>Wallets</h2>
+      <div class="row">
+        <input id="wallet-name" placeholder="Name (e.g. Alice)" />
+        <button id="create-wallet">Create wallet</button>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Address</th><th>Balance</th><th>Nonce</th><th></th></tr></thead>
+        <tbody id="wallets"></tbody>
+      </table>
+      <p class="hint">Keys are kept in this browser's localStorage. Fine for a toy chain, never for real money.</p>
+    </section>
+
+    <section>
+      <h2>Send</h2>
+      <div class="row">
+        <label>From <select id="send-from"></select></label>
+        <label>To <select id="send-to"></select></label>
+        <label>Amount <input id="send-amount" type="number" min="1" value="10" /></label>
+        <button id="send">Sign and send</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Mine</h2>
+      <div class="row">
+        <label>Reward to <select id="miner"></select></label>
+        <button id="mine">Mine block</button>
+      </div>
+      <h3>Pending</h3>
+      <ul id="pending" class="txs"></ul>
+    </section>
+
+    <section>
+      <h2>Chain</h2>
+      <div id="blocks"></div>
+    </section>
+  </main>
+
+  <div id="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
