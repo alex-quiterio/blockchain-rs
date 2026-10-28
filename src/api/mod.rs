@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
         .route("/transactions", post(handlers::submit_transaction))
         .route("/transactions/sign", post(handlers::sign_transaction))
         .route("/transactions/pending", get(handlers::get_pending))
+        .route("/transactions/:signature/proof", get(handlers::get_proof))
+        .route("/headers", get(handlers::get_headers))
         .route("/mine", post(handlers::mine))
         .route("/forge", post(handlers::forge))
         .route("/forge/proposal", post(handlers::propose))

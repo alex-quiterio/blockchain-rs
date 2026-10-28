@@ -21,7 +21,7 @@ ROUNDS=${ROUNDS:-8}
 PACE=${PACE:-0.6}
 NODE_NAMES=(node-a node-b node-c)
 
-for tool in curl jq perl; do
+for tool in curl jq perl shasum; do
   command -v "$tool" > /dev/null || { echo "This needs $tool." >&2; exit 1; }
 done
 
@@ -82,6 +82,7 @@ balance() { curl -s -m 5 "${NODES[0]}/balances/${ADDR[$1]}" | jq -r .balance; }
 # ── Transactions ──────────────────────────────────────────────────────────────
 
 LAST_TX=""
+SENT=()  # "from to amount signature" of every accepted transfer
 
 # Signs a transfer and sends it to the sender's home node. Returns non-zero if refused.
 send() {  # from-index to-index amount fee
@@ -102,6 +103,7 @@ submit() {  # from-index to-index tx-json amount fee
   call POST "${NODES[$node]}/transactions" "$tx"
   if [[ $CODE == 202 ]]; then
     NONCE[$from]=$(( NONCE[$from] + 1 ))
+    SENT+=("$from $to $amount $(jq -r .signature <<< "$tx")")
     printf '  ✉️  %-6s ─%s %3d coins%s ─▶ %-6s via %s %s✓ %s accepted, gossiping%s\n' \
       "${NAMES[$from]}" "$GRN" "$amount" "$R$fee_note" "${NAMES[$to]}" "$(node_label "$node")" "$GRN" "$CODE" "$R"
   else
@@ -345,6 +347,38 @@ done
 winner=$(curl -s -m 5 "${NODES[0]}/chain?from=$(status 0 | jq -r .height)" | jq -r '.[-1].transactions[] | select(.signature == "") | .to')
 for i in "${!ADDR[@]}"; do [[ ${ADDR[$i]} == "$winner" ]] && echo "  🏆 Every node now builds on ${NAMES[$i]}'s block. Transfers only in a losing block go back to the mempool."; done
 mempools
+
+act "Act 7 · A light client" "A phone can't keep every block. It keeps only their headers, and asks for a proof that a payment is in one. The block's hash covers a Merkle root, and the proof is the few hashes that lead from the payment up to it."
+sha256() { printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1; }
+read -r from to amount sig <<< "${SENT[0]}"
+headers=$(curl -s -m 10 "${NODES[1]}/headers")
+printf '  📥 the phone follows %s headers: %s%s KB%s, where the whole chain is %s KB\n' "$(jq length <<< "$headers")" \
+  "$B" "$(( $(printf '%s' "$headers" | wc -c) / 1024 ))" "$R" "$(( $(curl -s -m 10 "${NODES[1]}/chain" | wc -c) / 1024 ))"
+printf '  🧾 it asks %s to prove %s paid %s %s coins\n' "$(node_label 1)" "${NAMES[$from]}" "${NAMES[$to]}" "$amount"
+call GET "${NODES[1]}/transactions/$sig/proof"
+if [[ $CODE != 200 ]]; then
+  echo "  ${YEL}✗ $CODE $(jq -r '.message // .' <<< "$BODY")${R}"
+else
+  proof=$BODY
+  hash=$(sha256 "leaf|$(jq -c .transaction <<< "$proof")")
+  printf '     leaf      %s…  %s\n' "${hash:0:16}" "${D}sha256 of the transaction${R}"
+  while read -r side sibling; do
+    if [[ $side == left ]]; then hash=$(sha256 "node|$sibling|$hash"); else hash=$(sha256 "node|$hash|$sibling"); fi
+    printf '     ↑ with    %s…  %s\n' "${sibling:0:16}" "${D}sibling on the $side, from the proof${R}"
+    printf '     node      %s…\n' "${hash:0:16}"
+  done < <(jq -r '.proof[] | "\(.side) \(.hash)"' <<< "$proof")
+  root=$(jq -r .header.merkle_root <<< "$proof")
+  index=$(jq -r .header.index <<< "$proof")
+  known=$(jq -r --argjson i "$index" '.[] | select(.index == $i) | .hash' <<< "$headers")
+  txs=$(curl -s -m 10 "${NODES[1]}/chain?from=$index" | jq '.[0].transactions | length')
+  if [[ $hash == "$root" && $known == $(jq -r .header.hash <<< "$proof") ]]; then
+    printf '  %s✓ it reaches the Merkle root of block #%s, whose header the phone already has.%s\n' "$GRN" "$index" "$R"
+    printf '     %s hashes checked instead of downloading the block'"'"'s %s transactions. %s confirmations.\n' \
+      "$(jq '.proof | length' <<< "$proof")" "$txs" "$(jq -r .confirmations <<< "$proof")"
+  else
+    echo "  ${RED}✗ the proof does not check out${R}"
+  fi
+fi
 
 act "Epilogue" "Where everyone stands, according to every node."
 for i in "${!NAMES[@]}"; do

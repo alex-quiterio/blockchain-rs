@@ -427,6 +427,17 @@ impl Blockchain {
         Ok(Extension::Adopted)
     }
 
+    /// The confirmed block holding the transfer signed `signature`, and its place in the block.
+    pub fn find_transaction(&self, signature: &str) -> Option<(&Block, usize)> {
+        if signature.is_empty() {
+            return None;
+        }
+        self.blocks.iter().rev().find_map(|block| {
+            let position = block.transactions.iter().position(|tx| tx.signature == signature)?;
+            Some((block, position))
+        })
+    }
+
     /// Replays the whole chain: links, hashes, consensus, rewards, signatures and balances.
     pub fn is_valid(&self) -> bool {
         validate_blocks(&self.blocks, &self.rules)
@@ -444,6 +455,7 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Tally> {
         || genesis.prev_hash != "0".repeat(64)
         || genesis.timestamp.timestamp() != 0
         || !genesis.transactions.is_empty()
+        || !genesis.has_matching_root()
         || genesis.hash != genesis.computed_hash()
         || !is_sealed_genesis(genesis, rules)
     {
@@ -465,6 +477,7 @@ fn apply_block(before: &[Block], block: &Block, tally: &mut Tally, rules: &Chain
     let work = difficulty::next_work(before, tally.work, rules.retarget());
     if block.index != prev.index + 1
         || block.prev_hash != prev.hash
+        || !block.has_matching_root()
         || block.hash != block.computed_hash()
         || !difficulty::timestamp_fits(before, block.timestamp, Utc::now())
         || !is_sealed_by_consensus(block, &tally.ledger, rules, work)
@@ -643,6 +656,26 @@ mod tests {
         blocks[1].transactions[0].amount = 1_000;
         blocks[1].hash = blocks[1].computed_hash();
         assert!(!validate_blocks(&blocks, &RULES));
+    }
+
+    #[test]
+    fn transactions_must_match_the_merkle_root() {
+        let mut chain = chain();
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        chain.mine(&alice).unwrap();
+        chain.submit(transfer(&alice_key, &bob, 5, 0)).unwrap();
+        chain.mine(&alice).unwrap();
+
+        // The header, and so the hash and its proof of work, stays valid; the contents don't.
+        let mut blocks = chain.blocks().to_vec();
+        blocks[2].transactions.pop();
+        blocks[2].transactions[0].amount = 50;
+        assert_eq!(blocks[2].hash, blocks[2].computed_hash());
+        assert!(!validate_blocks(&blocks, &RULES));
+
+        let mut ours = Blockchain::new(RULES);
+        assert_eq!(ours.extend(blocks[1..].to_vec()), Err(ChainError::InvalidBlock));
     }
 
     #[test]

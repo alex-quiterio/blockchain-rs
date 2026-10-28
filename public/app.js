@@ -434,10 +434,37 @@ function breakdown(block, prev, payout, transfers) {
     const fees = feesOf(transfers);
     row("Payout", `${fmt(payout.amount - fees)} reward + ${fmt(fees)} in fees = `, el("b", { textContent: fmt(payout.amount) }), " to ", party(payout.to));
   }
-  const fields = ["index", "timestamp", "prev_hash", "transactions", "nonce", block.validator && "validator"].filter(Boolean);
+  const check = el("span", { textContent: "checking…" });
+  Merkle.root(block.transactions).then((root) => check.replaceWith(root === block.merkle_root
+    ? yes("match the Merkle root") : el("span", { textContent: "✗ don't match the Merkle root" })));
+  const n = block.transactions.length;
+  row("Contents", check, " ", el("span", { className: "formula", textContent: short(block.merkle_root) }),
+    n > 1
+      ? `, recomputed here by hashing the ${n} transactions in pairs up to one hash. The block hash covers the root, so changing any transaction breaks the block, and anyone holding just the header can check one transaction with ${Math.ceil(Math.log2(n))} hashes.`
+      : ", recomputed here from the transactions. The block hash covers the root, so changing any transaction breaks the block.");
+  const fields = ["index", "timestamp", "prev_hash", "merkle_root", "nonce", block.validator && "validator"].filter(Boolean);
   row("Hash", el("span", { className: "formula", textContent: `sha256(${fields.join(" | ")})` }));
   return el("details", { className: "breakdown" }, el("summary", { textContent: "Breakdown" }), el("dl", { className: "facts" }, facts));
 }
+
+/** Merkle roots, computed exactly as the node does (see domain/merkle.rs). */
+const Merkle = {
+  EMPTY_ROOT: "0".repeat(64),
+
+  async root(transactions) {
+    let level = await Promise.all(transactions.map((tx) => Randao.sha256(`leaf|${JSON.stringify(tx)}`)));
+    if (!level.length) return this.EMPTY_ROOT;
+    while (level.length > 1) {
+      const pairs = [];
+      for (let i = 0; i < level.length; i += 2) {
+        // An odd hash out moves up as it is.
+        pairs.push(i + 1 < level.length ? Randao.sha256(`node|${level[i]}|${level[i + 1]}`) : level[i]);
+      }
+      level = await Promise.all(pairs);
+    }
+    return level[0];
+  },
+};
 
 // ---- Panels -----------------------------------------------------------------
 

@@ -8,6 +8,7 @@ pub mod difficulty;
 pub mod error;
 pub mod ledger;
 pub mod mempool;
+pub mod merkle;
 pub mod randao;
 pub mod repository;
 pub mod rules;

@@ -10,14 +10,15 @@ use axum::{
 
 use super::dto::{
     AddPeerResponse, BalanceResponse, ChainQuery, ConsensusResponse, ErrorResponse, ForgeRequest,
-    MineRequest, NodeResponse, PeerRequest, PeerResponse, ProposalRequest, ReplaceResponse,
-    SignRequest, StakeEntry, StatusResponse, SyncResponse, ValidityResponse, WalletResponse,
+    MineRequest, NodeResponse, PeerRequest, PeerResponse, ProofResponse, ProposalRequest,
+    ReplaceResponse, SignRequest, StakeEntry, StatusResponse, SyncResponse, ValidityResponse,
+    WalletResponse,
 };
 use super::AppState;
 use crate::application::{NodeError, PEER_HEADER};
 use crate::domain::address::Address;
 use crate::domain::block::STAKE;
-use crate::domain::block::{Block, Transaction};
+use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Extension;
 use crate::domain::crypto;
 use crate::domain::error::ChainError;
@@ -33,6 +34,10 @@ pub struct ApiError {
 impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: message.into() }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message: message.into() }
     }
 }
 
@@ -82,6 +87,33 @@ pub async fn get_chain(
         Some(height) => state.node.blocks_from(height),
         None => state.node.blocks(),
     })
+}
+
+/// Every block's header, or with `?from=N` the headers from height N on. What a light client
+/// follows instead of whole blocks.
+pub async fn get_headers(
+    State(state): State<AppState>,
+    Query(query): Query<ChainQuery>,
+) -> Json<Vec<BlockHeader>> {
+    Json(state.node.headers_from(query.from.unwrap_or(0)))
+}
+
+/// A Merkle proof that the confirmed transfer with this signature is in its block.
+pub async fn get_proof(
+    State(state): State<AppState>,
+    Path(signature): Path<String>,
+) -> Result<Json<ProofResponse>, ApiError> {
+    let proof = state
+        .node
+        .prove(&signature)
+        .ok_or_else(|| ApiError::not_found("no block holds a transaction with that signature"))?;
+    Ok(Json(ProofResponse {
+        transaction: proof.transaction,
+        leaf: proof.leaf,
+        proof: proof.steps,
+        header: proof.header,
+        confirmations: proof.confirmations,
+    }))
 }
 
 /// Height, tip, weight and mempool size, without replaying the chain.

@@ -6,6 +6,7 @@ use ed25519_dalek::SigningKey;
 use super::address::Address;
 use super::crypto;
 use super::difficulty::meets_work;
+use super::merkle;
 use super::rules::{ChainRules, Consensus};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
@@ -149,6 +150,9 @@ pub struct Block {
     pub timestamp: DateTime<Utc>,
     pub prev_hash: String,
     pub transactions: Vec<Transaction>,
+    /// The root of the Merkle tree over `transactions`. The hash covers it instead of the
+    /// transactions, so a transaction can be proven to be in the block from its header alone.
+    pub merkle_root: String,
     /// Proof-of-work counter. Always 0 under proof of stake.
     pub nonce: u64,
     pub hash: String,
@@ -265,6 +269,7 @@ impl Block {
             index,
             timestamp,
             prev_hash,
+            merkle_root: merkle::root(&transactions),
             transactions,
             nonce: 0,
             hash: String::new(),
@@ -274,17 +279,37 @@ impl Block {
         }
     }
 
-    /// The hash of every field except `hash` and `signature`.
+    /// The hash of the header: every field except `transactions`, which `merkle_root` stands
+    /// for, `hash` and `signature`.
     pub fn computed_hash(&self) -> String {
-        let txs = serde_json::to_string(&self.transactions).expect("transactions serialize");
-        let ts = self.timestamp.to_rfc3339_opts(SecondsFormat::Nanos, true);
-        let (index, prev, nonce) = (self.index, &self.prev_hash, self.nonce);
-        let mut fields = format!("{index}|{ts}|{prev}|{txs}|{nonce}");
-        for extra in [&self.validator, &self.reveal].into_iter().flatten() {
-            fields.push('|');
-            fields.push_str(extra);
+        header_hash(
+            self.index,
+            &self.timestamp,
+            &self.prev_hash,
+            &self.merkle_root,
+            self.nonce,
+            [&self.validator, &self.reveal],
+        )
+    }
+
+    /// The block without its transactions.
+    pub fn header(&self) -> BlockHeader {
+        BlockHeader {
+            index: self.index,
+            timestamp: self.timestamp,
+            prev_hash: self.prev_hash.clone(),
+            merkle_root: self.merkle_root.clone(),
+            nonce: self.nonce,
+            hash: self.hash.clone(),
+            validator: self.validator.clone(),
+            reveal: self.reveal.clone(),
+            signature: self.signature.clone(),
         }
-        crypto::sha256_hex(fields.as_bytes())
+    }
+
+    /// Whether `merkle_root` is the root of the transactions the block carries.
+    pub fn has_matching_root(&self) -> bool {
+        self.merkle_root == merkle::root(&self.transactions)
     }
 
     /// Whether `signature` is the named validator's signature over `hash`.
@@ -296,4 +321,53 @@ impl Block {
             _ => false,
         }
     }
+}
+
+/// A block without its transactions: enough to check its hash, its proof of work or signature,
+/// and Merkle proofs of what it holds. What a light client keeps instead of whole blocks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockHeader {
+    pub index: u64,
+    pub timestamp: DateTime<Utc>,
+    pub prev_hash: String,
+    pub merkle_root: String,
+    pub nonce: u64,
+    pub hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl BlockHeader {
+    pub fn computed_hash(&self) -> String {
+        header_hash(
+            self.index,
+            &self.timestamp,
+            &self.prev_hash,
+            &self.merkle_root,
+            self.nonce,
+            [&self.validator, &self.reveal],
+        )
+    }
+}
+
+/// `index|timestamp|prev_hash|merkle_root|nonce`, then the validator and reveal if present.
+fn header_hash(
+    index: u64,
+    timestamp: &DateTime<Utc>,
+    prev_hash: &str,
+    merkle_root: &str,
+    nonce: u64,
+    extras: [&Option<String>; 2],
+) -> String {
+    let ts = timestamp.to_rfc3339_opts(SecondsFormat::Nanos, true);
+    let mut fields = format!("{index}|{ts}|{prev_hash}|{merkle_root}|{nonce}");
+    for extra in extras.into_iter().flatten() {
+        fields.push('|');
+        fields.push_str(extra);
+    }
+    crypto::sha256_hex(fields.as_bytes())
 }

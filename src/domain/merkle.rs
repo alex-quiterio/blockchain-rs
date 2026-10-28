@@ -1,0 +1,151 @@
+//! Merkle trees over a block's transactions, after Bitcoin's.
+//!
+//! Each transaction is hashed into a leaf, and neighbouring hashes are hashed together in pairs,
+//! level by level, until one is left: the root. A block's hash covers the root instead of the
+//! transactions themselves, so anyone holding just the block's header can check that a
+//! transaction is in it from a proof: the sibling hash at each level, about log₂(n) of them.
+//!
+//! Two details close known holes. Leaves and inner nodes are hashed with different prefixes, so
+//! an inner node can never pass for a transaction. And an odd hash out moves up a level as it is
+//! instead of being paired with itself, so `[a, b, c]` and `[a, b, c, c]` don't share a root, as
+//! they do in Bitcoin (CVE-2012-2459).
+
+use serde::{Deserialize, Serialize};
+
+use super::block::Transaction;
+use super::crypto;
+
+/// The root of a block with no transactions. Only genesis has none.
+pub const EMPTY_ROOT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Which side of the hash so far a proof's sibling sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// One level of a proof: the hash to combine with, and on which side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Step {
+    pub hash: String,
+    pub side: Side,
+}
+
+/// A transaction's leaf: the hash of its JSON, as blocks store it.
+pub fn leaf(tx: &Transaction) -> String {
+    let json = serde_json::to_string(tx).expect("transactions serialize");
+    crypto::sha256_hex(format!("leaf|{json}").as_bytes())
+}
+
+pub fn root(transactions: &[Transaction]) -> String {
+    let mut level: Vec<String> = transactions.iter().map(leaf).collect();
+    if level.is_empty() {
+        return EMPTY_ROOT.to_string();
+    }
+    while level.len() > 1 {
+        level = parent_level(&level);
+    }
+    level.remove(0)
+}
+
+/// The sibling hashes that lead from the transaction at `index` up to the root.
+pub fn proof(transactions: &[Transaction], mut index: usize) -> Option<Vec<Step>> {
+    if index >= transactions.len() {
+        return None;
+    }
+    let mut level: Vec<String> = transactions.iter().map(leaf).collect();
+    let mut steps = Vec::new();
+    while level.len() > 1 {
+        let sibling = index ^ 1;
+        if let Some(hash) = level.get(sibling) {
+            let side = if sibling < index { Side::Left } else { Side::Right };
+            steps.push(Step { hash: hash.clone(), side });
+        }
+        level = parent_level(&level);
+        index /= 2;
+    }
+    Some(steps)
+}
+
+/// Whether `steps` lead from `leaf` to `root`.
+pub fn verify(leaf: &str, steps: &[Step], root: &str) -> bool {
+    let top = steps.iter().fold(leaf.to_string(), |hash, step| match step.side {
+        Side::Left => node(&step.hash, &hash),
+        Side::Right => node(&hash, &step.hash),
+    });
+    top == root
+}
+
+fn parent_level(level: &[String]) -> Vec<String> {
+    level
+        .chunks(2)
+        .map(|pair| match pair {
+            [left, right] => node(left, right),
+            [odd] => odd.clone(),
+            _ => unreachable!("chunks of two"),
+        })
+        .collect()
+}
+
+fn node(left: &str, right: &str) -> String {
+    crypto::sha256_hex(format!("node|{left}|{right}").as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::address::Address;
+
+    fn txs(n: u64) -> Vec<Transaction> {
+        let to = Address::parse(&crypto::generate_keypair().0).unwrap();
+        (0..n).map(|i| Transaction::coinbase(&to, 50 + i, i)).collect()
+    }
+
+    #[test]
+    fn every_transaction_proves_against_the_root() {
+        for n in 1..=9 {
+            let txs = txs(n);
+            let root = root(&txs);
+            for (i, tx) in txs.iter().enumerate() {
+                let steps = proof(&txs, i).unwrap();
+                assert!(verify(&leaf(tx), &steps, &root), "{i} of {n}");
+                assert!(steps.len() <= (n as f64).log2().ceil() as usize);
+            }
+            assert_eq!(proof(&txs, n as usize), None);
+        }
+    }
+
+    #[test]
+    fn a_proof_fails_for_another_transaction_or_root() {
+        let txs = txs(5);
+        let steps = proof(&txs, 2).unwrap();
+        assert!(!verify(&leaf(&txs[3]), &steps, &root(&txs)));
+        assert!(!verify(&leaf(&txs[2]), &steps, &root(&txs[..4])));
+        let mut flipped = steps.clone();
+        flipped[0].side = Side::Left;
+        assert!(!verify(&leaf(&txs[2]), &flipped, &root(&txs)));
+    }
+
+    #[test]
+    fn any_change_to_the_transactions_changes_the_root() {
+        let txs = txs(3);
+        let original = root(&txs);
+        let mut changed = txs.clone();
+        changed[1].amount += 1;
+        assert_ne!(root(&changed), original);
+        assert_ne!(root(&[txs[1].clone(), txs[0].clone(), txs[2].clone()]), original);
+        let mut padded = txs.clone();
+        padded.push(txs[2].clone());
+        assert_ne!(root(&padded), original, "repeating the odd one out is not free");
+        assert_eq!(root(&[]), EMPTY_ROOT);
+    }
+
+    #[test]
+    fn a_single_transaction_is_its_own_root() {
+        let txs = txs(1);
+        assert_eq!(root(&txs), leaf(&txs[0]));
+        assert_eq!(proof(&txs, 0), Some(vec![]));
+    }
+}

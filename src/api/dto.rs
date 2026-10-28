@@ -3,6 +3,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::block::{BlockHeader, Transaction};
+use crate::domain::merkle::Step;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
     pub address: String,
@@ -156,6 +159,19 @@ pub struct StatusResponse {
     pub weight: String,
     /// Transactions waiting in the mempool.
     pub pending: usize,
+}
+
+/// Evidence that a confirmed transaction is in its block. To check it: hash `transaction` into
+/// `leaf`, combine it with each step's hash on the step's side up to `header.merkle_root`, and
+/// check that `header.hash` is the hash of the header and belongs to a chain you trust.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProofResponse {
+    pub transaction: Transaction,
+    pub leaf: String,
+    pub proof: Vec<Step>,
+    pub header: BlockHeader,
+    /// Blocks on top of it, counting its own.
+    pub confirmations: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

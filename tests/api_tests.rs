@@ -10,7 +10,10 @@ use tower::ServiceExt;
 use blockchain::api::{router, AppState};
 use std::sync::Arc;
 
+use blockchain::api::dto::ProofResponse;
 use blockchain::application::{Network, NodeService};
+use blockchain::domain::block::BlockHeader;
+use blockchain::domain::merkle;
 use blockchain::domain::rules::ChainRules;
 use blockchain::infrastructure::{HttpPeerClient, InMemoryRepository};
 
@@ -255,4 +258,39 @@ async fn forging_with_a_key_that_never_leaves_the_client() {
     assert_eq!(status, StatusCode::CONFLICT, "the same block again is stale");
     let (_, balance) = call(&app, "GET", &format!("/balances/{address}"), None).await;
     assert_eq!(balance["balance"], 50);
+}
+
+#[tokio::test]
+async fn a_light_client_checks_a_transfer_from_headers_and_a_proof() {
+    let app = app();
+    let (_, alice) = call(&app, "POST", "/wallets", None).await;
+    let (_, bob) = call(&app, "POST", "/wallets", None).await;
+    call(&app, "POST", "/mine", Some(json!({ "miner": alice["address"] }))).await;
+    let mut signatures = Vec::new();
+    for amount in 1..=3 {
+        let request =
+            json!({ "secret_key": alice["secret_key"], "to": bob["address"], "amount": amount });
+        let (_, tx) = call(&app, "POST", "/transactions/sign", Some(request)).await;
+        call(&app, "POST", "/transactions", Some(tx.clone())).await;
+        signatures.push(tx["signature"].as_str().unwrap().to_string());
+    }
+    let uri = format!("/transactions/{}/proof", signatures[1]);
+    let (status, _) = call(&app, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "still waiting in the mempool");
+    call(&app, "POST", "/mine", Some(json!({ "miner": alice["address"] }))).await;
+
+    let (status, body) = call(&app, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let proof: ProofResponse = serde_json::from_value(body).unwrap();
+    assert_eq!(proof.transaction.amount, 2);
+    assert_eq!(proof.leaf, merkle::leaf(&proof.transaction));
+    assert!(merkle::verify(&proof.leaf, &proof.proof, &proof.header.merkle_root));
+
+    // The light client holds only headers, and the proof's header is one of them.
+    let (_, headers) = call(&app, "GET", "/headers", None).await;
+    let headers: Vec<BlockHeader> = serde_json::from_value(headers).unwrap();
+    assert_eq!(headers.len(), 3);
+    assert!(headers.iter().all(|h| h.hash == h.computed_hash()));
+    assert!(headers.windows(2).all(|pair| pair[1].prev_hash == pair[0].hash));
+    assert_eq!(headers[2], proof.header);
 }

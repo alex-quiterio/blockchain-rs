@@ -5,10 +5,11 @@ use std::sync::Mutex;
 use ed25519_dalek::SigningKey;
 
 use crate::domain::address::Address;
-use crate::domain::block::{Block, Transaction};
+use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::{Blockchain, Extension};
 use crate::domain::error::ChainError;
 use crate::domain::ledger::ValidatorState;
+use crate::domain::merkle;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 use crate::domain::weight::ChainWeight;
@@ -60,6 +61,17 @@ pub struct Account {
     pub commitment_due: Option<u64>,
 }
 
+/// Evidence that a transaction is in a block: its leaf, the sibling hashes up to the block's
+/// Merkle root, and the block's header, whose hash covers the root.
+pub struct TransactionProof {
+    pub transaction: Transaction,
+    pub leaf: String,
+    pub steps: Vec<merkle::Step>,
+    pub header: BlockHeader,
+    /// Blocks on top of it, counting its own.
+    pub confirmations: u64,
+}
+
 /// How the chain picks its next block, as of now.
 pub struct ConsensusState {
     pub rules: ChainRules,
@@ -104,6 +116,27 @@ impl NodeService {
     pub fn blocks_from(&self, height: usize) -> Vec<Block> {
         let chain = self.chain.lock().unwrap();
         chain.blocks().get(height..).unwrap_or_default().to_vec()
+    }
+
+    /// The headers from `height` on: everything a light client needs to follow the chain.
+    pub fn headers_from(&self, height: usize) -> Vec<BlockHeader> {
+        let chain = self.chain.lock().unwrap();
+        chain.blocks().get(height..).unwrap_or_default().iter().map(Block::header).collect()
+    }
+
+    /// Proves that the confirmed transfer signed `signature` is in its block, or `None` if no
+    /// block holds it.
+    pub fn prove(&self, signature: &str) -> Option<TransactionProof> {
+        let chain = self.chain.lock().unwrap();
+        let (block, position) = chain.find_transaction(signature)?;
+        let transaction = block.transactions[position].clone();
+        Some(TransactionProof {
+            leaf: merkle::leaf(&transaction),
+            steps: merkle::proof(&block.transactions, position)?,
+            header: block.header(),
+            confirmations: chain.tip().index - block.index + 1,
+            transaction,
+        })
     }
 
     /// Where the chain stands, without replaying it: cheap enough to poll every second.
@@ -369,6 +402,32 @@ mod tests {
             Err(NodeError::Chain(ChainError::StaleBlock))
         ));
         assert_eq!(node.blocks().len(), 1);
+    }
+
+    #[test]
+    fn a_confirmed_transfer_can_be_proven_from_its_header() {
+        let node = node(InMemoryRepository::default());
+        let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
+        let alice = Address::of(&key);
+        node.mine(&alice).unwrap();
+        let mut payments = Vec::new();
+        for nonce in 0..5 {
+            let tx = Transaction::signed(&key, new_address().as_str(), 1, nonce, 0);
+            node.submit(tx.clone()).unwrap();
+            payments.push(tx);
+        }
+        assert!(node.prove(&payments[3].signature).is_none(), "not in a block yet");
+        node.mine(&alice).unwrap();
+        node.mine(&alice).unwrap();
+
+        let proof = node.prove(&payments[3].signature).unwrap();
+        assert_eq!(proof.transaction, payments[3]);
+        assert_eq!((proof.header.index, proof.confirmations), (2, 2));
+        assert_eq!(proof.header.hash, proof.header.computed_hash());
+        assert_eq!(proof.header, node.headers_from(2)[0]);
+        assert_eq!(proof.leaf, merkle::leaf(&payments[3]));
+        assert!(merkle::verify(&proof.leaf, &proof.steps, &proof.header.merkle_root));
+        assert!(node.prove("").is_none(), "block rewards have no signature to look up");
     }
 
     #[test]
