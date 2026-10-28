@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::{Network, NodeService};
-use blockchain::domain::rules::ChainRules;
+use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_REORG_DEPTH};
 use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
@@ -25,13 +25,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("pos") => ChainRules::proof_of_stake(reward),
         Ok("pow") | Err(_) => ChainRules::proof_of_work(env_or("DIFFICULTY", 4), reward),
         Ok(other) => return Err(format!("CONSENSUS must be pow or pos, not {other}").into()),
-    };
+    }
+    .with_max_reorg_depth(env_or("MAX_REORG_DEPTH", DEFAULT_MAX_REORG_DEPTH));
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let chain_file = std::env::var("CHAIN_FILE").unwrap_or_else(|_| DEFAULT_CHAIN_FILE.to_string());
 
     let repository = Box::new(JsonFileRepository::new(&chain_file));
     let node = NodeService::open(repository, rules).map_err(|e| format!("{chain_file}: {e}"))?;
-    tracing::info!("Loaded {} blocks from {chain_file}", node.validity().1);
+    tracing::info!("Loaded {} blocks from {chain_file}", node.status().length);
     let public_url = std::env::var("PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}"));
     let network = Network::new(Arc::new(node), Box::new(HttpPeerClient::new()), Some(public_url));
     let state = AppState::new(network);
@@ -61,7 +62,7 @@ async fn keep_in_sync(network: Arc<Network>, peers: String, every: Duration) {
         ticker.tick().await;
         let report = network.sync().await;
         if let Some(peer) = report.adopted_from {
-            tracing::info!("Adopted the longer chain from {peer} ({} blocks)", report.length);
+            tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
             network.broadcast_chain().await;
         }
     }

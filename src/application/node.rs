@@ -9,6 +9,7 @@ use crate::domain::chain::Blockchain;
 use crate::domain::error::ChainError;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
+use crate::domain::weight::ChainWeight;
 
 #[derive(Debug)]
 pub enum NodeError {
@@ -33,6 +34,12 @@ impl From<ChainError> for NodeError {
     fn from(err: ChainError) -> Self {
         Self::Chain(err)
     }
+}
+
+pub struct ChainStatus {
+    pub valid: bool,
+    pub length: usize,
+    pub weight: ChainWeight,
 }
 
 pub struct Account {
@@ -75,10 +82,14 @@ impl NodeService {
         self.chain.lock().unwrap().blocks().to_vec()
     }
 
-    /// Whether the chain replays cleanly, and its length.
-    pub fn validity(&self) -> (bool, usize) {
+    /// Whether the chain replays cleanly, how long it is and what it weighs in a fork.
+    pub fn status(&self) -> ChainStatus {
         let chain = self.chain.lock().unwrap();
-        (chain.is_valid(), chain.blocks().len())
+        ChainStatus {
+            valid: chain.is_valid(),
+            length: chain.blocks().len(),
+            weight: chain.weight(),
+        }
     }
 
     pub fn account(&self, address: &Address) -> Account {
@@ -123,9 +134,9 @@ impl NodeService {
     }
 
     /// Offers another node's chain. Returns whether it was adopted and the length afterwards.
-    pub fn adopt_if_longer(&self, blocks: Vec<Block>) -> Result<(bool, usize), NodeError> {
+    pub fn adopt_if_heavier(&self, blocks: Vec<Block>) -> Result<(bool, usize), NodeError> {
         self.commit(|chain| {
-            let adopted = chain.adopt_if_longer(blocks)?;
+            let adopted = chain.adopt_if_heavier(blocks)?;
             Ok((adopted, chain.blocks().len()))
         })
     }
@@ -237,14 +248,18 @@ mod tests {
     }
 
     #[test]
-    fn adopting_a_longer_chain_saves_it() {
+    fn adopting_a_heavier_chain_saves_it() {
         let repo = SharedRepository::default();
         let ours = node(repo.clone());
         let theirs = node(InMemoryRepository::default());
         theirs.mine(&new_address()).unwrap();
 
-        assert_eq!(ours.adopt_if_longer(theirs.blocks()).unwrap(), (true, 2));
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks()).unwrap(), (true, 2));
         assert_eq!(repo.load().unwrap().unwrap(), theirs.blocks());
-        assert_eq!(ours.adopt_if_longer(vec![]).unwrap(), (false, 2));
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks()[..1].to_vec()).unwrap(), (false, 2));
+        assert!(matches!(
+            ours.adopt_if_heavier(vec![]),
+            Err(NodeError::Chain(ChainError::InvalidChain))
+        ));
     }
 }

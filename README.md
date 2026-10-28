@@ -26,7 +26,7 @@ Proof of work *or* proof of stake · signed transfers with optional fees · peer
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake and seeded by the previous hash, then signs the block. |
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
 | 🌐 **Peers & sync** | Nodes introduce themselves both ways, gossip new blocks and transactions, and pull from each other every few seconds. |
-| 🏆 **Longest chain wins** | A valid, longer chain replaces yours. Transfers that dropped out go back to the mempool. |
+| 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
 | 💾 **Storage** | The chain is saved to JSON with atomic writes and fully replayed on startup, so a tampered file is refused. |
 | 🔍 **Validation** | Replays everything: links, hashes, work or signatures, rewards, fees, nonces, balances and stakes. |
 
@@ -75,6 +75,7 @@ Mine on `:3002` and the block shows up on `:3000`, two hops away, within seconds
 | `PEERS` | none | Comma-separated peer URLs to join on startup. |
 | `PUBLIC_URL` | `http://$BIND_ADDR` | How peers should reach this node. |
 | `SYNC_SECS` | `5` | How often to pull from peers. |
+| `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. |
 
 A saved chain only loads under the rules it was made with. Delete the file to start over.
 
@@ -88,7 +89,7 @@ flowchart LR
     B -- "⛏️ proof of work:<br/>find a hash with N zeros" --> C[(Chain)]
     B -- "🪙 proof of stake:<br/>selected validator signs" --> C
     C -- gossip & sync --> P[Peers]
-    P -- longer valid chain --> C
+    P -- heavier valid chain --> C
 ```
 
 Every block stores the hash of the one before it, so changing an old block breaks every block after it:
@@ -97,6 +98,15 @@ Every block stores the hash of the one before it, so changing an old block break
 flowchart RL
     B3["Block 3<br/>prev = hash(2)"] --> B2["Block 2<br/>prev = hash(1)"] --> B1["Block 1<br/>prev = hash(0)"] --> G["Genesis"]
 ```
+
+When forks compete, a node keeps the **heaviest** valid chain, not the longest:
+
+| Consensus | One block weighs | Why |
+| --- | --- | --- |
+| ⛏️ Proof of work | 16^difficulty | The hashes it takes on average to find, so the fork with the most work wins. |
+| 🪙 Proof of stake | its validator's stake (at least 1) | A short fork forged by real stakers outweighs a long one nobody staked on. |
+
+Exact ties go to the lower tip hash, so two nodes on equal forks always pick the same one. And no fork may undo more than `MAX_REORG_DEPTH` blocks, however heavy it is, so old history can't be rewritten.
 
 The first transaction in each block is the **payout**: the reward plus the block's fees, to whoever mined or forged it. Validation checks that sum.
 
@@ -113,9 +123,10 @@ flowchart TB
 ```
 
 - **`domain/`** has the rules and no I/O.
-  - `chain.rs`: the `Blockchain` aggregate root, which mines, forges, validates and runs `adopt_if_longer`
+  - `chain.rs`: the `Blockchain` aggregate root, which mines, forges, validates and runs `adopt_if_heavier`
   - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself
   - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
+  - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
   - `mempool.rs`, `ledger.rs`: pending transactions, and the balances, stakes and nonces
   - `address.rs`: a value object that can only hold a valid public key
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port
@@ -138,8 +149,8 @@ flowchart TB
 | POST | `/forge` | Proof of stake: `{secret_key}` of the selected validator. |
 | GET | `/consensus` | Rules, stakes and whose turn it is next. |
 | GET | `/chain` | Every block. |
-| POST | `/chain` | Offer a chain: adopted if valid and longer. |
-| GET | `/chain/valid` | `{valid, length}` after a full replay. |
+| POST | `/chain` | Offer a chain: adopted if valid and heavier. `409` if it would undo too many blocks. |
+| GET | `/chain/valid` | `{valid, length, weight}` after a full replay. |
 | GET · POST | `/peers` | List peers, or add one with `{url}`. |
 | POST | `/sync` | Pull from every peer now. |
 | GET | `/node` | Version and git commit of the running node. |
@@ -163,4 +174,3 @@ CI runs `fmt`, `clippy -D warnings` and the tests on every push and pull request
 - Adjusting the difficulty over time
 - Block size limits, so fees decide what gets in first
 - Slashing validators who sign two blocks at the same height
-- Choosing between forks by total work or stake instead of length

@@ -79,7 +79,7 @@ async fn full_round_trip() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     let (_, validity) = call(&app, "GET", "/chain/valid", None).await;
-    assert_eq!(validity, json!({ "valid": true, "length": 3 }));
+    assert_eq!(validity, json!({ "valid": true, "length": 3, "weight": "512" }));
 }
 
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn rejects_bad_addresses() {
 }
 
 #[tokio::test]
-async fn nodes_settle_on_the_longest_chain() {
+async fn nodes_settle_on_the_heaviest_chain() {
     let (ours, theirs) = (app(), app());
     let (_, miner) = call(&ours, "POST", "/wallets", None).await;
     let miner = json!({ "miner": miner["address"] });
@@ -134,7 +134,7 @@ async fn nodes_settle_on_the_longest_chain() {
 }
 
 #[tokio::test]
-async fn refuses_a_forged_longer_chain() {
+async fn refuses_a_forged_heavier_chain() {
     let (ours, theirs) = (app(), app());
     let (_, miner) = call(&ours, "POST", "/wallets", None).await;
     let miner = json!({ "miner": miner["address"] });
@@ -190,4 +190,23 @@ async fn proof_of_stake_round_trip() {
     let (_, balance) =
         call(&app, "GET", &format!("/balances/{}", bob["address"].as_str().unwrap()), None).await;
     assert_eq!(balance["balance"], 52, "bob forged the block holding alice's fee");
+}
+
+#[tokio::test]
+async fn refuses_to_rewrite_history_deeper_than_allowed() {
+    let rules = ChainRules::proof_of_work(2, 50).with_max_reorg_depth(1);
+    let (ours, theirs) = (app_with(rules), app_with(rules));
+    let (_, miner) = call(&ours, "POST", "/wallets", None).await;
+    let miner = json!({ "miner": miner["address"] });
+    for _ in 0..2 {
+        call(&ours, "POST", "/mine", Some(miner.clone())).await;
+    }
+    for _ in 0..4 {
+        call(&theirs, "POST", "/mine", Some(miner.clone())).await;
+    }
+
+    let (_, chain) = call(&theirs, "GET", "/chain", None).await;
+    let (status, body) = call(&ours, "POST", "/chain", Some(chain)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["message"], "switching forks would undo 2 blocks; at most 1 may be undone");
 }

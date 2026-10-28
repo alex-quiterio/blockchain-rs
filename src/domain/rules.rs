@@ -19,15 +19,32 @@ pub struct ChainRules {
     pub consensus: Consensus,
     /// Coins paid to whoever adds a block.
     pub reward: u64,
+    /// The most of its own blocks a node will throw away to switch forks. Anything deeper is
+    /// treated as an attack rewriting old history, however heavy the other fork is.
+    pub max_reorg_depth: u64,
 }
+
+pub const DEFAULT_MAX_REORG_DEPTH: u64 = 64;
 
 impl ChainRules {
     pub const fn proof_of_work(difficulty: usize, reward: u64) -> Self {
-        Self { consensus: Consensus::ProofOfWork { difficulty }, reward }
+        Self {
+            consensus: Consensus::ProofOfWork { difficulty },
+            reward,
+            max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
+        }
     }
 
     pub const fn proof_of_stake(reward: u64) -> Self {
-        Self { consensus: Consensus::ProofOfStake, reward }
+        Self {
+            consensus: Consensus::ProofOfStake,
+            reward,
+            max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
+        }
+    }
+
+    pub const fn with_max_reorg_depth(self, max_reorg_depth: u64) -> Self {
+        Self { max_reorg_depth, ..self }
     }
 
     pub fn is_proof_of_stake(&self) -> bool {

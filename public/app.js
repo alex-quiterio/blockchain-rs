@@ -257,7 +257,7 @@ function renderProducer() {
   $("producer").replaceChildren(form, explain("How does proof of work work?",
     `The miner bundles the mempool and a payout to themselves into a block, then hashes it again and again, changing the <code>nonce</code> each time.`,
     `The block counts only once its hash starts with <code>${"0".repeat(d)}</code>. That takes about ${fmt(16 ** d)} tries, so rewriting history means redoing all that work.`,
-    `When two nodes disagree, the longest valid chain wins, since it has the most work behind it.`));
+    `When forks disagree, the chain with the most total work wins. Exact ties go to the lower tip hash, so every node picks the same one.`));
 }
 
 function renderForge() {
@@ -301,7 +301,8 @@ function renderForge() {
     `Validators lock coins by sending them to <code>stake</code>. Locked coins can't be spent until they're unstaked.`,
     `For each block, one validator is drawn at random, weighted by stake. The previous block's hash seeds the draw, so every node picks the same one.`,
     `That validator signs the block instead of doing work. Anyone can check the signature, and a block from the wrong validator is rejected.`,
-    `The validator earns the reward plus the block's fees, so more stake means more turns and more income.`));
+    `The validator earns the reward plus the block's fees, so more stake means more turns and more income.`,
+    `When forks disagree, the one with the most stake behind its blocks wins, not the longest. A long chain nobody staked on can't outweigh a short one backed by real stake.`));
   $("producer").replaceChildren(...children);
 }
 
@@ -461,8 +462,8 @@ $("sync").onclick = (e) =>
   busy(e.target, async () => {
     const report = await api("POST", "/sync");
     toast(report.adopted_from
-      ? `Adopted the longer chain from ${report.adopted_from}`
-      : `Reached ${report.reached} peer${report.reached === 1 ? "" : "s"}. This chain is already the longest.`);
+      ? `Adopted the heavier chain from ${report.adopted_from}`
+      : `Reached ${report.reached} peer${report.reached === 1 ? "" : "s"}. This chain is already the heaviest.`);
   });
 
 $("wallet-form").onsubmit = (e) => {

@@ -30,14 +30,14 @@ pub struct PeerStatus {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
-    /// The peer whose longer chain was adopted, if any.
+    /// The peer whose heavier chain was adopted, if any.
     pub adopted_from: Option<String>,
     pub reached: usize,
     pub length: usize,
 }
 
 /// The other nodes this one keeps in step with: it pulls their chains and mempools, adopts the
-/// longest valid chain, and gossips its own new blocks and transactions.
+/// heaviest valid chain, and gossips its own new blocks and transactions.
 pub struct Network {
     node: Arc<NodeService>,
     client: Box<dyn PeerClient>,
@@ -79,7 +79,7 @@ impl Network {
         Ok(added)
     }
 
-    /// Pulls every peer's chain and mempool once. Adopts the longest valid chain on offer and
+    /// Pulls every peer's chain and mempool once. Adopts the heaviest valid chain on offer and
     /// queues any of their pending transactions that are valid here.
     pub async fn sync(&self) -> SyncReport {
         let mut report = SyncReport::default();
@@ -88,7 +88,7 @@ impl Network {
                 Ok(blocks) => {
                     report.reached += 1;
                     let height = blocks.len();
-                    if let Ok((true, _)) = self.node.adopt_if_longer(blocks) {
+                    if let Ok((true, _)) = self.node.adopt_if_heavier(blocks) {
                         report.adopted_from = Some(url.clone());
                     }
                     for tx in self.client.pending(&url).await.unwrap_or_default() {
@@ -100,7 +100,7 @@ impl Network {
             };
             self.peers.lock().unwrap().insert(url, status);
         }
-        report.length = self.node.validity().1;
+        report.length = self.node.status().length;
         report
     }
 
@@ -175,7 +175,7 @@ mod tests {
             Box::pin(async move {
                 self.get(peer)?
                     .node()
-                    .adopt_if_longer(blocks.to_vec())
+                    .adopt_if_heavier(blocks.to_vec())
                     .map_err(|e| e.to_string())?;
                 Ok(())
             })
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_adopts_the_longest_chain_and_pending_transactions() {
+    async fn sync_adopts_the_heaviest_chain_and_pending_transactions() {
         let mesh = Mesh::default();
         let a = mesh.join("http://a");
         let b = mesh.join("http://b");

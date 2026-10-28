@@ -9,3 +9,4 @@ pub mod ledger;
 pub mod mempool;
 pub mod repository;
 pub mod rules;
+pub mod weight;

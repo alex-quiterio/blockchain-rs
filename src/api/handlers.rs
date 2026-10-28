@@ -38,7 +38,9 @@ impl From<ChainError> for ApiError {
             | ChainError::BadNonce { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             ChainError::BadSignature => StatusCode::UNAUTHORIZED,
             ChainError::NotYourTurn { .. } => StatusCode::FORBIDDEN,
-            ChainError::NotProofOfWork | ChainError::NotProofOfStake => StatusCode::CONFLICT,
+            ChainError::NotProofOfWork
+            | ChainError::NotProofOfStake
+            | ChainError::ReorgTooDeep { .. } => StatusCode::CONFLICT,
             _ => StatusCode::BAD_REQUEST,
         };
         Self { status, message: err.to_string() }
@@ -66,13 +68,13 @@ pub async fn get_chain(State(state): State<AppState>) -> Json<Vec<Block>> {
     Json(state.node.blocks())
 }
 
-/// Offers this node another node's chain. It's adopted only if it is valid and longer.
+/// Offers this node another node's chain. It's adopted only if it is valid and heavier.
 pub async fn replace_chain(
     State(state): State<AppState>,
     Json(blocks): Json<Vec<Block>>,
 ) -> Result<Json<ReplaceResponse>, ApiError> {
     let node = state.node.clone();
-    let (replaced, length) = tokio::task::spawn_blocking(move || node.adopt_if_longer(blocks))
+    let (replaced, length) = tokio::task::spawn_blocking(move || node.adopt_if_heavier(blocks))
         .await
         .expect("replace task panicked")?;
     if replaced {
@@ -82,8 +84,12 @@ pub async fn replace_chain(
 }
 
 pub async fn get_validity(State(state): State<AppState>) -> Json<ValidityResponse> {
-    let (valid, length) = state.node.validity();
-    Json(ValidityResponse { valid, length })
+    let status = state.node.status();
+    Json(ValidityResponse {
+        valid: status.valid,
+        length: status.length,
+        weight: status.weight.to_string(),
+    })
 }
 
 pub async fn create_wallet() -> (StatusCode, Json<WalletResponse>) {

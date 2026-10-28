@@ -4,4 +4,4 @@ pub mod network;
 mod node;
 
 pub use network::{Network, PeerClient, PeerStatus, SyncReport};
-pub use node::{Account, ConsensusState, NodeError, NodeService};
+pub use node::{Account, ChainStatus, ConsensusState, NodeError, NodeService};

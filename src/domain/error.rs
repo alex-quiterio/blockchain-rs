@@ -28,6 +28,11 @@ pub enum ChainError {
     NotYourTurn {
         expected: String,
     },
+    /// A heavier fork would throw away more of our blocks than the rules allow.
+    ReorgTooDeep {
+        depth: usize,
+        max: u64,
+    },
 }
 
 impl fmt::Display for ChainError {
@@ -48,6 +53,9 @@ impl fmt::Display for ChainError {
             Self::NotProofOfWork => write!(f, "this chain uses proof of stake: forge, don't mine"),
             Self::NotProofOfStake => write!(f, "this chain uses proof of work: mine, don't forge"),
             Self::NotYourTurn { expected } => write!(f, "the next block is {expected}'s to forge"),
+            Self::ReorgTooDeep { depth, max } => {
+                write!(f, "switching forks would undo {depth} blocks; at most {max} may be undone")
+            }
         }
     }
 }

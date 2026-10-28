@@ -77,7 +77,7 @@
           <summary>How do nodes stay in step?</summary>
           <ol>
             <li>Adding a peer links both ways: this node introduces itself back.</li>
-            <li>Every few seconds each node pulls its peers' chains and adopts the longest valid one, then pulls their pending transactions.</li>
+            <li>Every few seconds each node pulls its peers' chains and adopts the heaviest valid one (most work, or most stake behind it), then pulls their pending transactions.</li>
             <li>New blocks and transactions are also pushed to peers straight away. A copy that's already known fails its nonce check, so gossip never loops.</li>
           </ol>
         </details>

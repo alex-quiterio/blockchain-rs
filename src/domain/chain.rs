@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 
@@ -8,6 +10,7 @@ use super::error::ChainError;
 use super::ledger::Ledger;
 use super::mempool::Mempool;
 use super::rules::{meets_difficulty, select_validator, ChainRules, Consensus};
+use super::weight::ChainWeight;
 
 /// The aggregate root: confirmed blocks, the mempool and the ledger they produce.
 /// Every change goes through its methods, so the three never disagree.
@@ -17,6 +20,8 @@ pub struct Blockchain {
     mempool: Mempool,
     /// State after every confirmed block.
     ledger: Ledger,
+    /// What the blocks are worth when forks compete.
+    weight: ChainWeight,
     rules: ChainRules,
 }
 
@@ -26,14 +31,15 @@ impl Blockchain {
             blocks: vec![Block::genesis(&rules)],
             mempool: Mempool::default(),
             ledger: Ledger::default(),
+            weight: ChainWeight::ZERO,
             rules,
         }
     }
 
     /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
     pub fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
-        let ledger = replay(&blocks, &rules).ok_or(ChainError::InvalidChain)?;
-        Ok(Self { blocks, mempool: Mempool::default(), ledger, rules })
+        let (ledger, weight) = replay(&blocks, &rules).ok_or(ChainError::InvalidChain)?;
+        Ok(Self { blocks, mempool: Mempool::default(), ledger, weight, rules })
     }
 
     pub fn rules(&self) -> ChainRules {
@@ -42,6 +48,10 @@ impl Blockchain {
 
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
+    }
+
+    pub fn weight(&self) -> ChainWeight {
+        self.weight
     }
 
     pub fn tip(&self) -> &Block {
@@ -127,18 +137,25 @@ impl Blockchain {
 
         let prev_hash = self.tip().hash.clone();
         self.blocks.push(seal(index, Utc::now(), prev_hash, transactions));
+        self.weight = self.weight.with_block(&self.rules, self.ledger.staked(producer.as_str()));
         self.mempool.clear();
         self.ledger = ledger;
         Ok(self.tip())
     }
 
-    /// The longest-chain rule: adopts `blocks` if it is valid and longer than ours.
-    /// Transfers from our blocks that `blocks` drops go back to the mempool if they still apply.
-    pub fn adopt_if_longer(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
-        if blocks.len() <= self.blocks.len() {
+    /// The fork-choice rule: adopts `blocks` if they form a valid chain heavier than ours. Exact
+    /// ties go to the lower tip hash, so every node settles on the same fork. Never undoes more
+    /// than `max_reorg_depth` of our blocks. Transfers from our blocks that `blocks` drops go back
+    /// to the mempool if they still apply.
+    pub fn adopt_if_heavier(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
+        if blocks.last().is_some_and(|tip| tip.hash == self.tip().hash) {
             return Ok(false);
         }
-        let ledger = replay(&blocks, &self.rules).ok_or(ChainError::InvalidChain)?;
+        let (ledger, weight) = replay(&blocks, &self.rules).ok_or(ChainError::InvalidChain)?;
+        let theirs = (weight, Reverse(&blocks.last().expect("replay refuses empty chains").hash));
+        if theirs <= (self.weight, Reverse(&self.tip().hash)) {
+            return Ok(false);
+        }
 
         let shared = self
             .blocks
@@ -146,6 +163,10 @@ impl Blockchain {
             .zip(&blocks)
             .take_while(|(ours, theirs)| ours.hash == theirs.hash)
             .count();
+        let depth = self.blocks.len() - shared;
+        if depth as u64 > self.rules.max_reorg_depth {
+            return Err(ChainError::ReorgTooDeep { depth, max: self.rules.max_reorg_depth });
+        }
         let orphaned: Vec<Transaction> = self.blocks[shared..]
             .iter()
             .flat_map(|block| block.transactions.iter().skip(1))
@@ -156,6 +177,7 @@ impl Blockchain {
         self.mempool = Mempool::rebuilt(orphaned, &ledger);
         self.blocks = blocks;
         self.ledger = ledger;
+        self.weight = weight;
         Ok(true)
     }
 
@@ -169,8 +191,9 @@ pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
     replay(blocks, rules).is_some()
 }
 
-/// Checks every block in order and returns the resulting ledger, or `None` if any check fails.
-fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Ledger> {
+/// Checks every block in order and returns the resulting ledger and the chain's weight, or `None`
+/// if any check fails.
+fn replay(blocks: &[Block], rules: &ChainRules) -> Option<(Ledger, ChainWeight)> {
     let genesis = blocks.first()?;
     if genesis.index != 0
         || genesis.prev_hash != "0".repeat(64)
@@ -182,6 +205,7 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Ledger> {
         return None;
     }
     let mut ledger = Ledger::default();
+    let mut weight = ChainWeight::ZERO;
     for (prev, block) in blocks.iter().zip(&blocks[1..]) {
         if block.index != prev.index + 1
             || block.prev_hash != prev.hash
@@ -200,12 +224,13 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Ledger> {
         {
             return None;
         }
+        weight = weight.with_block(rules, ledger.staked(&coinbase.to));
         ledger.credit(&coinbase.to, coinbase.amount);
         if transfers.iter().any(|tx| ledger.apply_transfer(tx).is_err()) {
             return None;
         }
     }
-    Some(ledger)
+    Some((ledger, weight))
 }
 
 /// Genesis is never signed. Under proof of work it still needs the work.
@@ -386,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn adopt_adopts_a_longer_valid_chain() {
+    fn adopt_takes_a_heavier_valid_chain() {
         let mut ours = chain();
         let mut theirs = chain();
         let (alice, _) = wallet();
@@ -395,7 +420,7 @@ mod tests {
         theirs.mine(&bob).unwrap();
         theirs.mine(&bob).unwrap();
 
-        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.blocks(), theirs.blocks());
         assert_eq!(ours.balance(&alice), 0);
         assert_eq!(ours.balance(&bob), 100);
@@ -403,16 +428,66 @@ mod tests {
     }
 
     #[test]
-    fn adopt_keeps_ours_when_theirs_is_not_longer() {
+    fn adopt_keeps_ours_against_a_lighter_or_identical_chain() {
         let mut ours = chain();
-        let mut theirs = chain();
         ours.mine(&wallet().0).unwrap();
-        theirs.mine(&wallet().0).unwrap();
+        ours.mine(&wallet().0).unwrap();
         let before = ours.blocks().to_vec();
 
-        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(false));
-        assert_eq!(ours.adopt_if_longer(vec![theirs.blocks()[0].clone()]), Ok(false));
+        assert_eq!(ours.adopt_if_heavier(before[..2].to_vec()), Ok(false));
+        assert_eq!(ours.adopt_if_heavier(before.clone()), Ok(false));
         assert_eq!(ours.blocks(), before);
+    }
+
+    #[test]
+    fn weight_grows_with_every_block() {
+        let mut chain = chain();
+        assert_eq!(chain.weight(), ChainWeight::ZERO, "genesis weighs nothing");
+        chain.mine(&wallet().0).unwrap();
+        chain.mine(&wallet().0).unwrap();
+        assert_eq!(chain.weight().value(), 2 * 256);
+        let restored = Blockchain::restore(chain.blocks().to_vec(), RULES).unwrap();
+        assert_eq!(restored.weight(), chain.weight());
+    }
+
+    #[test]
+    fn equal_forks_settle_on_the_lower_tip_hash_from_either_side() {
+        let mut a = chain();
+        let mut b = chain();
+        a.mine(&wallet().0).unwrap();
+        b.mine(&wallet().0).unwrap();
+        assert_eq!(a.weight(), b.weight());
+
+        let winner = if a.tip().hash < b.tip().hash { a.blocks() } else { b.blocks() }.to_vec();
+        let a_switched = a.adopt_if_heavier(b.blocks().to_vec()).unwrap();
+        let b_switched = b.adopt_if_heavier(winner.clone()).unwrap();
+        assert_ne!(a_switched, b_switched, "exactly one side gives way");
+        assert_eq!(a.blocks(), winner);
+        assert_eq!(b.blocks(), winner);
+    }
+
+    #[test]
+    fn a_deep_reorg_is_refused_however_heavy() {
+        let rules = RULES.with_max_reorg_depth(2);
+        let mut ours = Blockchain::new(rules);
+        let mut theirs = Blockchain::new(rules);
+        for _ in 0..3 {
+            ours.mine(&wallet().0).unwrap();
+        }
+        for _ in 0..5 {
+            theirs.mine(&wallet().0).unwrap();
+        }
+        assert_eq!(
+            ours.adopt_if_heavier(theirs.blocks().to_vec()),
+            Err(ChainError::ReorgTooDeep { depth: 3, max: 2 })
+        );
+
+        let mut shallow = Blockchain::new(rules);
+        shallow.adopt_if_heavier(ours.blocks()[..2].to_vec()).unwrap();
+        shallow.mine(&wallet().0).unwrap();
+        shallow.mine(&wallet().0).unwrap();
+        shallow.mine(&wallet().0).unwrap();
+        assert_eq!(ours.adopt_if_heavier(shallow.blocks().to_vec()), Ok(true), "undoes only 2");
     }
 
     #[test]
@@ -426,7 +501,7 @@ mod tests {
         let mut forged = theirs.blocks().to_vec();
         forged[2].transactions[0].amount = 1_000;
 
-        assert_eq!(ours.adopt_if_longer(forged), Err(ChainError::InvalidChain));
+        assert_eq!(ours.adopt_if_heavier(forged), Err(ChainError::InvalidChain));
         assert_eq!(ours.balance(&alice), 50);
     }
 
@@ -438,14 +513,14 @@ mod tests {
         ours.mine(&alice).unwrap();
         let mut theirs = ours.clone();
 
-        // Our fork confirms Alice's payment; their longer fork never saw it.
+        // Our fork confirms Alice's payment; their heavier fork never saw it.
         let payment = transfer(&alice_key, &bob, 20, 0);
         ours.submit(payment.clone()).unwrap();
         ours.mine(&alice).unwrap();
         theirs.mine(&bob).unwrap();
         theirs.mine(&bob).unwrap();
 
-        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.pending(), [payment]);
         assert_eq!(ours.balance(&alice), 50);
         assert_eq!(ours.next_nonce(&alice), 1);
@@ -465,7 +540,7 @@ mod tests {
         theirs.mine(&bob).unwrap();
         theirs.mine(&bob).unwrap();
 
-        assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert!(ours.pending().is_empty());
         assert_eq!(ours.balance(&bob), 120);
     }
@@ -576,6 +651,30 @@ mod tests {
         let reward = Transaction::coinbase(&Address::of(&bob_key), 50, 3);
         blocks.push(Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key));
         assert!(!validate_blocks(&blocks, &POS));
+    }
+
+    #[test]
+    fn a_short_fork_backed_by_stake_beats_a_long_one_nobody_staked() {
+        let (_, alice_key) = wallet();
+        let (_, nobody_key) = wallet();
+
+        // Four blocks anyone could forge, with nothing staked: weight 4.
+        let mut unstaked = Blockchain::new(POS);
+        for _ in 0..4 {
+            unstaked.forge(&nobody_key).unwrap();
+        }
+
+        // Three blocks, the last forged by Alice with 30 staked: weight 1 + 1 + 30.
+        let mut staked = Blockchain::new(POS);
+        staked.forge(&alice_key).unwrap();
+        staked.submit(stake(&alice_key, 30, 0)).unwrap();
+        staked.forge(&alice_key).unwrap();
+        staked.forge(&alice_key).unwrap();
+
+        assert_eq!(unstaked.weight().value(), 4);
+        assert_eq!(staked.weight().value(), 32);
+        assert_eq!(unstaked.adopt_if_heavier(staked.blocks().to_vec()), Ok(true));
+        assert_eq!(unstaked.blocks().len(), 4, "the shorter chain won");
     }
 
     // ---- Fees -----------------------------------------------------------------------------

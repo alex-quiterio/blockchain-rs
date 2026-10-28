@@ -64,6 +64,8 @@ pub struct BalanceResponse {
 pub struct ValidityResponse {
     pub valid: bool,
     pub length: usize,
+    /// Total work or stake behind the chain. A string, since it can outgrow a JSON number.
+    pub weight: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
