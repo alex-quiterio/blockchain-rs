@@ -1,5 +1,8 @@
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 4000;
+const COINBASE = "coinbase";
+const STAKE = "stake";
+const UNSTAKE = "unstake";
 
 // ---- Node API ---------------------------------------------------------------
 
@@ -18,9 +21,10 @@ async function api(method, path, body) {
 
 const Wallets = {
   KEY: "blockchain-rs:wallets",
-  list: (() => {
-    try { return JSON.parse(localStorage.getItem("blockchain-rs:wallets") || "[]"); } catch { return []; }
-  })(),
+  list: [],
+  load() {
+    try { this.list = JSON.parse(localStorage.getItem(this.KEY) || "[]"); } catch { this.list = []; }
+  },
   save() {
     try { localStorage.setItem(this.KEY, JSON.stringify(this.list)); } catch { /* private mode */ }
   },
@@ -28,50 +32,63 @@ const Wallets = {
   remove(wallet) { this.list = this.list.filter((w) => w !== wallet); this.save(); },
   byAddress(address) { return this.list.find((w) => w.address === address); },
 };
+Wallets.load();
 
 // ---- Chain state, as last seen ---------------------------------------------
 
-const state = { blocks: [], pending: [], valid: null, tip: null, seenTip: null };
+const state = { blocks: [], pending: [], valid: null, consensus: null, accounts: {}, peers: [], node: null, seenTip: null };
 
-const leadingZeros = (hash) => hash.match(/^0*/)[0].length;
-// Every block meets the difficulty, so the fewest leading zeros on any block is our best guess at it.
-const difficulty = () => (state.blocks.length ? Math.min(...state.blocks.map((b) => leadingZeros(b.hash))) : 0);
-const supply = () =>
-  state.blocks.flatMap((b) => b.transactions).filter((t) => t.from === "coinbase").reduce((n, t) => n + t.amount, 0);
+const isStake = () => state.consensus?.kind === "proof_of_stake";
+const tip = () => state.blocks.at(-1)?.hash;
+const kindOf = (tx) => (tx.from === COINBASE ? "coinbase" : tx.to === STAKE ? "stake" : tx.to === UNSTAKE ? "unstake" : "transfer");
+const feesOf = (txs) => txs.reduce((sum, tx) => sum + (tx.fee || 0), 0);
+// Fees only move coins around; the supply grows by the block reward alone.
+const supply = () => (state.blocks.length - 1) * (state.consensus?.reward ?? 0);
 
 async function load() {
-  const [blocks, pending, validity] = await Promise.all([
+  const [blocks, pending, validity, consensus, peers, node] = await Promise.all([
     api("GET", "/chain"), api("GET", "/transactions/pending"), api("GET", "/chain/valid"),
+    api("GET", "/consensus"), api("GET", "/peers"), state.node || api("GET", "/node"),
   ]);
-  Object.assign(state, { blocks, pending, valid: validity.valid, tip: blocks.at(-1)?.hash });
+  const accounts = await Promise.all(Wallets.list.map((w) => api("GET", `/balances/${w.address}`)));
+  Object.assign(state, {
+    blocks, pending, consensus, peers, node, valid: validity.valid,
+    accounts: Object.fromEntries(accounts.map((a) => [a.address, a])),
+  });
 }
 
-// ---- Small view helpers -----------------------------------------------------
+// ---- View helpers -----------------------------------------------------------
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   Object.assign(node, attrs);
-  node.append(...children.filter((c) => c != null));
+  node.append(...children.flat().filter((c) => c != null && c !== false));
   return node;
 }
 
 const short = (hex) => (hex.length > 16 ? `${hex.slice(0, 8)}…${hex.slice(-6)}` : hex);
 const nameOf = (address) => Wallets.byAddress(address)?.name || short(address);
-const fmt = (n) => n.toLocaleString();
+const fmt = (n) => Number(n).toLocaleString();
+const pct = (part, whole) => `${whole ? Math.round((part / whole) * 100) : 0}%`;
+
+function hues(address) {
+  const h1 = parseInt(address.slice(0, 4), 16) % 360;
+  return [h1, (h1 + 40 + (parseInt(address.slice(4, 6), 16) % 120)) % 360];
+}
 
 /** A gradient tile derived from the address bytes, so the same address always looks the same. */
 function avatar(address, small = false) {
-  const h1 = parseInt(address.slice(0, 4), 16) % 360;
-  const h2 = (h1 + 40 + (parseInt(address.slice(4, 6), 16) % 120)) % 360;
+  const [h1, h2] = hues(address);
   const tile = el("span", { className: `avatar${small ? " sm" : ""}` });
   tile.style.background = `linear-gradient(135deg, hsl(${h1} 75% 58%), hsl(${h2} 70% 42%))`;
   return tile;
 }
 
 function hashView(hash) {
-  const zeros = leadingZeros(hash);
+  const zeros = hash.match(/^0*/)[0].length;
+  const shown = isStake() ? 0 : Math.min(zeros, state.consensus?.difficulty ?? zeros);
   return el("div", { className: "hash", title: hash },
-    el("span", { className: "zeros", textContent: hash.slice(0, zeros) }), hash.slice(zeros));
+    el("span", { className: "zeros", textContent: hash.slice(0, shown) }), hash.slice(shown));
 }
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -89,47 +106,36 @@ function toast(message, isError = false) {
   setTimeout(() => note.remove(), 3800);
 }
 
-// ---- Rendering --------------------------------------------------------------
-
-function party(address) {
-  return el("span", { className: "party" }, avatar(address, true), el("span", { textContent: nameOf(address) }));
+function explain(question, ...items) {
+  return el("details", { className: "explain" }, el("summary", { textContent: question }),
+    el("ol", {}, items.map((html) => el("li", { innerHTML: html }))));
 }
+
+// ---- Components -------------------------------------------------------------
+
+const party = (address) =>
+  el("span", { className: "party" }, avatar(address, true), el("span", { textContent: nameOf(address) }));
+const arrow = () => el("span", { className: "arrow", textContent: "→" });
+const feeNote = (tx) => (tx.fee ? el("span", { className: "fee", textContent: `fee ${fmt(tx.fee)}` }) : null);
 
 function txView(tx) {
-  if (tx.from === "coinbase") {
+  const kind = kindOf(tx);
+  if (kind === "coinbase") {
     return el("li", { className: "tx coinbase" },
-      el("span", { className: "tag", textContent: "reward" }), el("span", { className: "arrow", textContent: "→" }),
-      party(tx.to), el("span", { className: "amt", textContent: `+${fmt(tx.amount)}` }));
+      el("span", { className: "tag", textContent: "payout" }), arrow(), party(tx.to),
+      el("span", { className: "amt", textContent: `+${fmt(tx.amount)}` }));
+  }
+  if (kind === "stake" || kind === "unstake") {
+    return el("li", { className: "tx", title: `nonce ${tx.nonce}` },
+      party(tx.from), el("span", { className: `tag ${kind}`, textContent: kind === "stake" ? "stakes" : "unstakes" }),
+      feeNote(tx), el("span", { className: "amt", textContent: fmt(tx.amount) }));
   }
   return el("li", { className: "tx", title: `nonce ${tx.nonce}` },
-    party(tx.from), el("span", { className: "arrow", textContent: "→" }), party(tx.to),
-    el("span", { className: "amt", textContent: fmt(tx.amount) }));
+    party(tx.from), arrow(), party(tx.to), feeNote(tx), el("span", { className: "amt", textContent: fmt(tx.amount) }));
 }
 
-function renderStats() {
-  $("stat-height").textContent = state.blocks.length ? fmt(state.blocks.length - 1) : "–";
-  $("stat-difficulty").textContent = state.blocks.length ? difficulty() : "–";
-  $("stat-supply").textContent = fmt(supply());
-  $("stat-pending").textContent = fmt(state.pending.length);
-  const pill = $("validity");
-  pill.className = `pill ${state.valid ? "ok" : "bad"}`;
-  pill.lastChild.textContent = state.valid ? "chain valid" : "chain INVALID";
-}
-
-async function renderWallets() {
-  const accounts = await Promise.all(Wallets.list.map((w) => api("GET", `/balances/${w.address}`)));
-  $("wallet-count").textContent = Wallets.list.length || "";
-  $("wallets").replaceChildren(
-    ...(Wallets.list.length
-      ? Wallets.list.map((w, i) => walletView(w, accounts[i]))
-      : [el("div", { className: "empty", textContent: "No wallets yet. Make one, then mine to fund it." })]),
-  );
-  fillSelect($("send-from"), false);
-  fillSelect($("send-to"), true);
-  fillSelect($("miner"), false);
-}
-
-function walletView(wallet, { balance, next_nonce }) {
+function walletView(wallet) {
+  const account = state.accounts[wallet.address] || { balance: 0, staked: 0, next_nonce: 0 };
   const copy = el("button", { className: "icon", type: "button", textContent: "⧉", title: "Copy address" });
   copy.onclick = () => navigator.clipboard.writeText(wallet.address).then(() => toast("Address copied"));
   const forget = el("button", { className: "icon forget", type: "button", textContent: "✕", title: "Forget this wallet" });
@@ -144,53 +150,242 @@ function walletView(wallet, { balance, next_nonce }) {
       el("div", { className: "name", textContent: wallet.name }),
       el("div", { className: "addr", title: wallet.address }, short(wallet.address), copy)),
     el("div", { className: "money" },
-      el("div", { className: `balance${balance ? "" : " zero"}`, textContent: fmt(balance) }),
-      el("div", { className: "nonce", textContent: `nonce ${next_nonce}` })),
+      el("div", { className: `balance${account.balance ? "" : " zero"}`, textContent: fmt(account.balance) }),
+      account.staked
+        ? el("div", { className: "staked", textContent: `${fmt(account.staked)} staked` })
+        : el("div", { className: "nonce", textContent: `nonce ${account.next_nonce}` })),
     forget);
 }
 
-function fillSelect(select, includeOthers) {
+function blockView(block, prev, fresh) {
+  const genesis = block.index === 0;
+  const [payout, ...rest] = block.transactions;
+  const forged = Boolean(block.validator);
+  return el("li", { className: `block${genesis ? " genesis" : ""}${fresh ? " fresh" : ""}` },
+    el("div", { className: "marker", textContent: block.index }),
+    el("article", { className: "card" },
+      el("div", { className: "card-head" },
+        el("strong", { textContent: genesis ? "Genesis" : `Block ${block.index}` }),
+        genesis ? null : el("span", { className: "when", textContent: ago(block.timestamp), title: new Date(block.timestamp).toLocaleString() }),
+        genesis ? null : el("span", { className: `badge-kind ${forged ? "pos" : "pow"}`, textContent: forged ? "forged" : "mined" }),
+        el("span", { className: "ntx", textContent: `${block.transactions.length} tx` })),
+      hashView(block.hash),
+      el("div", { className: "meta" },
+        forged
+          ? el("span", {}, "forged by ", party(block.validator))
+          : el("span", {}, "nonce ", el("span", { className: "mono", textContent: fmt(block.nonce) })),
+        el("span", {}, "prev ", el("span", { className: "mono", textContent: short(block.prev_hash) }))),
+      block.transactions.length ? el("ul", { className: "txs" }, block.transactions.map(txView)) : null,
+      breakdown(block, prev, payout, rest)));
+}
+
+/** The "why is this block valid" story, one fact per row. */
+function breakdown(block, prev, payout, transfers) {
+  const facts = [];
+  const row = (label, ...value) => facts.push(el("dt", { textContent: label }), el("dd", {}, value));
+  const yes = (text) => el("span", { className: "ok", textContent: `✓ ${text}` });
+
+  if (block.index === 0) {
+    row("Role", "The fixed first block. Every node with the same rules builds the same one, so they all start from the same place.");
+  } else {
+    row("Link", yes("prev matches"), ` block ${prev.index}'s hash, so changing block ${prev.index} would break this one too.`);
+  }
+  if (block.validator) {
+    row("Proof", yes("signed"), " by ", party(block.validator),
+      ". The validator was drawn at random, weighted by stake, using the previous hash as the seed, so every node agrees whose turn it was.");
+  } else {
+    const d = state.consensus?.difficulty ?? block.hash.match(/^0*/)[0].length;
+    row("Proof", yes(`starts with ${"0".repeat(d)}`),
+      ` Found on try ${fmt(block.nonce + 1)}. Each try changes the nonce and rehashes; on average it takes ${fmt(16 ** d)} tries.`);
+  }
+  if (payout) {
+    const fees = feesOf(transfers);
+    row("Payout", `${fmt(payout.amount - fees)} reward + ${fmt(fees)} in fees = `, el("b", { textContent: fmt(payout.amount) }), " to ", party(payout.to));
+  }
+  const fields = ["index", "timestamp", "prev_hash", "transactions", "nonce", block.validator && "validator"].filter(Boolean);
+  row("Hash", el("span", { className: "formula", textContent: `sha256(${fields.join(" | ")})` }));
+  return el("details", { className: "breakdown" }, el("summary", { textContent: "Breakdown" }), el("dl", { className: "facts" }, facts));
+}
+
+// ---- Panels -----------------------------------------------------------------
+
+function renderStats() {
+  const c = state.consensus;
+  $("stat-consensus").textContent = c ? (isStake() ? "Proof of stake" : `Proof of work · ${c.difficulty}`) : "–";
+  $("stat-height").textContent = state.blocks.length ? fmt(state.blocks.length - 1) : "–";
+  $("stat-supply").textContent = fmt(supply());
+  $("stat-pending").textContent = fmt(state.pending.length);
+  const pill = $("validity");
+  pill.className = `pill ${state.valid ? "ok" : "bad"}`;
+  pill.lastChild.textContent = state.valid ? "chain valid" : "chain INVALID";
+}
+
+function renderWallets() {
+  $("wallet-count").textContent = Wallets.list.length || "";
+  $("wallets").replaceChildren(
+    ...(Wallets.list.length
+      ? Wallets.list.map(walletView)
+      : [el("div", { className: "empty", textContent: `No wallets yet. Make one, then ${isStake() ? "forge" : "mine"} to fund it.` })]),
+  );
+  fillSelect($("send-from"));
+  fillSelect($("send-to"), [
+    isStake() && ["__stake", "Stake: lock coins to validate"],
+    isStake() && ["__unstake", "Unstake: unlock staked coins"],
+    ["__other", "Other address…"],
+  ].filter(Boolean));
+  updateSendSummary();
+}
+
+function fillSelect(select, extras = []) {
   const current = select.value;
-  select.replaceChildren(...Wallets.list.map((w) => el("option", { value: w.address, textContent: w.name })));
-  if (includeOthers) select.append(el("option", { value: "__other", textContent: "Other address…" }));
+  select.replaceChildren(
+    ...Wallets.list.map((w) => el("option", { value: w.address, textContent: w.name })),
+    ...extras.map(([value, label]) => el("option", { value, textContent: label })),
+  );
   if ([...select.options].some((o) => o.value === current)) select.value = current;
 }
 
+function renderProducer() {
+  if (isStake()) return renderForge();
+  $("producer-title").textContent = "Mine";
+  const select = el("select", { id: "miner" });
+  fillSelect(select);
+  const button = el("button", { className: "gold", textContent: "Mine block" });
+  const form = el("form", { className: "inline" }, el("label", { className: "grow" }, "Reward to ", select), button);
+  form.onsubmit = (e) => { e.preventDefault(); mine(button, select.value); };
+  const d = state.consensus?.difficulty ?? 0;
+  $("producer").replaceChildren(form, explain("How does proof of work work?",
+    `The miner bundles the mempool and a payout to themselves into a block, then hashes it again and again, changing the <code>nonce</code> each time.`,
+    `The block counts only once its hash starts with <code>${"0".repeat(d)}</code>. That takes about ${fmt(16 ** d)} tries, so rewriting history means redoing all that work.`,
+    `When two nodes disagree, the longest valid chain wins, since it has the most work behind it.`));
+}
+
+function renderForge() {
+  $("producer-title").textContent = "Forge";
+  const { next_validator: next, stakes, total_stake: total } = state.consensus;
+  const mine = next && Wallets.byAddress(next);
+  const children = [];
+
+  if (!next) {
+    const select = el("select");
+    fillSelect(select);
+    const button = el("button", { className: "stake", textContent: "Forge block" });
+    const form = el("form", { className: "inline" }, el("label", { className: "grow" }, "Forge as ", select), button);
+    form.onsubmit = (e) => { e.preventDefault(); forge(button, Wallets.byAddress(select.value)); };
+    children.push(el("div", { className: "turn" }, el("div", {},
+      el("div", { className: "who", textContent: "Anyone's turn" }),
+      el("div", { className: "sub", textContent: "Nobody has staked yet, so any wallet may forge. Forge a few blocks, then stake some coins." }))), form);
+  } else {
+    const button = el("button", { className: "stake", textContent: mine ? `Forge as ${mine.name}` : "Not your turn", disabled: !mine });
+    button.onclick = () => forge(button, mine);
+    children.push(el("div", { className: "turn" }, avatar(next), el("div", { className: "grow" },
+      el("div", { className: "who", textContent: `${nameOf(next)}'s turn` }),
+      el("div", { className: "sub", textContent: mine ? "Their key is in this browser." : "Their key isn't in this browser, so only they can forge." }))), button);
+  }
+
+  if (stakes.length) {
+    children.push(el("h3", { textContent: `Stake · ${fmt(total)} locked` }),
+      el("div", { className: "stakebar" }, stakes.map((s) => {
+        const seg = el("span", { title: `${nameOf(s.address)}: ${fmt(s.amount)}` });
+        seg.style.width = pct(s.amount, total);
+        const [from, to] = hues(s.address);
+        seg.style.background = `linear-gradient(90deg, hsl(${from} 75% 58%), hsl(${to} 70% 42%))`;
+        return seg;
+      })),
+      el("ul", { className: "legend" }, stakes.map((s) => el("li", { className: s.address === next ? "next" : "" },
+        party(s.address), el("span", { className: "fee", textContent: fmt(s.amount) }),
+        el("span", { className: "pct", textContent: `${pct(s.amount, total)} chance` })))));
+  }
+
+  children.push(explain("How does proof of stake work?",
+    `Validators lock coins by sending them to <code>stake</code>. Locked coins can't be spent until they're unstaked.`,
+    `For each block, one validator is drawn at random, weighted by stake. The previous block's hash seeds the draw, so every node picks the same one.`,
+    `That validator signs the block instead of doing work. Anyone can check the signature, and a block from the wrong validator is rejected.`,
+    `The validator earns the reward plus the block's fees, so more stake means more turns and more income.`));
+  $("producer").replaceChildren(...children);
+}
+
 function renderPending() {
+  const fees = feesOf(state.pending);
+  $("pending-fees").textContent = fees ? `· ${fmt(fees)} in fees for the next block` : "";
   $("pending").replaceChildren(
     ...(state.pending.length
       ? state.pending.map(txView)
-      : [el("li", { className: "empty", textContent: "Nothing waiting to be mined." })]),
+      : [el("li", { className: "empty", textContent: "Nothing waiting to be added." })]),
   );
 }
 
 function renderChain() {
-  const fresh = state.seenTip !== null && state.tip !== state.seenTip;
-  state.seenTip = state.tip;
+  const fresh = state.seenTip !== null && tip() !== state.seenTip;
+  state.seenTip = tip();
+  const open = new Set([...document.querySelectorAll(".breakdown[open]")].map((d) => d.dataset.hash));
   $("blocks").replaceChildren(
-    ...state.blocks.slice().reverse().map((b, i) => {
-      const genesis = b.index === 0;
-      return el("li", { className: `block${genesis ? " genesis" : ""}${fresh && i === 0 ? " fresh" : ""}` },
-        el("div", { className: "marker", textContent: b.index }),
-        el("article", { className: "card" },
-          el("div", { className: "card-head" },
-            el("strong", { textContent: genesis ? "Genesis" : `Block ${b.index}` }),
-            genesis ? null : el("span", { className: "when", textContent: ago(b.timestamp), title: new Date(b.timestamp).toLocaleString() }),
-            el("span", { className: "ntx", textContent: `${b.transactions.length} tx` })),
-          hashView(b.hash),
-          el("div", { className: "meta" },
-            el("span", {}, "prev ", el("span", { className: "mono", textContent: short(b.prev_hash) })),
-            el("span", {}, "nonce ", el("span", { className: "mono", textContent: fmt(b.nonce) }))),
-          b.transactions.length ? el("ul", { className: "txs" }, ...b.transactions.map(txView)) : null));
+    ...state.blocks.slice().reverse().map((block, i) => {
+      const view = blockView(block, state.blocks[block.index - 1], fresh && i === 0);
+      const details = view.querySelector(".breakdown");
+      details.dataset.hash = block.hash;
+      details.open = open.has(block.hash);
+      return view;
     }),
+  );
+}
+
+function updateSendSummary() {
+  const to = $("send-to").value;
+  const amount = Number($("send-amount").value) || 0;
+  const fee = Number($("send-fee").value) || 0;
+  const from = state.accounts[$("send-from").value];
+  const what = to === "__stake" ? "locks" : to === "__unstake" ? "unlocks" : "sends";
+  const cost = to === "__unstake" ? fee : amount + fee;
+  const parts = [`${what} `, el("b", { textContent: fmt(amount) })];
+  if (fee) parts.push(" + ", el("b", { textContent: fmt(fee) }), " fee");
+  parts.push(` · costs ${fmt(cost)} of `, el("b", { textContent: fmt(from?.balance ?? 0) }));
+  $("send-summary").replaceChildren(...parts);
+}
+
+function renderPeers() {
+  $("peer-count").textContent = state.peers.length || "";
+  const ours = state.blocks.length;
+  $("peers").replaceChildren(
+    ...(state.peers.length
+      ? state.peers.map((p) => {
+        const known = p.height != null;
+        const diff = known ? p.height - ours : 0;
+        const rel = !known ? "not reached yet" : diff > 0 ? `${diff} ahead` : diff < 0 ? `${-diff} behind` : "in step";
+        return el("li", { className: "peer" },
+          el("span", { className: `dot ${p.error ? "down" : known ? "up" : ""}` }),
+          el("span", { className: "url", textContent: p.url, title: p.url }),
+          el("span", { className: `rel${diff > 0 ? " ahead" : ""}`, textContent: rel }),
+          p.error
+            ? el("span", { className: "note err", textContent: p.error })
+            : p.last_seen ? el("span", { className: "note", textContent: `height ${p.height - 1} · seen ${ago(p.last_seen)}` }) : null);
+      })
+      : [el("li", { className: "empty", textContent: "No peers. This node is on its own. Add another node's URL to sync with it." })]),
+  );
+}
+
+function renderFooter() {
+  const n = state.node;
+  if (!n) return;
+  const dirty = n.commit.endsWith("-dirty");
+  $("footer").replaceChildren(
+    el("span", {}, "node ", el("span", { className: "mono", textContent: `v${n.version}` })),
+    "·",
+    el("span", { title: dirty ? "built with uncommitted changes" : "" }, "commit ",
+      el("span", { className: `mono${dirty ? " dirty" : ""}`, textContent: n.commit })),
+    "·",
+    el("span", { textContent: `up since ${new Date(n.started_at).toLocaleString()}` }),
   );
 }
 
 async function refresh() {
   try {
     await load();
-    await renderWallets();
     renderStats();
+    renderPeers();
+    renderFooter();
+    renderWallets();
+    renderProducer();
     renderPending();
     renderChain();
   } catch (err) {
@@ -213,6 +408,63 @@ async function busy(button, action) {
   }
 }
 
+function showProducing(text) {
+  const status = $("producing");
+  const started = performance.now();
+  const tick = () => status.replaceChildren(el("span", { className: "spin" }),
+    el("span", {}, text, ` · ${((performance.now() - started) / 1000).toFixed(1)}s`));
+  tick();
+  status.hidden = false;
+  const timer = setInterval(tick, 100);
+  return (message) => {
+    clearInterval(timer);
+    if (!message) return (status.hidden = true);
+    status.replaceChildren(el("span", {}, message, ` in ${((performance.now() - started) / 1000).toFixed(2)}s`));
+    setTimeout(() => (status.hidden = true), 5000);
+  };
+}
+
+function mine(button, miner) {
+  if (!miner) return toast("Create a wallet first", true);
+  const done = showProducing(`Looking for a hash starting with ${"0".repeat(state.consensus.difficulty)}`);
+  busy(button, async () => {
+    try {
+      const block = await api("POST", "/mine", { miner });
+      done(`Block ${block.index} found on try ${fmt(block.nonce + 1)}`);
+    } catch (err) {
+      done();
+      throw err;
+    }
+  });
+}
+
+function forge(button, wallet) {
+  if (!wallet) return toast("Create a wallet first", true);
+  busy(button, async () => {
+    const block = await api("POST", "/forge", { secret_key: wallet.secret_key });
+    toast(`${wallet.name} forged block ${block.index}`);
+  });
+}
+
+$("peer-form").onsubmit = (e) => {
+  e.preventDefault();
+  busy($("add-peer"), async () => {
+    const url = $("peer-url").value.trim();
+    if (!url) return;
+    const { added } = await api("POST", "/peers", { url });
+    $("peer-url").value = "";
+    toast(added ? `Added ${url}. It now knows this node too.` : `${url} is already a peer`);
+  });
+};
+
+$("sync").onclick = (e) =>
+  busy(e.target, async () => {
+    const report = await api("POST", "/sync");
+    toast(report.adopted_from
+      ? `Adopted the longer chain from ${report.adopted_from}`
+      : `Reached ${report.reached} peer${report.reached === 1 ? "" : "s"}. This chain is already the longest.`);
+  });
+
 $("wallet-form").onsubmit = (e) => {
   e.preventDefault();
   busy($("create-wallet"), async () => {
@@ -224,58 +476,36 @@ $("wallet-form").onsubmit = (e) => {
   });
 };
 
+for (const id of ["send-from", "send-to", "send-amount", "send-fee"]) $(id).oninput = updateSendSummary;
+
 $("send-form").onsubmit = (e) => {
   e.preventDefault();
   busy($("send"), async () => {
     const from = Wallets.byAddress($("send-from").value);
     if (!from) throw new Error("Create a wallet first");
     let to = $("send-to").value;
-    if (to === "__other") to = (prompt("Recipient address (hex)") || "").trim();
+    if (to === "__stake") to = STAKE;
+    else if (to === "__unstake") to = UNSTAKE;
+    else if (to === "__other") to = (prompt("Recipient address (hex)") || "").trim();
     if (!to) return;
     const amount = Number($("send-amount").value);
-    const tx = await api("POST", "/transactions/sign", { secret_key: from.secret_key, to, amount });
+    const fee = Number($("send-fee").value) || 0;
+    const tx = await api("POST", "/transactions/sign", { secret_key: from.secret_key, to, amount, fee });
     await api("POST", "/transactions", tx);
-    toast(`Queued ${fmt(amount)} from ${from.name}. Mine a block to confirm it.`);
+    toast(`Queued from ${from.name}. It confirms in the next block.`);
   });
 };
 
-$("mine-form").onsubmit = (e) => {
-  e.preventDefault();
-  const miner = $("miner").value;
-  if (!miner) return toast("Create a wallet first", true);
-  const status = $("mining");
-  const started = performance.now();
-  const zeros = "0".repeat(difficulty());
-  const tick = () => {
-    const secs = ((performance.now() - started) / 1000).toFixed(1);
-    status.replaceChildren(el("span", { className: "spin" }),
-      el("span", {}, "Looking for a hash starting with ", el("span", { className: "mono", textContent: zeros }), ` · ${secs}s`));
-  };
-  tick();
-  status.hidden = false;
-  const timer = setInterval(tick, 100);
-  busy($("mine"), async () => {
-    try {
-      const block = await api("POST", "/mine", { miner });
-      const secs = ((performance.now() - started) / 1000).toFixed(2);
-      status.replaceChildren(el("span", {}, `Block ${block.index} found after `,
-        el("span", { className: "mono", textContent: fmt(block.nonce + 1) }), ` tries in ${secs}s`));
-      setTimeout(() => (status.hidden = true), 5000);
-    } catch (err) {
-      status.hidden = true;
-      throw err;
-    } finally {
-      clearInterval(timer);
-    }
-  });
-};
-
-// Pick up changes made elsewhere, such as another node's chain offered with POST /chain.
+// Pick up changes made elsewhere: other tabs, other nodes syncing, `POST /chain`.
 setInterval(async () => {
   if (document.hidden || working) return;
   try {
-    const [blocks, pending] = await Promise.all([api("GET", "/chain"), api("GET", "/transactions/pending")]);
-    if (blocks.at(-1)?.hash !== state.tip || pending.length !== state.pending.length) refresh();
+    const [blocks, pending, peers] = await Promise.all([
+      api("GET", "/chain"), api("GET", "/transactions/pending"), api("GET", "/peers"),
+    ]);
+    if (blocks.at(-1)?.hash !== tip() || pending.length !== state.pending.length) return refresh();
+    state.peers = peers;
+    renderPeers();
   } catch { /* node down; the next tick tries again */ }
 }, POLL_MS);
 

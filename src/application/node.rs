@@ -1,9 +1,12 @@
 use std::fmt;
 use std::sync::Mutex;
 
+use ed25519_dalek::SigningKey;
+
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
-use crate::domain::chain::{Blockchain, ChainError};
+use crate::domain::chain::Blockchain;
+use crate::domain::error::ChainError;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 
@@ -34,7 +37,16 @@ impl From<ChainError> for NodeError {
 
 pub struct Account {
     pub balance: u64,
+    pub staked: u64,
     pub next_nonce: u64,
+}
+
+/// How the chain picks its next block, as of now.
+pub struct ConsensusState {
+    pub rules: ChainRules,
+    /// Under proof of stake, who must forge next. `None` means anyone may.
+    pub next_validator: Option<Address>,
+    pub stakes: Vec<(String, u64)>,
 }
 
 pub struct NodeService {
@@ -71,7 +83,11 @@ impl NodeService {
 
     pub fn account(&self, address: &Address) -> Account {
         let chain = self.chain.lock().unwrap();
-        Account { balance: chain.balance(address), next_nonce: chain.next_nonce(address) }
+        Account {
+            balance: chain.balance(address),
+            staked: chain.staked(address),
+            next_nonce: chain.next_nonce(address),
+        }
     }
 
     pub fn next_nonce(&self, address: &Address) -> u64 {
@@ -85,6 +101,20 @@ impl NodeService {
     /// Queues a transaction. The mempool isn't saved, so nothing is written.
     pub fn submit(&self, tx: Transaction) -> Result<(), ChainError> {
         self.chain.lock().unwrap().submit(tx)
+    }
+
+    pub fn consensus(&self) -> ConsensusState {
+        let chain = self.chain.lock().unwrap();
+        ConsensusState {
+            rules: chain.rules(),
+            next_validator: chain.next_validator(),
+            stakes: chain.stakes(),
+        }
+    }
+
+    /// Forges a proof-of-stake block signed with `key` and saves it.
+    pub fn forge(&self, key: &SigningKey) -> Result<Block, NodeError> {
+        self.commit(|chain| chain.forge(key).cloned())
     }
 
     /// Mines a block and saves it. Blocks for as long as the proof of work takes.
@@ -125,7 +155,7 @@ mod tests {
     use crate::domain::crypto;
     use crate::infrastructure::InMemoryRepository;
 
-    const RULES: ChainRules = ChainRules::new(2, 50);
+    const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
 
     fn new_address() -> Address {
         Address::parse(&crypto::generate_keypair().0).unwrap()

@@ -12,16 +12,20 @@ use axum::{
 };
 use tower_http::{services::ServeDir, set_header::SetResponseHeader, trace::TraceLayer};
 
-use crate::application::NodeService;
+use chrono::{DateTime, Utc};
+
+use crate::application::{Network, NodeService};
 
 #[derive(Clone)]
 pub struct AppState {
     pub node: Arc<NodeService>,
+    pub network: Arc<Network>,
+    pub started_at: DateTime<Utc>,
 }
 
 impl AppState {
-    pub fn new(node: NodeService) -> Self {
-        Self { node: Arc::new(node) }
+    pub fn new(network: Network) -> Self {
+        Self { node: network.node().clone(), network: Arc::new(network), started_at: Utc::now() }
     }
 }
 
@@ -35,6 +39,11 @@ pub fn router(state: AppState) -> Router {
         .route("/transactions/sign", post(handlers::sign_transaction))
         .route("/transactions/pending", get(handlers::get_pending))
         .route("/mine", post(handlers::mine))
+        .route("/forge", post(handlers::forge))
+        .route("/consensus", get(handlers::get_consensus))
+        .route("/peers", get(handlers::get_peers).post(handlers::add_peer))
+        .route("/sync", post(handlers::sync))
+        .route("/node", get(handlers::get_node))
         .fallback_service(web_ui())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -1,41 +1,13 @@
-use chrono::Utc;
-use std::fmt;
+use chrono::{DateTime, Utc};
+use ed25519_dalek::SigningKey;
 
 use super::address::Address;
 use super::block::{Block, Transaction};
 use super::crypto;
+use super::error::ChainError;
 use super::ledger::Ledger;
 use super::mempool::Mempool;
-use super::rules::ChainRules;
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum ChainError {
-    InvalidAddress(String),
-    ZeroAmount,
-    BadSignature,
-    BadNonce { expected: u64, got: u64 },
-    InsufficientFunds { balance: u64, amount: u64 },
-    UnexpectedCoinbase,
-    InvalidChain,
-}
-
-impl fmt::Display for ChainError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidAddress(a) => write!(f, "invalid address: {a}"),
-            Self::ZeroAmount => write!(f, "amount must be greater than zero"),
-            Self::BadSignature => write!(f, "signature does not match sender"),
-            Self::BadNonce { expected, got } => write!(f, "nonce must be {expected}, got {got}"),
-            Self::InsufficientFunds { balance, amount } => {
-                write!(f, "balance {balance} is less than {amount}")
-            }
-            Self::UnexpectedCoinbase => write!(f, "coinbase transactions are only made by mining"),
-            Self::InvalidChain => write!(f, "chain does not validate"),
-        }
-    }
-}
-
-impl std::error::Error for ChainError {}
+use super::rules::{meets_difficulty, select_validator, ChainRules, Consensus};
 
 /// The aggregate root: confirmed blocks, the mempool and the ledger they produce.
 /// Every change goes through its methods, so the three never disagree.
@@ -84,9 +56,28 @@ impl Blockchain {
         self.ledger.balance(address.as_str())
     }
 
+    pub fn staked(&self, address: &Address) -> u64 {
+        self.ledger.staked(address.as_str())
+    }
+
+    /// Every confirmed stake, sorted by address.
+    pub fn stakes(&self) -> Vec<(String, u64)> {
+        self.ledger.stakes()
+    }
+
     /// The nonce a new transaction from `address` must carry, counting the mempool.
     pub fn next_nonce(&self, address: &Address) -> u64 {
         self.ledger.next_nonce(address.as_str()) + self.mempool.sent_by(address.as_str())
+    }
+
+    /// Who must forge the next block. `None` on proof-of-work chains, and on proof-of-stake chains
+    /// where nothing is staked yet, when anyone may forge.
+    pub fn next_validator(&self) -> Option<Address> {
+        if !self.rules.is_proof_of_stake() {
+            return None;
+        }
+        let selected = select_validator(&self.ledger.stakes(), &self.tip().hash)?;
+        Some(Address::parse(&selected).expect("only valid senders can stake"))
     }
 
     /// Validates a transaction against confirmed state plus the mempool, then queues it.
@@ -94,27 +85,54 @@ impl Blockchain {
         self.mempool.admit(tx, &self.ledger)
     }
 
-    /// Bundles the reward and every pending transaction into a new block.
+    /// Proof of work: bundles the reward and every pending transaction into a new block.
     pub fn mine(&mut self, miner: &Address) -> Result<&Block, ChainError> {
+        let Consensus::ProofOfWork { difficulty } = self.rules.consensus else {
+            return Err(ChainError::NotProofOfWork);
+        };
+        self.append(miner, |index, now, prev, txs| Block::mine(index, now, prev, txs, difficulty))
+    }
+
+    /// Proof of stake: the selected validator signs the next block with `key`.
+    pub fn forge(&mut self, key: &SigningKey) -> Result<&Block, ChainError> {
+        if !self.rules.is_proof_of_stake() {
+            return Err(ChainError::NotProofOfStake);
+        }
+        let validator = Address::of(key);
+        if let Some(expected) = self.next_validator() {
+            if expected != validator {
+                return Err(ChainError::NotYourTurn { expected: expected.to_string() });
+            }
+        }
+        self.append(&validator, |index, now, prev, txs| Block::forge(index, now, prev, txs, key))
+    }
+
+    /// Pays `producer` the reward plus fees, applies the mempool and appends the block `seal` makes.
+    fn append(
+        &mut self,
+        producer: &Address,
+        seal: impl FnOnce(u64, DateTime<Utc>, String, Vec<Transaction>) -> Block,
+    ) -> Result<&Block, ChainError> {
         let index = self.blocks.len() as u64;
-        let mut transactions = vec![Transaction::coinbase(miner, self.rules.reward, index)];
-        transactions.extend(self.mempool.transactions().iter().cloned());
+        let pending = self.mempool.transactions();
+        let payout = self.rules.reward + pending.iter().map(|tx| tx.fee).sum::<u64>();
+        let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
+        transactions.extend(pending.iter().cloned());
 
         let mut ledger = self.ledger.clone();
-        ledger.credit(miner.as_str(), self.rules.reward);
+        ledger.credit(producer.as_str(), payout);
         for tx in &transactions[1..] {
             ledger.apply_transfer(tx)?;
         }
 
         let prev_hash = self.tip().hash.clone();
-        self.blocks.push(Block::mine(index, Utc::now(), prev_hash, transactions, &self.rules));
+        self.blocks.push(seal(index, Utc::now(), prev_hash, transactions));
         self.mempool.clear();
         self.ledger = ledger;
         Ok(self.tip())
     }
 
     /// The longest-chain rule: adopts `blocks` if it is valid and longer than ours.
-    /// Every block carries the same work, so the longest chain is the one with the most work.
     /// Transfers from our blocks that `blocks` drops go back to the mempool if they still apply.
     pub fn adopt_if_longer(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
         if blocks.len() <= self.blocks.len() {
@@ -141,7 +159,7 @@ impl Blockchain {
         Ok(true)
     }
 
-    /// Replays the whole chain: links, hashes, proof of work, rewards, signatures and balances.
+    /// Replays the whole chain: links, hashes, consensus, rewards, signatures and balances.
     pub fn is_valid(&self) -> bool {
         validate_blocks(&self.blocks, &self.rules)
     }
@@ -153,31 +171,32 @@ pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
 
 /// Checks every block in order and returns the resulting ledger, or `None` if any check fails.
 fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Ledger> {
-    if blocks.is_empty() {
+    let genesis = blocks.first()?;
+    if genesis.index != 0
+        || genesis.prev_hash != "0".repeat(64)
+        || genesis.timestamp.timestamp() != 0
+        || !genesis.transactions.is_empty()
+        || genesis.hash != genesis.computed_hash()
+        || !is_sealed_genesis(genesis, rules)
+    {
         return None;
     }
     let mut ledger = Ledger::default();
-    for (i, block) in blocks.iter().enumerate() {
-        if block.index != i as u64
+    for (prev, block) in blocks.iter().zip(&blocks[1..]) {
+        if block.index != prev.index + 1
+            || block.prev_hash != prev.hash
             || block.hash != block.computed_hash()
-            || !rules.is_met_by(&block.hash)
+            || !is_sealed_by_consensus(block, prev, &ledger, rules)
         {
-            return None;
-        }
-        if i == 0 {
-            if !block.transactions.is_empty() {
-                return None;
-            }
-            continue;
-        }
-        if block.prev_hash != blocks[i - 1].hash {
             return None;
         }
         let (coinbase, transfers) = block.transactions.split_first()?;
         if !coinbase.is_coinbase()
-            || coinbase.amount != rules.reward
+            || coinbase.amount != rules.reward + transfers.iter().map(|tx| tx.fee).sum::<u64>()
+            || coinbase.fee != 0
             || coinbase.nonce != block.index
             || !crypto::is_valid_address(&coinbase.to)
+            || block.validator.as_ref().is_some_and(|v| *v != coinbase.to)
         {
             return None;
         }
@@ -189,32 +208,54 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Ledger> {
     Some(ledger)
 }
 
+/// Genesis is never signed. Under proof of work it still needs the work.
+fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
+    let unsigned = genesis.validator.is_none() && genesis.signature.is_none();
+    match rules.consensus {
+        Consensus::ProofOfWork { difficulty } => {
+            unsigned && meets_difficulty(&genesis.hash, difficulty)
+        }
+        Consensus::ProofOfStake => unsigned && genesis.nonce == 0,
+    }
+}
+
+/// Proof of work: the hash has enough zeros and nobody signed it. Proof of stake: the validator
+/// selected from the stakes before this block signed it.
+fn is_sealed_by_consensus(
+    block: &Block,
+    prev: &Block,
+    ledger: &Ledger,
+    rules: &ChainRules,
+) -> bool {
+    match rules.consensus {
+        Consensus::ProofOfWork { difficulty } => {
+            block.validator.is_none()
+                && block.signature.is_none()
+                && meets_difficulty(&block.hash, difficulty)
+        }
+        Consensus::ProofOfStake => {
+            block.nonce == 0
+                && block.is_signed_by_validator()
+                && select_validator(&ledger.stakes(), &prev.hash)
+                    .is_none_or(|expected| block.validator.as_deref() == Some(&expected))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::block::{STAKE, UNSTAKE};
 
-    const RULES: ChainRules = ChainRules::new(2, 50);
+    const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
 
-    fn wallet() -> (Address, ed25519_dalek::SigningKey) {
+    fn wallet() -> (Address, SigningKey) {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
         (Address::of(&key), key)
     }
 
-    fn transfer(
-        key: &ed25519_dalek::SigningKey,
-        to: &Address,
-        amount: u64,
-        nonce: u64,
-    ) -> Transaction {
-        let from = Address::of(key).to_string();
-        let payload = Transaction::signing_payload(&from, to.as_str(), amount, nonce);
-        Transaction {
-            from,
-            to: to.to_string(),
-            amount,
-            nonce,
-            signature: crypto::sign(key, &payload),
-        }
+    fn transfer(key: &SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
+        Transaction::signed(key, to.as_str(), amount, nonce, 0)
     }
 
     fn chain() -> Blockchain {
@@ -337,8 +378,11 @@ mod tests {
         let mut chain = chain();
         chain.mine(&wallet().0).unwrap();
         // No SHA-256 hash is all zeros, so these blocks can't meet a difficulty of 64.
-        assert!(Blockchain::restore(chain.blocks().to_vec(), ChainRules::new(64, 50)).is_err());
-        assert!(Blockchain::restore(chain.blocks().to_vec(), ChainRules::new(2, 25)).is_err());
+        assert!(Blockchain::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(64, 50))
+            .is_err());
+        assert!(
+            Blockchain::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(2, 25)).is_err()
+        );
     }
 
     #[test]
@@ -424,5 +468,174 @@ mod tests {
         assert_eq!(ours.adopt_if_longer(theirs.blocks().to_vec()), Ok(true));
         assert!(ours.pending().is_empty());
         assert_eq!(ours.balance(&bob), 120);
+    }
+
+    // ---- Proof of stake --------------------------------------------------------------------
+
+    const POS: ChainRules = ChainRules::proof_of_stake(50);
+
+    fn stake(key: &SigningKey, amount: u64, nonce: u64) -> Transaction {
+        Transaction::signed(key, STAKE, amount, nonce, 0)
+    }
+
+    #[test]
+    fn anyone_may_forge_until_something_is_staked() {
+        let mut chain = Blockchain::new(POS);
+        let (alice, alice_key) = wallet();
+        assert_eq!(chain.next_validator(), None);
+
+        let block = chain.forge(&alice_key).unwrap();
+        assert_eq!(block.nonce, 0);
+        assert_eq!(block.validator.as_deref(), Some(alice.as_str()));
+        assert!(block.is_signed_by_validator());
+        assert_eq!(chain.balance(&alice), 50);
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn staking_locks_coins_and_makes_a_validator() {
+        let mut chain = Blockchain::new(POS);
+        let (alice, alice_key) = wallet();
+        let (_, bob_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.submit(stake(&alice_key, 30, 0)).unwrap();
+        chain.forge(&bob_key).unwrap();
+
+        assert_eq!(chain.balance(&alice), 20);
+        assert_eq!(chain.staked(&alice), 30);
+        assert_eq!(chain.next_validator(), Some(alice.clone()));
+        assert_eq!(
+            chain.forge(&bob_key).err(),
+            Some(ChainError::NotYourTurn { expected: alice.to_string() })
+        );
+        chain.forge(&alice_key).unwrap();
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn unstaking_returns_coins_but_never_more_than_staked() {
+        let mut chain = Blockchain::new(POS);
+        let (alice, alice_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.submit(stake(&alice_key, 30, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+
+        assert_eq!(
+            chain.submit(Transaction::signed(&alice_key, UNSTAKE, 31, 1, 0)),
+            Err(ChainError::InsufficientStake { staked: 30, amount: 31 })
+        );
+        chain.submit(Transaction::signed(&alice_key, UNSTAKE, 30, 1, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+        assert_eq!(chain.staked(&alice), 0);
+        assert_eq!(chain.balance(&alice), 150);
+    }
+
+    #[test]
+    fn each_consensus_refuses_the_other_ones_blocks() {
+        let (alice, alice_key) = wallet();
+        assert_eq!(Blockchain::new(POS).mine(&alice).err(), Some(ChainError::NotProofOfWork));
+        assert_eq!(chain().forge(&alice_key).err(), Some(ChainError::NotProofOfStake));
+
+        let mut pos = Blockchain::new(POS);
+        pos.forge(&alice_key).unwrap();
+        assert!(Blockchain::restore(pos.blocks().to_vec(), RULES).is_err());
+        let mut pow = chain();
+        pow.mine(&alice).unwrap();
+        assert!(Blockchain::restore(pow.blocks().to_vec(), POS).is_err());
+    }
+
+    #[test]
+    fn forged_blocks_cannot_be_tampered_with_or_reassigned() {
+        let mut chain = Blockchain::new(POS);
+        let (_, alice_key) = wallet();
+        let (mallory, _) = wallet();
+        chain.forge(&alice_key).unwrap();
+
+        let mut blocks = chain.blocks().to_vec();
+        blocks[1].validator = Some(mallory.to_string());
+        blocks[1].hash = blocks[1].computed_hash();
+        assert!(!validate_blocks(&blocks, &POS), "signature no longer matches the validator");
+
+        let mut blocks = chain.blocks().to_vec();
+        blocks[1].signature = None;
+        assert!(!validate_blocks(&blocks, &POS));
+    }
+
+    #[test]
+    fn only_the_selected_validator_may_forge_on_a_replayed_chain() {
+        let mut chain = Blockchain::new(POS);
+        let (alice, alice_key) = wallet();
+        let (_, bob_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.submit(stake(&alice_key, 10, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+        assert_eq!(chain.next_validator(), Some(alice));
+
+        // Bob forges a block out of turn by going around `forge`.
+        let mut blocks = chain.blocks().to_vec();
+        let reward = Transaction::coinbase(&Address::of(&bob_key), 50, 3);
+        blocks.push(Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key));
+        assert!(!validate_blocks(&blocks, &POS));
+    }
+
+    // ---- Fees -----------------------------------------------------------------------------
+
+    #[test]
+    fn fees_go_to_whoever_adds_the_block() {
+        let mut chain = chain();
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let (carol, _) = wallet();
+        chain.mine(&alice).unwrap();
+        chain.submit(Transaction::signed(&alice_key, bob.as_str(), 20, 0, 3)).unwrap();
+
+        let block = chain.mine(&carol).unwrap();
+        assert_eq!(block.transactions[0].amount, 53);
+        assert_eq!(chain.balance(&alice), 27);
+        assert_eq!(chain.balance(&bob), 20);
+        assert_eq!(chain.balance(&carol), 53);
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn the_fee_must_be_affordable_too() {
+        let mut chain = chain();
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        chain.mine(&alice).unwrap();
+        assert_eq!(
+            chain.submit(Transaction::signed(&alice_key, bob.as_str(), 50, 0, 1)),
+            Err(ChainError::InsufficientFunds { balance: 50, amount: 51 })
+        );
+    }
+
+    #[test]
+    fn fees_are_signed_and_counted_in_the_payout() {
+        let mut chain = chain();
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        chain.mine(&alice).unwrap();
+        chain.submit(Transaction::signed(&alice_key, bob.as_str(), 5, 0, 2)).unwrap();
+        chain.mine(&alice).unwrap();
+
+        let mut blocks = chain.blocks().to_vec();
+        blocks[2].transactions[1].fee = 0;
+        blocks[2].hash = blocks[2].computed_hash();
+        assert!(!validate_blocks(&blocks, &RULES), "the signature covers the fee");
+
+        let mut blocks = chain.blocks().to_vec();
+        blocks[2].transactions[0].amount = 60;
+        assert!(!validate_blocks(&blocks, &RULES), "the payout must be reward plus fees");
+    }
+
+    #[test]
+    fn fee_free_transactions_and_mined_blocks_keep_their_original_json() {
+        let mut chain = chain();
+        let (alice, alice_key) = wallet();
+        chain.mine(&alice).unwrap();
+        let json = serde_json::to_value(transfer(&alice_key, &alice, 1, 0)).unwrap();
+        assert!(json.get("fee").is_none());
+        let json = serde_json::to_value(chain.tip()).unwrap();
+        assert!(json.get("validator").is_none() && json.get("signature").is_none());
     }
 }

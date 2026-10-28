@@ -1,5 +1,5 @@
 use super::block::Transaction;
-use super::chain::ChainError;
+use super::error::ChainError;
 use super::ledger::Ledger;
 
 /// Signed transfers waiting to be mined, in the order they arrived. Together they always apply
@@ -54,15 +54,7 @@ mod tests {
     }
 
     fn pay(key: &ed25519_dalek::SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-        let from = Address::of(key).to_string();
-        let payload = Transaction::signing_payload(&from, to.as_str(), amount, nonce);
-        Transaction {
-            from,
-            to: to.to_string(),
-            amount,
-            nonce,
-            signature: crypto::sign(key, &payload),
-        }
+        Transaction::signed(key, to.as_str(), amount, nonce, 0)
     }
 
     #[test]

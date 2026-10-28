@@ -74,7 +74,7 @@ mod tests {
     fn saved_blocks_load_back_identically() {
         let path = TempPath::new("round-trip");
         let repo = JsonFileRepository::new(&path.0);
-        let rules = ChainRules::new(2, 50);
+        let rules = ChainRules::proof_of_work(2, 50);
         let mut chain = Blockchain::new(rules);
         chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
 

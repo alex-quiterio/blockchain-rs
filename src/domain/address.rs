@@ -2,8 +2,8 @@ use std::fmt;
 
 use ed25519_dalek::SigningKey;
 
-use super::chain::ChainError;
 use super::crypto;
+use super::error::ChainError;
 
 /// An account: a hex-encoded ed25519 public key. Holding one means it has already been checked.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
