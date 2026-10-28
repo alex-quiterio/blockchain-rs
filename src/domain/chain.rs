@@ -899,9 +899,9 @@ mod tests {
         for i in 0..20 {
             let mut attempt = chain.clone();
             if i % 2 == 1 {
-                attempt
-                    .submit(Transaction::signed(&forger, Address::of(&carol_key).as_str(), i, 1, i))
-                    .unwrap();
+                // Small enough for either validator: each holds at least 20 unstaked.
+                let to = Address::of(&carol_key);
+                attempt.submit(Transaction::signed(&forger, to.as_str(), 1, 1, i / 2)).unwrap();
             }
             attempt.forge(&forger).unwrap();
             tips.insert(attempt.tip().hash.clone());
