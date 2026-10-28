@@ -75,7 +75,7 @@ impl fmt::Display for ChainError {
                 write!(f, "the reveal doesn't open the validator's commitment, or isn't due")
             }
             Self::AlreadyPending => write!(f, "transaction is already waiting to be mined"),
-            Self::StaleBlock => write!(f, "block does not build on the current tip"),
+            Self::StaleBlock => write!(f, "another block took the tip first"),
             Self::InvalidBlock => write!(f, "block does not validate"),
             Self::ReorgTooDeep { depth, max } => {
                 write!(f, "switching forks would undo {depth} blocks; at most {max} may be undone")

@@ -38,14 +38,15 @@ short() { printf '%s…' "${1:0:8}"; }
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
-# Sets CODE and BODY.
+# Sets CODE and BODY. Mining may take a while once the difficulty has risen.
 call() {
   local method=$1 url=$2 data=${3:-}
-  local out
+  local out limit=10
+  [[ $url == */mine ]] && limit=300
   if [[ -n $data ]]; then
-    out=$(curl -s -m 60 -w $'\n%{http_code}' -X "$method" -H 'content-type: application/json' -d "$data" "$url") || out=$'\n000'
+    out=$(curl -s -m "$limit" -w $'\n%{http_code}' -X "$method" -H 'content-type: application/json' -d "$data" "$url") || out=$'\n000'
   else
-    out=$(curl -s -m 60 -w $'\n%{http_code}' -X "$method" "$url") || out=$'\n000'
+    out=$(curl -s -m "$limit" -w $'\n%{http_code}' -X "$method" "$url") || out=$'\n000'
   fi
   CODE=${out##*$'\n'}
   BODY=${out%$'\n'*}
@@ -200,9 +201,11 @@ mine() {  # miner-index
   local t0
   t0=$(now_ms)
   call POST "${NODES[$node]}/mine" "$(jq -n --arg m "${ADDR[$miner]}" '{miner: $m}')"
+  # Another miner on the network can win the race; the story carries on either way.
   if [[ $CODE != 201 ]]; then
-    printf '  %s✗ %s %s%s\n' "$RED" "$CODE" "$BODY" "$R"
-    return 1
+    printf '     %s✗ %s after %sms: %s%s\n' "$YEL" "$CODE" "$(( $(now_ms) - t0 ))" \
+      "$(jq -r '.message // .' <<< "$BODY" 2> /dev/null || echo "${BODY:-no answer}")" "$R"
+    return 0
   fi
   local found
   found=$(now_ms)
@@ -307,8 +310,8 @@ sleep 0.5
 last=$(( ${#NODES[@]} - 1 ))
 race=$(mktemp -d)
 t0=$(now_ms)
-curl -s -m 60 -X POST -H 'content-type: application/json' -d "$(jq -n --arg m "${ADDR[$(who Mia)]}" '{miner: $m}')" "${NODES[0]}/mine" > "$race/Mia" &
-curl -s -m 60 -X POST -H 'content-type: application/json' -d "$(jq -n --arg m "${ADDR[$(who Olga)]}" '{miner: $m}')" "${NODES[$last]}/mine" > "$race/Olga" &
+curl -s -m 300 -X POST -H 'content-type: application/json' -d "$(jq -n --arg m "${ADDR[$(who Mia)]}" '{miner: $m}')" "${NODES[0]}/mine" > "$race/Mia" &
+curl -s -m 300 -X POST -H 'content-type: application/json' -d "$(jq -n --arg m "${ADDR[$(who Olga)]}" '{miner: $m}')" "${NODES[$last]}/mine" > "$race/Olga" &
 wait
 for racer in Mia Olga; do
   node=0
@@ -324,7 +327,7 @@ done
 if [[ $(jq -r .index "$race/Mia" 2> /dev/null) == "$(jq -r .index "$race/Olga" 2> /dev/null)" ]]; then
   echo "  ${YEL}Same height, different blocks: the chain has forked.${R} Heaviest chain wins, ties go to the lower hash."
 else
-  echo "  ${D}No fork this time: one block arrived mid-search, so the other miner started over on top of it, as real miners do. Run it again for a split.${R}"
+  echo "  ${D}No fork this time: one block arrived while the other miner was still searching, so that search was wasted. Run it again for a split.${R}"
 fi
 rm -rf "$race"
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

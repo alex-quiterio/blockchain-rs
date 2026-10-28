@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -179,7 +182,10 @@ pub async fn mine(
 ) -> Result<(StatusCode, Json<Block>), ApiError> {
     let miner = Address::parse(&req.miner)?;
     let node = state.node.clone();
-    let block = tokio::task::spawn_blocking(move || node.mine(&miner))
+    // If the caller hangs up, this handler is dropped and the guard stops the search.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _guard = CancelOnDrop(cancelled.clone());
+    let block = tokio::task::spawn_blocking(move || node.mine_unless(&miner, &cancelled))
         .await
         .expect("mining task panicked")?;
     gossip_chain(&state, None);
@@ -301,6 +307,15 @@ pub async fn get_node(State(state): State<AppState>) -> Json<NodeResponse> {
 fn gossip_chain(state: &AppState, except: Option<String>) {
     let network = state.network.clone();
     tokio::spawn(async move { network.broadcast_tip(except.as_deref()).await });
+}
+
+/// Sets its flag when dropped, which tells a search nobody is waiting for to stop.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The peer that relayed a block or transaction, if it said.

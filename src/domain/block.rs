@@ -194,8 +194,8 @@ impl Block {
             .expect("mining only stops when told to")
     }
 
-    /// Like `mine`, but asks `keep_going` every few thousand tries and gives up when it says no,
-    /// for a miner whose block has gone stale.
+    /// Like `mine`, but asks `keep_going` before the first try and every few thousand after, and
+    /// gives up when it says no, for a miner whose block has gone stale.
     pub fn mine_while(
         index: u64,
         timestamp: DateTime<Utc>,
@@ -206,14 +206,14 @@ impl Block {
     ) -> Option<Self> {
         let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
         loop {
+            if block.nonce.is_multiple_of(CHECK_EVERY) && !keep_going() {
+                return None;
+            }
             block.hash = block.computed_hash();
             if meets_work(&block.hash, work) {
                 return Some(block);
             }
             block.nonce += 1;
-            if block.nonce.is_multiple_of(CHECK_EVERY) && !keep_going() {
-                return None;
-            }
         }
     }
 
