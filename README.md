@@ -252,7 +252,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 90 tests: unit, HTTP and property-based
+cargo test        # 94 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

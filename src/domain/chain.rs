@@ -26,6 +26,23 @@ pub struct Blockchain {
     rules: ChainRules,
 }
 
+/// Proof of work: the contents of the next block, waiting for a nonce.
+pub struct MiningTemplate {
+    pub index: u64,
+    pub timestamp: DateTime<Utc>,
+    pub prev_hash: String,
+    pub transactions: Vec<Transaction>,
+    pub work: u128,
+}
+
+impl MiningTemplate {
+    /// Searches for the nonce. Gives up when `keep_going` says no.
+    pub fn mine_while(self, keep_going: impl FnMut() -> bool) -> Option<Block> {
+        let Self { index, timestamp, prev_hash, transactions, work } = self;
+        Block::mine_while(index, timestamp, prev_hash, transactions, work, keep_going)
+    }
+}
+
 /// What came of offering a chain some blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Extension {
@@ -181,11 +198,33 @@ impl Blockchain {
 
     /// Proof of work: bundles the reward and every pending transaction into a new block.
     pub fn mine(&mut self, miner: &Address) -> Result<&Block, ChainError> {
+        let block = self.mining_template(miner)?.mine_while(|| true).expect("never told to stop");
+        self.append_mined(block)
+    }
+
+    /// Proof of work: what `miner`'s next block would hold, so it can be mined without holding
+    /// the chain.
+    pub fn mining_template(&self, miner: &Address) -> Result<MiningTemplate, ChainError> {
         if self.rules.is_proof_of_stake() {
             return Err(ChainError::NotProofOfWork);
         }
-        let work = self.next_work();
-        self.append(miner, |index, now, prev, txs| Block::mine(index, now, prev, txs, work))
+        let (index, transactions) = self.next_contents(miner);
+        Ok(MiningTemplate {
+            index,
+            timestamp: Utc::now(),
+            prev_hash: self.tip().hash.clone(),
+            transactions,
+            work: self.next_work(),
+        })
+    }
+
+    /// Proof of work: appends a block mined from a template, unless another block took the tip
+    /// in the meantime.
+    pub fn append_mined(&mut self, block: Block) -> Result<&Block, ChainError> {
+        if self.rules.is_proof_of_stake() {
+            return Err(ChainError::NotProofOfWork);
+        }
+        self.append_sealed(block)
     }
 
     /// Proof of work at a chosen time, so tests can play out any pace of blocks.
@@ -244,6 +283,12 @@ impl Blockchain {
     pub fn append_forged(&mut self, block: Block) -> Result<&Block, ChainError> {
         let validator = block.validator.as_deref().ok_or(ChainError::InvalidBlock)?;
         self.check_turn(&Address::parse(validator)?)?;
+        self.append_sealed(block)
+    }
+
+    /// Appends a block made elsewhere on our tip, after checking it like any other block.
+    /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
+    fn append_sealed(&mut self, block: Block) -> Result<&Block, ChainError> {
         if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
             return Err(ChainError::StaleBlock);
         }
@@ -664,6 +709,49 @@ mod tests {
         assert_eq!(ours.adopt_if_heavier(before[..2].to_vec()), Ok(false));
         assert_eq!(ours.adopt_if_heavier(before.clone()), Ok(false));
         assert_eq!(ours.blocks(), before);
+    }
+
+    #[test]
+    fn a_block_mined_on_an_old_tip_is_refused() {
+        let mut chain = chain();
+        let (miner, _) = wallet();
+        let stale = chain.mining_template(&miner).unwrap();
+        chain.mine(&wallet().0).unwrap();
+
+        let block = stale.mine_while(|| true).unwrap();
+        assert_eq!(chain.append_mined(block), Err(ChainError::StaleBlock));
+        assert_eq!(chain.blocks().len(), 2);
+        assert_eq!(chain.balance(&miner), 0);
+    }
+
+    #[test]
+    fn a_mined_block_keeps_transactions_that_arrived_meanwhile() {
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut chain = chain();
+        chain.mine(&alice).unwrap();
+        let template = chain.mining_template(&alice).unwrap();
+        let late = transfer(&alice_key, &bob, 5, 0);
+        chain.submit(late.clone()).unwrap();
+
+        chain.append_mined(template.mine_while(|| true).unwrap()).unwrap();
+        assert_eq!(chain.pending(), [late], "waits for the next block");
+    }
+
+    #[test]
+    fn mining_stops_when_told_to() {
+        let hard = ChainRules::proof_of_work(16, 50);
+        let template = Blockchain::new(RULES).mining_template(&wallet().0).unwrap();
+        let template = MiningTemplate { work: hard.initial_work(), ..template };
+        let mut asked = 0;
+        assert_eq!(
+            template.mine_while(|| {
+                asked += 1;
+                asked < 3
+            }),
+            None
+        );
+        assert_eq!(asked, 3);
     }
 
     #[test]

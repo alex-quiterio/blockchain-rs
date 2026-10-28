@@ -324,7 +324,7 @@ done
 if [[ $(jq -r .index "$race/Mia" 2> /dev/null) == "$(jq -r .index "$race/Olga" 2> /dev/null)" ]]; then
   echo "  ${YEL}Same height, different blocks: the chain has forked.${R} Heaviest chain wins, ties go to the lower hash."
 else
-  echo "  ${D}No fork this time: one block reached the other node before it finished. Run it again for a split.${R}"
+  echo "  ${D}No fork this time: one block arrived mid-search, so the other miner started over on top of it, as real miners do. Run it again for a split.${R}"
 fi
 rm -rf "$race"
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

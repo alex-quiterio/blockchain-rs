@@ -18,6 +18,9 @@ pub const STAKE: &str = "stake";
 /// Recipient that unlocks staked coins back into the sender's balance.
 pub const UNSTAKE: &str = "unstake";
 
+/// How many nonces a miner tries between asking whether to keep going.
+const CHECK_EVERY: u64 = 1 << 14;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxKind {
     Coinbase,
@@ -187,13 +190,30 @@ impl Block {
         transactions: Vec<Transaction>,
         work: u128,
     ) -> Self {
+        Self::mine_while(index, timestamp, prev_hash, transactions, work, || true)
+            .expect("mining only stops when told to")
+    }
+
+    /// Like `mine`, but asks `keep_going` every few thousand tries and gives up when it says no,
+    /// for a miner whose block has gone stale.
+    pub fn mine_while(
+        index: u64,
+        timestamp: DateTime<Utc>,
+        prev_hash: String,
+        transactions: Vec<Transaction>,
+        work: u128,
+        mut keep_going: impl FnMut() -> bool,
+    ) -> Option<Self> {
         let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
         loop {
             block.hash = block.computed_hash();
             if meets_work(&block.hash, work) {
-                return block;
+                return Some(block);
             }
             block.nonce += 1;
+            if block.nonce.is_multiple_of(CHECK_EVERY) && !keep_going() {
+                return None;
+            }
         }
     }
 

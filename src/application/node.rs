@@ -190,9 +190,22 @@ impl NodeService {
         self.commit(|chain| chain.forge(key).cloned())
     }
 
-    /// Mines a block and saves it. Blocks for as long as the proof of work takes.
+    /// Mines a block and saves it. Returns once the proof of work is found, but the chain stays
+    /// free meanwhile, so the node keeps answering and taking peers' blocks. When one of those
+    /// takes the tip first, mining starts over on top of it, as real miners do.
     pub fn mine(&self, miner: &Address) -> Result<Block, NodeError> {
-        self.commit(|chain| chain.mine(miner).cloned())
+        loop {
+            let template = self.chain.lock().unwrap().mining_template(miner)?;
+            let tip = template.prev_hash.clone();
+            let still_current = || self.chain.lock().unwrap().tip().hash == tip;
+            let Some(block) = template.mine_while(still_current) else {
+                continue;
+            };
+            match self.commit(|chain| chain.append_mined(block).cloned()) {
+                Err(NodeError::Chain(ChainError::StaleBlock)) => continue,
+                result => return result,
+            }
+        }
     }
 
     /// Offers another node's chain. Returns whether it was adopted and the length afterwards.
@@ -316,6 +329,33 @@ mod tests {
         assert!(matches!(node.mine(&miner), Err(NodeError::Storage(_))));
         assert_eq!(node.blocks().len(), 1);
         assert_eq!(node.account(&miner).balance, 0);
+    }
+
+    #[test]
+    fn mining_starts_over_when_a_peer_takes_the_tip() {
+        let hard = ChainRules::proof_of_work(4, 50);
+        let ours =
+            Arc::new(NodeService::open(Box::new(InMemoryRepository::default()), hard).unwrap());
+        let theirs = NodeService::open(Box::new(InMemoryRepository::default()), hard).unwrap();
+        let theirs_block = theirs.mine(&new_address()).unwrap();
+
+        let miner = new_address();
+        let mining = {
+            let ours = ours.clone();
+            let miner = miner.clone();
+            std::thread::spawn(move || ours.mine(&miner))
+        };
+        // While ours is still searching, the chain answers and takes their block.
+        ours.extend(vec![theirs_block.clone()]).unwrap();
+        let ours_block = mining.join().unwrap().unwrap();
+
+        if ours_block.index == 1 {
+            // Ours happened to finish first; their block then lost or won the tie.
+            return;
+        }
+        assert_eq!(ours_block.index, 2);
+        assert_eq!(ours_block.prev_hash, theirs_block.hash, "built on the block that won");
+        assert_eq!(ours.account(&miner).balance, 50);
     }
 
     #[test]
