@@ -263,3 +263,20 @@ button.ghost:hover { border-color: var(--muted); }
 .footer { max-width: 1400px; margin: 0 auto; padding: 0 1.5rem 2rem; font-size: .74rem; color: var(--muted); display: flex; gap: .5rem; flex-wrap: wrap; }
 .footer .mono { color: var(--ink); }
 .footer .dirty { color: var(--gold); }
+
+/* Vault */
+.vault { margin-bottom: .8rem; }
+.lockcard { padding: .75rem .8rem; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--line); font-size: .82rem; }
+.lockcard.locked { border-color: var(--gold); background: var(--gold-soft); }
+.lockcard .title { font-weight: 600; display: flex; align-items: center; gap: .4rem; }
+.lockcard p { margin: .3rem 0 .6rem; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.lockcard form { display: grid; gap: .45rem; }
+.lockcard .row { display: flex; gap: .45rem; flex-wrap: wrap; align-items: center; }
+.lockcard .row .grow { flex: 1; }
+.lockcard input { width: 100%; }
+.unlocked { display: flex; align-items: center; gap: .5rem; font-size: .78rem; color: var(--muted); }
+.unlocked .title { color: var(--ok); font-weight: 600; }
+.unlocked .actions { margin-left: auto; display: flex; gap: .2rem; }
+button.small { padding: .25rem .55rem; font-size: .74rem; font-weight: 500; background: none; color: var(--ink); border: 1px solid var(--line); }
+button.small:hover { border-color: var(--muted); transform: none; }
+.unlocked-note { font-size: .72rem; color: var(--muted); margin-top: .3rem; }

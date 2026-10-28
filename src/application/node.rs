@@ -123,6 +123,16 @@ impl NodeService {
         }
     }
 
+    /// The unsigned block `validator` should sign next. Changes nothing.
+    pub fn propose(&self, validator: &Address) -> Result<Block, ChainError> {
+        self.chain.lock().unwrap().propose(validator)
+    }
+
+    /// Appends a proof-of-stake block signed elsewhere and saves it.
+    pub fn append_forged(&self, block: Block) -> Result<Block, NodeError> {
+        self.commit(|chain| chain.append_forged(block).cloned())
+    }
+
     /// Forges a proof-of-stake block signed with `key` and saves it.
     pub fn forge(&self, key: &SigningKey) -> Result<Block, NodeError> {
         self.commit(|chain| chain.forge(key).cloned())

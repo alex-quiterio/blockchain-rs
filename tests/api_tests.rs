@@ -210,3 +210,29 @@ async fn refuses_to_rewrite_history_deeper_than_allowed() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["message"], "switching forks would undo 2 blocks; at most 1 may be undone");
 }
+
+#[tokio::test]
+async fn forging_with_a_key_that_never_leaves_the_client() {
+    use blockchain::domain::{block::Block, crypto};
+
+    let app = app_with(ChainRules::proof_of_stake(50));
+    let (address, secret) = crypto::generate_keypair();
+    let key = crypto::parse_secret_key(&secret).unwrap();
+
+    let (status, proposal) =
+        call(&app, "POST", "/forge/proposal", Some(json!({ "validator": address }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(proposal.get("signature").is_none());
+
+    let mut block: Block = serde_json::from_value(proposal).unwrap();
+    block.sign(&key);
+    let (status, body) =
+        call(&app, "POST", "/blocks", Some(serde_json::to_value(&block).unwrap())).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, _) =
+        call(&app, "POST", "/blocks", Some(serde_json::to_value(&block).unwrap())).await;
+    assert_eq!(status, StatusCode::CONFLICT, "the same block again is stale");
+    let (_, balance) = call(&app, "GET", &format!("/balances/{address}"), None).await;
+    assert_eq!(balance["balance"], 50);
+}

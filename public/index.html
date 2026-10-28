@@ -29,12 +29,23 @@
     <aside class="side">
       <section class="panel">
         <h2>Wallets <span id="wallet-count" class="count"></span></h2>
+        <div id="vault" class="vault"></div>
         <form id="wallet-form" class="inline">
           <input id="wallet-name" placeholder="Name, e.g. Alice" autocomplete="off" />
           <button id="create-wallet">New wallet</button>
         </form>
         <div id="wallets" class="wallets"></div>
-        <p class="hint">Keys live in this browser's localStorage. Fine for a toy chain, never for real money.</p>
+        <details class="explain">
+          <summary>How are my keys protected?</summary>
+          <ol>
+            <li>A wallet's <b>secret key</b> is what lets it spend, like a password. Its <b>address</b> is public, like an account number.</li>
+            <li>This page creates the key and signs with it right here. The node only ever receives signatures, so even a hacked node can't take your key.</li>
+            <li>Before the key is saved in this browser, it's encrypted with your passphrase (PBKDF2, 600,000 rounds, then AES-256-GCM). Storage only holds scrambled data, which is useless without the passphrase.</li>
+            <li>Unlocking decrypts the keys into this tab's memory only. Locking, closing the tab or 15 idle minutes wipes them.</li>
+            <li>There's no reset: forget the passphrase and the keys are gone. Use <b>Back up</b> to save an encrypted copy.</li>
+            <li>It's still a learning project: a malicious browser extension running while you're unlocked could read the page's memory.</li>
+          </ol>
+        </details>
       </section>
 
       <section class="panel">
@@ -50,7 +61,7 @@
         <details class="explain">
           <summary>What happens when I send?</summary>
           <ol>
-            <li>Your key signs <code>from | to | amount | nonce</code> (plus the fee, if any). Change any of it and the signature breaks.</li>
+            <li>This page signs <code>from | to | amount | nonce</code> (plus the fee, if any) with your key. Only the signed transaction is sent; the key stays here. Change any of it and the signature breaks.</li>
             <li>The node checks the signature, the nonce (your transaction count, which stops replays) and that you can afford amount + fee.</li>
             <li>It waits in the mempool until the next block includes it. The fee goes to whoever adds that block.</li>
           </ol>

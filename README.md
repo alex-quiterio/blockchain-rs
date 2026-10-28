@@ -20,7 +20,7 @@ Proof of work *or* proof of stake · signed transfers with optional fees · peer
 
 | | |
 | --- | --- |
-| 🔐 **Wallets** | ed25519 keypairs. An address is the hex public key. |
+| 🔐 **Wallets** | ed25519 keypairs made and used in your browser. Keys never leave the page, and they're saved encrypted with your passphrase. |
 | ✍️ **Transactions** | Signed over `from \| to \| amount \| nonce` (plus the fee, when there is one). The nonce stops replays. |
 | ⛏️ **Proof of work** | Mine a block by finding a hash with `DIFFICULTY` leading zeros. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake and seeded by the previous hash, then signs the block. |
@@ -46,7 +46,16 @@ CONSENSUS=pos CHAIN_FILE=pos.json cargo run
 
 While nothing is staked, anyone may forge. Forge a few blocks to earn coins, send some to **Stake** from the Send panel, and watch the Forge panel switch to whoever's turn it is.
 
-### A three-node network on one laptop
+### 🐳 A three-node network, one command
+
+```sh
+docker compose up --build
+```
+
+That starts nodes on **:3000**, **:3001** and **:3002**, linked c → b → a. Mine on one node and the block reaches the others within seconds. Add `CONSENSUS=pos` in front for proof of stake, and `GIT_COMMIT=$(git rev-parse --short HEAD)` to show the real commit in the footer. Each node keeps its chain in its own volume, and `docker compose down -v` wipes them.
+
+<details>
+<summary><b>Without Docker</b></summary>
 
 ```sh
 cargo build
@@ -55,7 +64,9 @@ BIND_ADDR=127.0.0.1:3001 CHAIN_FILE=b.json PEERS=http://127.0.0.1:3000 ./target/
 BIND_ADDR=127.0.0.1:3002 CHAIN_FILE=c.json PEERS=http://127.0.0.1:3001 ./target/debug/blockchain &
 ```
 
-Mine on `:3002` and the block shows up on `:3000`, two hops away, within seconds. Each node's UI shows its peers and whether they're ahead, behind or in step.
+</details>
+
+Each node's UI shows its peers and whether they're ahead, behind or in step.
 
 <details>
 <summary><b>📸 Proof of work, light mode</b></summary>
@@ -146,7 +157,9 @@ flowchart TB
 | POST | `/transactions` | Submit a signed transaction. It's gossiped to peers. |
 | GET | `/transactions/pending` | The mempool. |
 | POST | `/mine` | Proof of work: `{miner}`. |
-| POST | `/forge` | Proof of stake: `{secret_key}` of the selected validator. |
+| POST | `/forge/proposal` | Proof of stake: `{validator}` → the unsigned block that validator should sign next. |
+| POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
+| POST | `/forge` | Proof of stake shortcut for scripts: `{secret_key}` of the selected validator. |
 | GET | `/consensus` | Rules, stakes and whose turn it is next. |
 | GET | `/chain` | Every block. |
 | POST | `/chain` | Offer a chain: adopted if valid and heavier. `409` if it would undo too many blocks. |
@@ -155,7 +168,13 @@ flowchart TB
 | POST | `/sync` | Pull from every peer now. |
 | GET | `/node` | Version and git commit of the running node. |
 
-> ⚠️ `/wallets`, `/transactions/sign` and `/forge` take secret keys over HTTP. That's a shortcut for experimenting locally. A real wallet signs on the client and never sends its key.
+> 🔐 **How the UI protects keys.**
+> - **On disk:** secret keys are encrypted with your passphrase (PBKDF2-SHA256, 600,000 rounds, then AES-256-GCM) before they're saved, so browser storage only ever holds scrambled data.
+> - **In use:** unlocking decrypts them into the tab's memory, and Lock, closing the tab or 15 idle minutes wipes them.
+> - **Backup:** **Back up** exports the encrypted vault and **Restore** imports one; there's no passphrase reset.
+> - **Limits:** this runs only on `localhost`, `127.0.0.1` or HTTPS, where browsers allow WebCrypto. A malicious extension running while you're unlocked could still read the page's memory.
+>
+> The web UI never sends a secret key. It generates keys and signs transactions in the page, and forges by asking for a proposal, signing its hash and sending back the signed block. `/wallets`, `/transactions/sign` and `/forge` still take keys over HTTP as shortcuts for `curl` experiments; don't use them for anything real.
 
 ## 🧪 Tests
 
@@ -165,7 +184,14 @@ cargo test
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.
 - **Application:** a whole peer network simulated in one process.
-- **HTTP:** round trips through the API.
+- **HTTP:** round trips through the API, including forging with a key that never leaves the client.
+- **Properties** (`tests/properties.rs`, [proptest](https://proptest-rs.github.io/proptest/)): hundreds of random scenarios per run.
+  - Random transfers, stakes and blocks never create or destroy coins, and never break nonces or replay.
+  - Transactions arriving in any order end in the same balances.
+  - Forks offered in any order settle on the same chain.
+  - Tampered forks are never adopted.
+
+  Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
 
 CI runs `fmt`, `clippy -D warnings` and the tests on every push and pull request.
 
@@ -184,7 +210,6 @@ Nothing here is built yet. Each would make a good next step.
 - **Fee estimates**: suggest a fee from what recent blocks accepted.
 
 **🔐 Wallets and privacy**
-- **Signing in the browser**, so secret keys never leave the page.
 - **HD wallets**: many addresses from one seed phrase.
 - **Multisig addresses** that need M of N signatures to spend.
 
@@ -199,5 +224,4 @@ Nothing here is built yet. Each would make a good next step.
 
 **🛠️ Developer experience**
 - **A block explorer page**: search by address, transaction or hash.
-- **A Docker Compose file** that starts a three-node network with one command.
-- **Property-based tests** that fuzz forks and transaction orderings.
+- **A load generator** that floods a network with random transactions to watch fees and sync under pressure.

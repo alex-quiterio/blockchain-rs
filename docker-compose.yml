@@ -1,0 +1,56 @@
+# A three-node network in a line: c knows b, b knows a, and introductions make every link two-way.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:3000, :3001 and :3002. Mine on one node and watch the block reach
+# the others. For proof of stake: CONSENSUS=pos docker compose up --build
+# To show the real commit in the UI footer: GIT_COMMIT=$(git rev-parse --short HEAD) docker compose up --build
+
+name: blockchain-rs
+
+x-node: &node
+  image: blockchain-rs:local
+  restart: unless-stopped
+  environment: &env
+    CONSENSUS: ${CONSENSUS:-pow}
+    DIFFICULTY: ${DIFFICULTY:-4}
+    SYNC_SECS: ${SYNC_SECS:-3}
+    RUST_LOG: info
+
+services:
+  node-a:
+    <<: *node
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-docker}
+    ports: ["3000:3000"]
+    environment:
+      <<: *env
+      PUBLIC_URL: http://node-a:3000
+    volumes: [node-a:/data]
+
+  node-b:
+    <<: *node
+    depends_on: [node-a]
+    ports: ["3001:3000"]
+    environment:
+      <<: *env
+      PUBLIC_URL: http://node-b:3000
+      PEERS: http://node-a:3000
+    volumes: [node-b:/data]
+
+  node-c:
+    <<: *node
+    depends_on: [node-b]
+    ports: ["3002:3000"]
+    environment:
+      <<: *env
+      PUBLIC_URL: http://node-c:3000
+      PEERS: http://node-b:3000
+    volumes: [node-c:/data]
+
+volumes:
+  node-a:
+  node-b:
+  node-c:

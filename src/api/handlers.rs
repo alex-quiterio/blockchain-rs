@@ -7,8 +7,8 @@ use axum::{
 
 use super::dto::{
     AddPeerResponse, BalanceResponse, ConsensusResponse, ErrorResponse, ForgeRequest, MineRequest,
-    NodeResponse, PeerRequest, PeerResponse, ReplaceResponse, SignRequest, StakeEntry,
-    SyncResponse, ValidityResponse, WalletResponse,
+    NodeResponse, PeerRequest, PeerResponse, ProposalRequest, ReplaceResponse, SignRequest,
+    StakeEntry, SyncResponse, ValidityResponse, WalletResponse,
 };
 use super::AppState;
 use crate::application::NodeError;
@@ -40,6 +40,7 @@ impl From<ChainError> for ApiError {
             ChainError::NotYourTurn { .. } => StatusCode::FORBIDDEN,
             ChainError::NotProofOfWork
             | ChainError::NotProofOfStake
+            | ChainError::StaleBlock
             | ChainError::ReorgTooDeep { .. } => StatusCode::CONFLICT,
             _ => StatusCode::BAD_REQUEST,
         };
@@ -168,7 +169,27 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
     })
 }
 
-/// Forges the next proof-of-stake block, signed by the validator whose key is sent.
+/// The unsigned block a validator should sign next. Signing it where the key lives and sending
+/// it to `POST /blocks` forges without the key ever leaving the client.
+pub async fn propose(
+    State(state): State<AppState>,
+    Json(req): Json<ProposalRequest>,
+) -> Result<Json<Block>, ApiError> {
+    Ok(Json(state.node.propose(&Address::parse(&req.validator)?)?))
+}
+
+/// Accepts a proof-of-stake block signed by its validator.
+pub async fn submit_block(
+    State(state): State<AppState>,
+    Json(block): Json<Block>,
+) -> Result<(StatusCode, Json<Block>), ApiError> {
+    let block = state.node.append_forged(block)?;
+    gossip_chain(&state);
+    Ok((StatusCode::CREATED, Json(block)))
+}
+
+/// Forges the next proof-of-stake block, signed by the validator whose key is sent. A shortcut
+/// for scripts; the web UI signs in the browser with `/forge/proposal` and `/blocks` instead.
 pub async fn forge(
     State(state): State<AppState>,
     Json(req): Json<ForgeRequest>,

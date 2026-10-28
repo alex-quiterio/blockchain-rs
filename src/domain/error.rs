@@ -28,6 +28,10 @@ pub enum ChainError {
     NotYourTurn {
         expected: String,
     },
+    /// A submitted block doesn't build on the current tip, usually because another block won.
+    StaleBlock,
+    /// A submitted block fails a check: its hash, signature, payout or transactions.
+    InvalidBlock,
     /// A heavier fork would throw away more of our blocks than the rules allow.
     ReorgTooDeep {
         depth: usize,
@@ -53,6 +57,8 @@ impl fmt::Display for ChainError {
             Self::NotProofOfWork => write!(f, "this chain uses proof of stake: forge, don't mine"),
             Self::NotProofOfStake => write!(f, "this chain uses proof of work: mine, don't forge"),
             Self::NotYourTurn { expected } => write!(f, "the next block is {expected}'s to forge"),
+            Self::StaleBlock => write!(f, "block does not build on the current tip"),
+            Self::InvalidBlock => write!(f, "block does not validate"),
             Self::ReorgTooDeep { depth, max } => {
                 write!(f, "switching forks would undo {depth} blocks; at most {max} may be undone")
             }

@@ -3,6 +3,12 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=GIT_COMMIT");
+    // Docker builds have no .git, so they pass the commit in instead.
+    if let Ok(commit) = std::env::var("GIT_COMMIT") {
+        println!("cargo:rustc-env=GIT_COMMIT={commit}");
+        return;
+    }
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()

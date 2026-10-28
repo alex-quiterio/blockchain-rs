@@ -153,11 +153,29 @@ impl Block {
         transactions: Vec<Transaction>,
         key: &SigningKey,
     ) -> Self {
-        let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
-        block.validator = Some(Address::of(key).to_string());
-        block.hash = block.computed_hash();
-        block.signature = Some(crypto::sign(key, block.hash.as_bytes()));
+        let mut block = Self::propose(index, timestamp, prev_hash, transactions, &Address::of(key));
+        block.sign(key);
         block
+    }
+
+    /// Proof of stake, step one: a block naming `validator`, hashed but not yet signed. Lets the
+    /// validator sign somewhere else, such as in a browser, without handing over their key.
+    pub fn propose(
+        index: u64,
+        timestamp: DateTime<Utc>,
+        prev_hash: String,
+        transactions: Vec<Transaction>,
+        validator: &Address,
+    ) -> Self {
+        let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
+        block.validator = Some(validator.to_string());
+        block.hash = block.computed_hash();
+        block
+    }
+
+    /// Proof of stake, step two: the validator signs the hash.
+    pub fn sign(&mut self, key: &SigningKey) {
+        self.signature = Some(crypto::sign(key, self.hash.as_bytes()));
     }
 
     fn unsealed(

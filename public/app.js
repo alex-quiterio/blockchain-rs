@@ -17,20 +17,182 @@ async function api(method, path, body) {
   return data;
 }
 
-// ---- Wallets kept in this browser ------------------------------------------
+// ---- Keys: made and used in this page, never sent anywhere ---------------------
+
+const Keys = {
+  // A PKCS#8 wrapper around a 32-byte ed25519 seed, the form WebCrypto imports private keys in.
+  PKCS8_PREFIX: "302e020100300506032b657004220420",
+  ALGORITHM: { name: "Ed25519" },
+
+  async generate() {
+    const pair = await crypto.subtle.generateKey(this.ALGORITHM, true, ["sign", "verify"]);
+    const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+    return { address: toHex(publicKey), secret_key: toHex(pkcs8.slice(-32)) };
+  },
+
+  async sign(secretKey, message) {
+    const key = await crypto.subtle.importKey(
+      "pkcs8", fromHex(this.PKCS8_PREFIX + secretKey), this.ALGORITHM, false, ["sign"]);
+    const bytes = new TextEncoder().encode(message);
+    return toHex(new Uint8Array(await crypto.subtle.sign(this.ALGORITHM, key, bytes)));
+  },
+
+  /** A transaction signed exactly as the node expects: `from|to|amount|nonce`, plus `|fee=N`. */
+  async transaction(wallet, to, amount, nonce, fee) {
+    const payload = `${wallet.address}|${to}|${amount}|${nonce}${fee ? `|fee=${fee}` : ""}`;
+    const signature = await this.sign(Wallets.secretOf(wallet.address), payload);
+    const tx = { from: wallet.address, to, amount, nonce, signature };
+    return fee ? { ...tx, fee } : tx;
+  },
+};
+
+const toHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+const fromHex = (hex) => new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16)));
+
+// ---- Vault: secret keys encrypted with a passphrase before they're saved -----------
+
+const Vault = {
+  // OWASP's 2023 recommendation for PBKDF2-SHA256: slow enough to make guessing expensive.
+  ITERATIONS: 600_000,
+
+  async deriveKey(passphrase, salt, iterations) {
+    const material = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+      { name: "PBKDF2", hash: "SHA-256", salt, iterations },
+      material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  },
+
+  /** Encrypts `secrets` under a session's key, with a fresh IV every time. */
+  async seal(secrets, session) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const plain = new TextEncoder().encode(JSON.stringify(secrets));
+    const data = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, session.key, plain));
+    return { version: 1, kdf: "PBKDF2-SHA256", iterations: session.iterations, salt: toHex(session.salt), iv: toHex(iv), data: toHex(data) };
+  },
+
+  /** Decrypts a sealed vault. AES-GCM refuses a wrong key outright, so a bad passphrase can't half-work. */
+  async open(vault, passphrase) {
+    const session = { salt: fromHex(vault.salt), iterations: vault.iterations };
+    session.key = await this.deriveKey(passphrase, session.salt, session.iterations);
+    try {
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromHex(vault.iv) }, session.key, fromHex(vault.data));
+      return { secrets: JSON.parse(new TextDecoder().decode(plain)), session };
+    } catch {
+      throw new Error("Wrong passphrase");
+    }
+  },
+};
+
+// ---- Wallets: names and addresses in the clear, secret keys only in the vault -------
 
 const Wallets = {
-  KEY: "blockchain-rs:wallets",
-  list: [],
+  PUBLIC: "blockchain-rs:accounts",
+  VAULT: "blockchain-rs:vault",
+  LEGACY: "blockchain-rs:wallets", // older versions kept keys here unencrypted
+  IDLE_MS: 15 * 60 * 1000,
+
+  list: [],       // [{ name, address }]: public, so balances show even while locked
+  vault: null,    // the encrypted secret keys, as saved
+  legacy: [],     // unencrypted wallets from older versions, waiting for a passphrase
+  secrets: null,  // { address: secret_key }, only in memory and only while unlocked
+  session: null,  // the key derived from the passphrase, while unlocked
+  lastActive: Date.now(),
+
   load() {
-    try { this.list = JSON.parse(localStorage.getItem(this.KEY) || "[]"); } catch { this.list = []; }
+    const read = (key, fallback) => {
+      try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+    };
+    this.list = read(this.PUBLIC, []);
+    this.vault = read(this.VAULT, null);
+    this.legacy = read(this.LEGACY, []).filter((w) => w.secret_key);
+    for (const w of this.legacy) {
+      if (!this.byAddress(w.address)) this.list.push({ name: w.name, address: w.address });
+    }
   },
-  save() {
-    try { localStorage.setItem(this.KEY, JSON.stringify(this.list)); } catch { /* private mode */ }
+
+  get locked() { return !this.secrets; },
+  get needsPassphrase() { return !this.vault; },
+
+  /** First run: choose a passphrase. Any unencrypted wallets from older versions move into the vault. */
+  async setUp(passphrase) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    this.session = { salt, iterations: Vault.ITERATIONS, key: await Vault.deriveKey(passphrase, salt, Vault.ITERATIONS) };
+    this.secrets = {};
+    await this.adoptLegacy();
   },
-  add(wallet) { this.list.push(wallet); this.save(); },
-  remove(wallet) { this.list = this.list.filter((w) => w !== wallet); this.save(); },
+
+  async unlock(passphrase) {
+    const { secrets, session } = await Vault.open(this.vault, passphrase);
+    Object.assign(this, { secrets, session, lastActive: Date.now() });
+    await this.adoptLegacy();
+  },
+
+  lock() {
+    this.secrets = null;
+    this.session = null;
+  },
+
+  async adoptLegacy() {
+    for (const w of this.legacy) this.secrets[w.address] = w.secret_key;
+    await this.save();
+    this.legacy = [];
+    try { localStorage.removeItem(this.LEGACY); } catch { /* private mode */ }
+  },
+
+  async save() {
+    this.vault = await Vault.seal(this.secrets, this.session);
+    try {
+      localStorage.setItem(this.VAULT, JSON.stringify(this.vault));
+      localStorage.setItem(this.PUBLIC, JSON.stringify(this.list));
+    } catch { /* private mode: the wallets last as long as the tab */ }
+  },
+
+  async add({ name, address, secret_key }) {
+    this.secretOf(null);
+    this.list.push({ name, address });
+    this.secrets[address] = secret_key;
+    await this.save();
+  },
+
+  async remove(wallet) {
+    this.secretOf(null);
+    this.list = this.list.filter((w) => w.address !== wallet.address);
+    delete this.secrets[wallet.address];
+    await this.save();
+  },
+
+  /** A wallet's secret key. Throws while locked, so nothing can sign without the passphrase. */
+  secretOf(address) {
+    if (this.locked) throw new Error("Unlock your wallets first");
+    this.lastActive = Date.now();
+    return address && this.secrets[address];
+  },
+
   byAddress(address) { return this.list.find((w) => w.address === address); },
+
+  /** The encrypted vault plus the public list. Useless without the passphrase. */
+  backup() {
+    return JSON.stringify({ format: "blockchain-rs-backup", version: 1, accounts: this.list, vault: this.vault }, null, 2);
+  },
+
+  /** Merges a backup into this vault. Asks for the passphrase the backup was made with. */
+  async restore(text, passphrase) {
+    this.secretOf(null);
+    const backup = JSON.parse(text);
+    if (backup.format !== "blockchain-rs-backup") throw new Error("That file isn't a blockchain-rs backup");
+    const { secrets } = await Vault.open(backup.vault, passphrase);
+    let added = 0;
+    for (const account of backup.accounts) {
+      if (!secrets[account.address] || this.byAddress(account.address)) continue;
+      this.list.push(account);
+      this.secrets[account.address] = secrets[account.address];
+      added += 1;
+    }
+    await this.save();
+    return added;
+  },
 };
 Wallets.load();
 
@@ -140,9 +302,9 @@ function walletView(wallet) {
   copy.onclick = () => navigator.clipboard.writeText(wallet.address).then(() => toast("Address copied"));
   const forget = el("button", { className: "icon forget", type: "button", textContent: "✕", title: "Forget this wallet" });
   forget.onclick = () => {
+    if (Wallets.locked) return toast("Unlock your wallets first", true);
     if (!confirm(`Forget ${wallet.name}? Its secret key will be gone from this browser.`)) return;
-    Wallets.remove(wallet);
-    refresh();
+    Wallets.remove(wallet).then(refresh, (err) => toast(err.message, true));
   };
   return el("div", { className: "wallet" },
     avatar(wallet.address),
@@ -220,7 +382,101 @@ function renderStats() {
   pill.lastChild.textContent = state.valid ? "chain valid" : "chain INVALID";
 }
 
+const lockIcon = (open) => el("span", { textContent: open ? "🔓" : "🔒", ariaHidden: "true" });
+
+function passphraseInput(placeholder, autocomplete) {
+  return el("input", { type: "password", placeholder, autocomplete, required: true, minLength: 8 });
+}
+
+function renderVault() {
+  $("wallet-form").hidden = Wallets.locked;
+  if (Wallets.needsPassphrase) return renderSetUp();
+  if (Wallets.locked) return renderUnlock();
+
+  const lock = el("button", { className: "small", type: "button", textContent: "Lock" });
+  lock.onclick = () => { Wallets.lock(); refresh(); toast("Locked. Your keys are wiped from memory."); };
+  const backup = el("button", { className: "small", type: "button", textContent: "Back up" });
+  backup.onclick = downloadBackup;
+  const restore = el("button", { className: "small", type: "button", textContent: "Restore" });
+  restore.onclick = restoreBackup;
+  $("vault").replaceChildren(
+    el("div", { className: "unlocked" },
+      lockIcon(true), el("span", { className: "title", textContent: "Unlocked" }),
+      el("span", { className: "actions" }, lock, backup, restore)),
+    el("div", { className: "unlocked-note", textContent: "Keys are in this tab's memory until you lock, close the tab or stay idle for 15 minutes." }));
+}
+
+function renderSetUp() {
+  const first = passphraseInput("Passphrase, 8+ characters", "new-password");
+  const again = passphraseInput("Type it again", "new-password");
+  const button = el("button", { textContent: "Set passphrase" });
+  const form = el("form", {}, first, again, button);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    if (first.value !== again.value) return toast("The passphrases don't match", true);
+    busy(button, async () => {
+      button.textContent = "Encrypting…";
+      await Wallets.setUp(first.value);
+      toast("Your keys are now encrypted with your passphrase");
+    });
+  };
+  const n = Wallets.legacy.length;
+  $("vault").replaceChildren(el("div", { className: "lockcard locked" },
+    el("div", { className: "title" }, lockIcon(false), n ? `Protect your ${n} wallet${n === 1 ? "" : "s"}` : "Choose a passphrase"),
+    el("p", { textContent: n
+      ? "They're saved unencrypted from an older version. A passphrase encrypts them; the plain copy is then deleted."
+      : "It encrypts your wallets' secret keys before they're saved in this browser. There's no way to reset it, so pick one you'll remember." }),
+    form));
+}
+
+function renderUnlock() {
+  const input = passphraseInput("Passphrase", "current-password");
+  input.id = "unlock-passphrase";
+  const button = el("button", { textContent: "Unlock" });
+  const form = el("form", {}, el("div", { className: "row" }, el("span", { className: "grow" }, input), button));
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    busy(button, async () => {
+      button.textContent = "Unlocking…";
+      await Wallets.unlock(input.value);
+      toast("Unlocked");
+    });
+  };
+  $("vault").replaceChildren(el("div", { className: "lockcard locked" },
+    el("div", { className: "title" }, lockIcon(false), "Wallets locked"),
+    el("p", { textContent: "Balances and mining work while locked. Unlock to send, forge or make wallets." }),
+    form));
+}
+
+function downloadBackup() {
+  const link = el("a", {
+    href: URL.createObjectURL(new Blob([Wallets.backup()], { type: "application/json" })),
+    download: `blockchain-rs-wallets-${new Date().toISOString().slice(0, 10)}.json`,
+  });
+  link.click();
+  URL.revokeObjectURL(link.href);
+  toast("Saved an encrypted backup. You'll need the same passphrase to restore it.");
+}
+
+function restoreBackup() {
+  const picker = el("input", { type: "file", accept: "application/json,.json" });
+  picker.onchange = async () => {
+    try {
+      const text = await picker.files[0].text();
+      const passphrase = prompt("Passphrase this backup was made with:");
+      if (!passphrase) return;
+      const added = await Wallets.restore(text, passphrase);
+      toast(added ? `Restored ${added} wallet${added === 1 ? "" : "s"}` : "Those wallets are already here");
+      refresh();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+  picker.click();
+}
+
 function renderWallets() {
+  renderVault();
   $("wallet-count").textContent = Wallets.list.length || "";
   $("wallets").replaceChildren(
     ...(Wallets.list.length
@@ -439,10 +695,21 @@ function mine(button, miner) {
   });
 }
 
+/** Stops an action that needs a key while the wallets are locked, pointing at the unlock box. */
+function requireUnlocked() {
+  if (!Wallets.locked) return;
+  $("unlock-passphrase")?.focus();
+  throw new Error("Unlock your wallets first");
+}
+
 function forge(button, wallet) {
   if (!wallet) return toast("Create a wallet first", true);
   busy(button, async () => {
-    const block = await api("POST", "/forge", { secret_key: wallet.secret_key });
+    requireUnlocked();
+    // The node proposes, this page signs, and only the signature goes back.
+    const block = await api("POST", "/forge/proposal", { validator: wallet.address });
+    block.signature = await Keys.sign(Wallets.secretOf(wallet.address), block.hash);
+    await api("POST", "/blocks", block);
     toast(`${wallet.name} forged block ${block.index}`);
   });
 }
@@ -469,9 +736,9 @@ $("sync").onclick = (e) =>
 $("wallet-form").onsubmit = (e) => {
   e.preventDefault();
   busy($("create-wallet"), async () => {
-    const { address, secret_key } = await api("POST", "/wallets");
+    const { address, secret_key } = await Keys.generate();
     const name = $("wallet-name").value.trim() || `Wallet ${Wallets.list.length + 1}`;
-    Wallets.add({ name, address, secret_key });
+    await Wallets.add({ name, address, secret_key });
     $("wallet-name").value = "";
     toast(`Created ${name}`);
   });
@@ -484,6 +751,7 @@ $("send-form").onsubmit = (e) => {
   busy($("send"), async () => {
     const from = Wallets.byAddress($("send-from").value);
     if (!from) throw new Error("Create a wallet first");
+    requireUnlocked();
     let to = $("send-to").value;
     if (to === "__stake") to = STAKE;
     else if (to === "__unstake") to = UNSTAKE;
@@ -491,11 +759,24 @@ $("send-form").onsubmit = (e) => {
     if (!to) return;
     const amount = Number($("send-amount").value);
     const fee = Number($("send-fee").value) || 0;
-    const tx = await api("POST", "/transactions/sign", { secret_key: from.secret_key, to, amount, fee });
+    const { next_nonce } = await api("GET", `/balances/${from.address}`);
+    const tx = await Keys.transaction(from, to, amount, next_nonce, fee);
     await api("POST", "/transactions", tx);
     toast(`Queued from ${from.name}. It confirms in the next block.`);
   });
 };
+
+// Wipe keys from memory after a stretch without activity.
+for (const event of ["pointerdown", "keydown"]) {
+  document.addEventListener(event, () => (Wallets.lastActive = Date.now()), { passive: true });
+}
+setInterval(() => {
+  if (!Wallets.locked && Date.now() - Wallets.lastActive > Wallets.IDLE_MS) {
+    Wallets.lock();
+    refresh();
+    toast("Locked after 15 idle minutes");
+  }
+}, 30_000);
 
 // Pick up changes made elsewhere: other tabs, other nodes syncing, `POST /chain`.
 setInterval(async () => {

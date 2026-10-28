@@ -29,6 +29,12 @@ pub struct ForgeRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ProposalRequest {
+    /// The address that will sign the block.
+    pub validator: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StakeEntry {
     pub address: String,
     pub amount: u64,

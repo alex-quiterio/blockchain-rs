@@ -105,16 +105,62 @@ impl Blockchain {
 
     /// Proof of stake: the selected validator signs the next block with `key`.
     pub fn forge(&mut self, key: &SigningKey) -> Result<&Block, ChainError> {
+        let validator = Address::of(key);
+        self.check_turn(&validator)?;
+        self.append(&validator, |index, now, prev, txs| Block::forge(index, now, prev, txs, key))
+    }
+
+    /// Proof of stake, without the key: the block the selected `validator` should sign next. It
+    /// changes nothing; sign its hash and hand it to `append_forged`.
+    pub fn propose(&self, validator: &Address) -> Result<Block, ChainError> {
+        self.check_turn(validator)?;
+        let (index, transactions) = self.next_contents(validator);
+        let prev_hash = self.tip().hash.clone();
+        Ok(Block::propose(index, Utc::now(), prev_hash, transactions, validator))
+    }
+
+    /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
+    /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
+    pub fn append_forged(&mut self, block: Block) -> Result<&Block, ChainError> {
+        let validator = block.validator.as_deref().ok_or(ChainError::InvalidBlock)?;
+        self.check_turn(&Address::parse(validator)?)?;
+        if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
+            return Err(ChainError::StaleBlock);
+        }
+        let (mut ledger, mut weight) = (self.ledger.clone(), self.weight);
+        if !apply_block(self.tip(), &block, &mut ledger, &mut weight, &self.rules) {
+            return Err(ChainError::InvalidBlock);
+        }
+        let waiting = self.mempool.transactions().to_vec();
+        self.mempool = Mempool::rebuilt(waiting, &ledger);
+        self.blocks.push(block);
+        self.ledger = ledger;
+        self.weight = weight;
+        Ok(self.tip())
+    }
+
+    /// Under proof of stake, whether it's `validator`'s turn to forge.
+    fn check_turn(&self, validator: &Address) -> Result<(), ChainError> {
         if !self.rules.is_proof_of_stake() {
             return Err(ChainError::NotProofOfStake);
         }
-        let validator = Address::of(key);
-        if let Some(expected) = self.next_validator() {
-            if expected != validator {
-                return Err(ChainError::NotYourTurn { expected: expected.to_string() });
+        match self.next_validator() {
+            Some(expected) if expected != *validator => {
+                Err(ChainError::NotYourTurn { expected: expected.to_string() })
             }
+            _ => Ok(()),
         }
-        self.append(&validator, |index, now, prev, txs| Block::forge(index, now, prev, txs, key))
+    }
+
+    /// The next block's index and transactions: a payout of the reward plus fees to `producer`,
+    /// then everything in the mempool.
+    fn next_contents(&self, producer: &Address) -> (u64, Vec<Transaction>) {
+        let index = self.blocks.len() as u64;
+        let pending = self.mempool.transactions();
+        let payout = self.rules.reward + pending.iter().map(|tx| tx.fee).sum::<u64>();
+        let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
+        transactions.extend(pending.iter().cloned());
+        (index, transactions)
     }
 
     /// Pays `producer` the reward plus fees, applies the mempool and appends the block `seal` makes.
@@ -123,11 +169,8 @@ impl Blockchain {
         producer: &Address,
         seal: impl FnOnce(u64, DateTime<Utc>, String, Vec<Transaction>) -> Block,
     ) -> Result<&Block, ChainError> {
-        let index = self.blocks.len() as u64;
-        let pending = self.mempool.transactions();
-        let payout = self.rules.reward + pending.iter().map(|tx| tx.fee).sum::<u64>();
-        let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
-        transactions.extend(pending.iter().cloned());
+        let (index, transactions) = self.next_contents(producer);
+        let payout = transactions[0].amount;
 
         let mut ledger = self.ledger.clone();
         ledger.credit(producer.as_str(), payout);
@@ -207,30 +250,44 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<(Ledger, ChainWeight)>
     let mut ledger = Ledger::default();
     let mut weight = ChainWeight::ZERO;
     for (prev, block) in blocks.iter().zip(&blocks[1..]) {
-        if block.index != prev.index + 1
-            || block.prev_hash != prev.hash
-            || block.hash != block.computed_hash()
-            || !is_sealed_by_consensus(block, prev, &ledger, rules)
-        {
-            return None;
-        }
-        let (coinbase, transfers) = block.transactions.split_first()?;
-        if !coinbase.is_coinbase()
-            || coinbase.amount != rules.reward + transfers.iter().map(|tx| tx.fee).sum::<u64>()
-            || coinbase.fee != 0
-            || coinbase.nonce != block.index
-            || !crypto::is_valid_address(&coinbase.to)
-            || block.validator.as_ref().is_some_and(|v| *v != coinbase.to)
-        {
-            return None;
-        }
-        weight = weight.with_block(rules, ledger.staked(&coinbase.to));
-        ledger.credit(&coinbase.to, coinbase.amount);
-        if transfers.iter().any(|tx| ledger.apply_transfer(tx).is_err()) {
+        if !apply_block(prev, block, &mut ledger, &mut weight, rules) {
             return None;
         }
     }
     Some((ledger, weight))
+}
+
+/// Checks that `block` validly follows `prev` and applies it to `ledger` and `weight`. On `false`
+/// they may be half-updated, so callers check a copy.
+fn apply_block(
+    prev: &Block,
+    block: &Block,
+    ledger: &mut Ledger,
+    weight: &mut ChainWeight,
+    rules: &ChainRules,
+) -> bool {
+    if block.index != prev.index + 1
+        || block.prev_hash != prev.hash
+        || block.hash != block.computed_hash()
+        || !is_sealed_by_consensus(block, prev, ledger, rules)
+    {
+        return false;
+    }
+    let Some((coinbase, transfers)) = block.transactions.split_first() else {
+        return false;
+    };
+    if !coinbase.is_coinbase()
+        || coinbase.amount != rules.reward + transfers.iter().map(|tx| tx.fee).sum::<u64>()
+        || coinbase.fee != 0
+        || coinbase.nonce != block.index
+        || !crypto::is_valid_address(&coinbase.to)
+        || block.validator.as_ref().is_some_and(|v| *v != coinbase.to)
+    {
+        return false;
+    }
+    *weight = weight.with_block(rules, ledger.staked(&coinbase.to));
+    ledger.credit(&coinbase.to, coinbase.amount);
+    transfers.iter().all(|tx| ledger.apply_transfer(tx).is_ok())
 }
 
 /// Genesis is never signed. Under proof of work it still needs the work.
@@ -675,6 +732,68 @@ mod tests {
         assert_eq!(staked.weight().value(), 32);
         assert_eq!(unstaked.adopt_if_heavier(staked.blocks().to_vec()), Ok(true));
         assert_eq!(unstaked.blocks().len(), 4, "the shorter chain won");
+    }
+
+    #[test]
+    fn a_proposal_signed_elsewhere_is_appended_like_a_forged_block() {
+        let mut chain = Blockchain::new(POS);
+        let (_, alice_key) = wallet();
+        let (bob, bob_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.submit(Transaction::signed(&alice_key, bob.as_str(), 5, 0, 2)).unwrap();
+
+        let before = chain.blocks().len();
+        let mut block = chain.propose(&bob).unwrap();
+        assert_eq!(chain.blocks().len(), before, "proposing changes nothing");
+        assert_eq!(block.signature, None);
+        block.sign(&bob_key);
+
+        chain.append_forged(block).unwrap();
+        assert!(chain.pending().is_empty(), "the confirmed transfer left the mempool");
+        assert_eq!(chain.balance(&bob), 5 + 52);
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn forged_submissions_are_checked() {
+        let mut chain = Blockchain::new(POS);
+        let (alice, alice_key) = wallet();
+        let (_, mallory_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.submit(stake(&alice_key, 10, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+
+        let proposal = chain.propose(&alice).unwrap();
+
+        let mut unsigned = proposal.clone();
+        assert_eq!(chain.append_forged(unsigned.clone()), Err(ChainError::InvalidBlock));
+        unsigned.sign(&mallory_key);
+        assert_eq!(chain.append_forged(unsigned).err(), Some(ChainError::InvalidBlock));
+
+        let mut padded = proposal.clone();
+        padded.transactions[0].amount += 1;
+        padded.hash = padded.computed_hash();
+        padded.sign(&alice_key);
+        assert_eq!(chain.append_forged(padded).err(), Some(ChainError::InvalidBlock));
+
+        let mut signed = proposal;
+        signed.sign(&alice_key);
+        chain.append_forged(signed.clone()).unwrap();
+        assert_eq!(chain.append_forged(signed).err(), Some(ChainError::StaleBlock));
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn only_the_selected_validator_gets_a_proposal() {
+        let mut chain = Blockchain::new(POS);
+        let (_, alice_key) = wallet();
+        let (bob, _) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.submit(stake(&alice_key, 10, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+        assert!(matches!(chain.propose(&bob), Err(ChainError::NotYourTurn { .. })));
+        let pow = Blockchain::new(RULES);
+        assert_eq!(pow.propose(&bob).err(), Some(ChainError::NotProofOfStake));
     }
 
     // ---- Fees -----------------------------------------------------------------------------
