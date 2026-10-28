@@ -294,3 +294,47 @@ async fn a_light_client_checks_a_transfer_from_headers_and_a_proof() {
     assert!(headers.windows(2).all(|pair| pair[1].prev_hash == pair[0].hash));
     assert_eq!(headers[2], proof.header);
 }
+
+#[tokio::test]
+async fn the_explorer_finds_blocks_transactions_and_addresses() {
+    let app = app();
+    let (_, alice) = call(&app, "POST", "/wallets", None).await;
+    let (_, bob) = call(&app, "POST", "/wallets", None).await;
+    let (_, first) = call(&app, "POST", "/mine", Some(json!({ "miner": alice["address"] }))).await;
+    let request =
+        json!({ "secret_key": alice["secret_key"], "to": bob["address"], "amount": 4, "fee": 1 });
+    let (_, tx) = call(&app, "POST", "/transactions/sign", Some(request)).await;
+    call(&app, "POST", "/transactions", Some(tx.clone())).await;
+    let uri = format!("/transactions/{}", tx["signature"].as_str().unwrap());
+
+    let (_, found) = call(&app, "GET", &uri, None).await;
+    assert_eq!((found["status"].clone(), found["block"].clone()), (json!("pending"), Value::Null));
+    call(&app, "POST", "/mine", Some(json!({ "miner": alice["address"] }))).await;
+    let (status, found) = call(&app, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(found["status"], "confirmed");
+    assert_eq!(found["transaction"], tx);
+    assert_eq!(
+        (found["block"]["height"].clone(), found["block"]["position"].clone()),
+        (json!(2), json!(1))
+    );
+
+    let (_, by_height) = call(&app, "GET", "/blocks/1", None).await;
+    assert_eq!(by_height, first);
+    let (_, by_hash) =
+        call(&app, "GET", &format!("/blocks/{}", first["hash"].as_str().unwrap()), None).await;
+    assert_eq!(by_hash, first);
+    let (status, _) = call(&app, "GET", "/blocks/99", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "GET", "/transactions/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "GET", "/transactions/pending", None).await;
+    assert_eq!(status, StatusCode::OK, "the mempool route still wins");
+
+    let uri = format!("/addresses/{}/transactions", bob["address"].as_str().unwrap());
+    let (_, history) = call(&app, "GET", &uri, None).await;
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    assert_eq!(history[0]["transaction"]["amount"], 4);
+    let (status, _) = call(&app, "GET", "/addresses/not-hex/transactions", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

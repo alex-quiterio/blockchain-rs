@@ -5,5 +5,6 @@ mod node;
 
 pub use network::{Network, PeerClient, PeerStatus, PeerTip, SyncReport, PEER_HEADER};
 pub use node::{
-    Account, ChainStatus, ConsensusState, NodeError, NodeService, TipStatus, TransactionProof,
+    Account, ChainStatus, ConsensusState, Located, NodeError, NodeService, Placement, TipStatus,
+    TransactionProof,
 };

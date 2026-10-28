@@ -174,6 +174,27 @@ pub struct ProofResponse {
     pub confirmations: u64,
 }
 
+/// A transaction and where it is.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionResponse {
+    pub transaction: Transaction,
+    /// `confirmed` or `pending`.
+    pub status: String,
+    /// The block holding it. `null` while it's pending.
+    pub block: Option<PlacementResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlacementResponse {
+    pub height: u64,
+    pub hash: String,
+    /// Its place among the block's transactions. 0 is the block reward.
+    pub position: usize,
+    pub timestamp: DateTime<Utc>,
+    /// Blocks on top of it, counting its own.
+    pub confirmations: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub message: String,

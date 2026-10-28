@@ -1,4 +1,6 @@
 use std::fmt;
+
+use chrono::{DateTime, Utc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -72,6 +74,23 @@ pub struct TransactionProof {
     pub confirmations: u64,
 }
 
+/// Where a transaction is: in a block, or still waiting in the mempool.
+pub struct Located {
+    pub transaction: Transaction,
+    /// The block holding it and its place there. `None` while it's pending.
+    pub block: Option<Placement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    pub height: u64,
+    pub hash: String,
+    pub position: usize,
+    pub timestamp: DateTime<Utc>,
+    /// Blocks on top of it, counting its own.
+    pub confirmations: u64,
+}
+
 /// How the chain picks its next block, as of now.
 pub struct ConsensusState {
     pub rules: ChainRules,
@@ -122,6 +141,50 @@ impl NodeService {
     pub fn headers_from(&self, height: usize) -> Vec<BlockHeader> {
         let chain = self.chain.lock().unwrap();
         chain.blocks().get(height..).unwrap_or_default().iter().map(Block::header).collect()
+    }
+
+    /// The block at a height, given as digits, or with a hash.
+    pub fn block(&self, id: &str) -> Option<Block> {
+        let chain = self.chain.lock().unwrap();
+        let blocks = chain.blocks();
+        match id.parse::<usize>() {
+            Ok(height) => blocks.get(height).cloned(),
+            Err(_) => blocks.iter().rev().find(|block| block.hash == id).cloned(),
+        }
+    }
+
+    /// Finds the transfer signed `signature`, confirmed or pending.
+    pub fn locate(&self, signature: &str) -> Option<Located> {
+        let chain = self.chain.lock().unwrap();
+        if let Some((block, position)) = chain.find_transaction(signature) {
+            return Some(Located {
+                transaction: block.transactions[position].clone(),
+                block: Some(placement(&chain, block, position)),
+            });
+        }
+        let pending = chain.pending().iter().find(|tx| tx.signature == signature)?;
+        Some(Located { transaction: pending.clone(), block: None })
+    }
+
+    /// Every transaction to or from `address`, block rewards included: pending ones first, then
+    /// confirmed ones, newest first.
+    pub fn history(&self, address: &Address) -> Vec<Located> {
+        let chain = self.chain.lock().unwrap();
+        let involves = |tx: &Transaction| tx.from == address.as_str() || tx.to == address.as_str();
+        let pending = chain
+            .pending()
+            .iter()
+            .filter(|tx| involves(tx))
+            .map(|tx| Located { transaction: tx.clone(), block: None });
+        let confirmed = chain.blocks().iter().rev().flat_map(|block| {
+            block.transactions.iter().enumerate().filter(|(_, tx)| involves(tx)).map(
+                |(position, tx)| Located {
+                    transaction: tx.clone(),
+                    block: Some(placement(&chain, block, position)),
+                },
+            )
+        });
+        pending.chain(confirmed).collect()
     }
 
     /// Proves that the confirmed transfer signed `signature` is in its block, or `None` if no
@@ -273,6 +336,16 @@ impl NodeService {
         }
         *chain = next;
         Ok(result)
+    }
+}
+
+fn placement(chain: &Blockchain, block: &Block, position: usize) -> Placement {
+    Placement {
+        height: block.index,
+        hash: block.hash.clone(),
+        position,
+        timestamp: block.timestamp,
+        confirmations: chain.tip().index - block.index + 1,
     }
 }
 
@@ -428,6 +501,33 @@ mod tests {
         assert_eq!(proof.leaf, merkle::leaf(&payments[3]));
         assert!(merkle::verify(&proof.leaf, &proof.steps, &proof.header.merkle_root));
         assert!(node.prove("").is_none(), "block rewards have no signature to look up");
+    }
+
+    #[test]
+    fn transactions_are_found_pending_then_confirmed_and_in_histories() {
+        let node = node(InMemoryRepository::default());
+        let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
+        let (alice, bob) = (Address::of(&key), new_address());
+        node.mine(&alice).unwrap();
+        let payment = Transaction::signed(&key, bob.as_str(), 7, 0, 1);
+        node.submit(payment.clone()).unwrap();
+
+        let pending = node.locate(&payment.signature).unwrap();
+        assert_eq!((pending.transaction, pending.block), (payment.clone(), None));
+        assert_eq!(node.history(&bob).len(), 1);
+
+        let block = node.mine(&alice).unwrap();
+        let placement = node.locate(&payment.signature).unwrap().block.unwrap();
+        assert_eq!((placement.height, placement.position, placement.confirmations), (2, 1, 1));
+        assert_eq!(node.block("2"), Some(block.clone()));
+        assert_eq!(node.block(&block.hash), Some(block));
+        assert_eq!(node.block("9"), None);
+        assert!(node.locate("nope").is_none());
+
+        // Alice: the payment, then two block rewards, newest first.
+        let heights: Vec<_> =
+            node.history(&alice).iter().map(|l| l.block.as_ref().unwrap().height).collect();
+        assert_eq!(heights, [2, 2, 1]);
     }
 
     #[test]

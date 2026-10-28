@@ -16,6 +16,10 @@
       </svg>
       <span>blockchain<b>-rs</b></span>
     </div>
+    <nav class="tabs">
+      <a href="/" aria-current="page">Wallet</a>
+      <a href="/explorer.html">Explorer</a>
+    </nav>
     <dl class="stats">
       <div><dt>Consensus</dt><dd id="stat-consensus">–</dd></div>
       <div><dt>Height</dt><dd id="stat-height">–</dd></div>
@@ -88,8 +92,8 @@
           <summary>How do nodes stay in step?</summary>
           <ol>
             <li>Adding a peer links both ways: this node introduces itself back.</li>
-            <li>Every few seconds each node pulls its peers' chains and adopts the heaviest valid one (most work, or most stake behind it), then pulls their pending transactions.</li>
-            <li>New blocks and transactions are also pushed to peers straight away. A copy that's already known fails its nonce check, so gossip never loops.</li>
+            <li>A new block or transaction is pushed to peers straight away, and passed on to everyone but the peer it came from. A block goes out on its own; a peer missing the blocks before it asks for more.</li>
+            <li>Every few seconds each node also compares tips with its peers and pulls only what it's missing, adopting the heaviest valid chain (most work, or most stake behind it).</li>
           </ol>
         </details>
       </section>
@@ -106,6 +110,7 @@
 
   <footer id="footer" class="footer"></footer>
   <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/common.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

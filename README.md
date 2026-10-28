@@ -45,6 +45,7 @@ Open **http://127.0.0.1:3000** and:
 2. 👛 **Make a couple of wallets**, then **mine** a block to fund one.
 3. 💸 **Send some coins**, with a fee if you like. The page signs the transaction itself and only the signature goes to the node.
 4. 🔍 **Open any block's Breakdown** to see why it's valid. With Docker running, open `:3001` too and watch the block arrive.
+5. 🧭 **Open the Explorer** (`/explorer.html`) to debug any block, transaction or address. Search by height, hash, signature or address. Each page redoes the node's checks in your browser: header hashes, proof of work, signatures, Merkle proofs and payouts.
 
 ### Proof of stake
 
@@ -230,6 +231,9 @@ flowchart TB
 | GET | `/transactions/pending` | The mempool. |
 | GET | `/transactions/:signature/proof` | A Merkle proof that a confirmed transfer is in its block: `{transaction, leaf, proof, header, confirmations}`. Hash `leaf\|` + the transaction's JSON, combine it with each step's hash on the step's `side` as `node\|left\|right`, and you reach `header.merkle_root`. `404` while it's unconfirmed. |
 | GET | `/headers` | Every block without its transactions, or with `?from=N` from height N on: what a light client keeps. |
+| GET | `/blocks/:id` | A block, by height or hash. |
+| GET | `/transactions/:signature` | `{transaction, status, block}`: whether it's `confirmed` or `pending`, and if confirmed its block's height, hash, position and confirmations. |
+| GET | `/addresses/:address/transactions` | Every transaction to or from an address, block rewards included: pending first, then newest first. |
 | POST | `/mine` | Proof of work: `{miner}`. |
 | POST | `/forge/proposal` | Proof of stake: `{validator, reveal?}` → the unsigned block that validator should sign next. The reveal is required once validators are being drawn. |
 | POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
@@ -255,7 +259,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 102 tests: unit, HTTP and property-based
+cargo test        # 104 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.
@@ -298,5 +302,4 @@ Nothing here is built yet. Each would make a good next step.
 - **Ban misbehaving peers** that keep offering invalid chains.
 
 **🛠️ Developer experience**
-- **A block explorer page**: search by address, transaction or hash.
 - **Load generator scenarios**: partition a node mid-run, or add miners part way, to watch forks and retargeting react.

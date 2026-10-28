@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Explorer · blockchain-rs</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2" y="7" width="9" height="10" rx="2" />
+        <rect x="13" y="7" width="9" height="10" rx="2" />
+        <path d="M11 12h2" />
+      </svg>
+      <span>blockchain<b>-rs</b></span>
+    </div>
+    <nav class="tabs">
+      <a href="/">Wallet</a>
+      <a href="/explorer.html" aria-current="page">Explorer</a>
+    </nav>
+    <form id="search" class="search" role="search">
+      <input id="query" placeholder="Block height or hash, transaction signature, or address" autocomplete="off" spellcheck="false" />
+      <button>Search</button>
+    </form>
+  </header>
+
+  <main id="view" class="explorer"></main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/common.js"></script>
+  <script src="/explorer.js"></script>
+</body>
+</html>

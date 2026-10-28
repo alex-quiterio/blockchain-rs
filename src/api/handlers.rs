@@ -10,12 +10,12 @@ use axum::{
 
 use super::dto::{
     AddPeerResponse, BalanceResponse, ChainQuery, ConsensusResponse, ErrorResponse, ForgeRequest,
-    MineRequest, NodeResponse, PeerRequest, PeerResponse, ProofResponse, ProposalRequest,
-    ReplaceResponse, SignRequest, StakeEntry, StatusResponse, SyncResponse, ValidityResponse,
-    WalletResponse,
+    MineRequest, NodeResponse, PeerRequest, PeerResponse, PlacementResponse, ProofResponse,
+    ProposalRequest, ReplaceResponse, SignRequest, StakeEntry, StatusResponse, SyncResponse,
+    TransactionResponse, ValidityResponse, WalletResponse,
 };
 use super::AppState;
-use crate::application::{NodeError, PEER_HEADER};
+use crate::application::{Located, NodeError, PEER_HEADER};
 use crate::domain::address::Address;
 use crate::domain::block::STAKE;
 use crate::domain::block::{Block, BlockHeader, Transaction};
@@ -96,6 +96,52 @@ pub async fn get_headers(
     Query(query): Query<ChainQuery>,
 ) -> Json<Vec<BlockHeader>> {
     Json(state.node.headers_from(query.from.unwrap_or(0)))
+}
+
+/// A block by height or hash.
+pub async fn get_block(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Block>, ApiError> {
+    state
+        .node
+        .block(&id)
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("no block with that height or hash"))
+}
+
+/// A transaction by signature, and whether it's in a block yet.
+pub async fn get_transaction(
+    State(state): State<AppState>,
+    Path(signature): Path<String>,
+) -> Result<Json<TransactionResponse>, ApiError> {
+    let located = state.node.locate(&signature).ok_or_else(|| {
+        ApiError::not_found("no transaction with that signature, in a block or waiting")
+    })?;
+    Ok(Json(transaction_response(located)))
+}
+
+/// Every transaction to or from an address: pending ones first, then confirmed, newest first.
+pub async fn get_address_transactions(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<Vec<TransactionResponse>>, ApiError> {
+    let history = state.node.history(&Address::parse(&address)?);
+    Ok(Json(history.into_iter().map(transaction_response).collect()))
+}
+
+fn transaction_response(located: Located) -> TransactionResponse {
+    TransactionResponse {
+        transaction: located.transaction,
+        status: if located.block.is_some() { "confirmed" } else { "pending" }.to_string(),
+        block: located.block.map(|b| PlacementResponse {
+            height: b.height,
+            hash: b.hash,
+            position: b.position,
+            timestamp: b.timestamp,
+            confirmations: b.confirmations,
+        }),
+    }
 }
 
 /// A Merkle proof that the confirmed transfer with this signature is in its block.

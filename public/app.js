@@ -1,21 +1,6 @@
-const $ = (id) => document.getElementById(id);
+// The wallet page. Shared helpers (api, el, sha256, Merkle, …) live in common.js.
+
 const POLL_MS = 4000;
-const COINBASE = "coinbase";
-const STAKE = "stake";
-const UNSTAKE = "unstake";
-
-// ---- Node API ---------------------------------------------------------------
-
-async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "content-type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.message || `${res.status} ${res.statusText}`);
-  return data;
-}
 
 // ---- Keys: made and used in this page, never sent anywhere ---------------------
 
@@ -56,18 +41,14 @@ const Keys = {
 const Randao = {
   LENGTH: 1000, // must match randao::LENGTH on the node
 
-  async sha256(text) {
-    return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))));
-  },
-
   async hashTimes(value, times) {
-    for (let i = 0; i < times; i++) value = await this.sha256(value);
+    for (let i = 0; i < times; i++) value = await sha256(value);
     return value;
   },
 
   /** The secret start of commitment number `epoch`, derived from the key so nothing extra is stored. */
   seed(secretKey, epoch) {
-    return this.sha256(`blockchain-rs/randao|${secretKey}|${epoch}`);
+    return sha256(`blockchain-rs/randao|${secretKey}|${epoch}`);
   },
 
   /** What a first stake publishes: the seed hashed LENGTH times. */
@@ -81,8 +62,6 @@ const Randao = {
   },
 };
 
-const toHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-const fromHex = (hex) => new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16)));
 
 // ---- Vault: secret keys encrypted with a passphrase before they're saved -----------
 
@@ -236,8 +215,6 @@ const state = { blocks: [], pending: [], valid: null, consensus: null, accounts:
 
 const isStake = () => state.consensus?.kind === "proof_of_stake";
 const tip = () => state.blocks.at(-1)?.hash;
-const kindOf = (tx) => (tx.from === COINBASE ? "coinbase" : tx.to === STAKE ? "stake" : tx.to === UNSTAKE ? "unstake" : "transfer");
-const feesOf = (txs) => txs.reduce((sum, tx) => sum + (tx.fee || 0), 0);
 // Fees only move coins around; the supply grows by the block reward alone.
 const supply = () => (state.blocks.length - 1) * (state.consensus?.reward ?? 0);
 
@@ -257,16 +234,7 @@ async function load() {
 
 // ---- View helpers -----------------------------------------------------------
 
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  Object.assign(node, attrs);
-  node.append(...children.flat().filter((c) => c != null && c !== false));
-  return node;
-}
-
-const short = (hex) => (hex.length > 16 ? `${hex.slice(0, 8)}…${hex.slice(-6)}` : hex);
 const nameOf = (address) => Wallets.byAddress(address)?.name || short(address);
-const fmt = (n) => Number(n).toLocaleString();
 const pct = (part, whole) => `${whole ? Math.round((part / whole) * 100) : 0}%`;
 
 function hues(address) {
@@ -294,15 +262,6 @@ function hashView(hash, work) {
   const shown = isStake() || !work ? 0 : Math.min(zeros, zerosFor(work));
   return el("div", { className: "hash", title: hash },
     el("span", { className: "zeros", textContent: hash.slice(0, shown) }), hash.slice(shown));
-}
-
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-function ago(timestamp) {
-  const s = Math.round((new Date(timestamp) - Date.now()) / 1000);
-  for (const [unit, size] of [["day", 86400], ["hour", 3600], ["minute", 60]]) {
-    if (Math.abs(s) >= size) return rtf.format(Math.round(s / size), unit);
-  }
-  return Math.abs(s) < 5 ? "just now" : rtf.format(s, "second");
 }
 
 function toast(message, isError = false) {
@@ -446,25 +405,6 @@ function breakdown(block, prev, payout, transfers) {
   row("Hash", el("span", { className: "formula", textContent: `sha256(${fields.join(" | ")})` }));
   return el("details", { className: "breakdown" }, el("summary", { textContent: "Breakdown" }), el("dl", { className: "facts" }, facts));
 }
-
-/** Merkle roots, computed exactly as the node does (see domain/merkle.rs). */
-const Merkle = {
-  EMPTY_ROOT: "0".repeat(64),
-
-  async root(transactions) {
-    let level = await Promise.all(transactions.map((tx) => Randao.sha256(`leaf|${JSON.stringify(tx)}`)));
-    if (!level.length) return this.EMPTY_ROOT;
-    while (level.length > 1) {
-      const pairs = [];
-      for (let i = 0; i < level.length; i += 2) {
-        // An odd hash out moves up as it is.
-        pairs.push(i + 1 < level.length ? Randao.sha256(`node|${level[i]}|${level[i + 1]}`) : level[i]);
-      }
-      level = await Promise.all(pairs);
-    }
-    return level[0];
-  },
-};
 
 // ---- Panels -----------------------------------------------------------------
 
