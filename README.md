@@ -169,8 +169,35 @@ cargo test
 
 CI runs `fmt`, `clippy -D warnings` and the tests on every push and pull request.
 
-## 🗺️ Not built (yet)
+## 💡 Ideas
 
-- Adjusting the difficulty over time
-- Block size limits, so fees decide what gets in first
-- Slashing validators who sign two blocks at the same height
+Nothing here is built yet. Each would make a good next step.
+
+**⚖️ Consensus**
+- **Difficulty that adjusts** to keep blocks coming at a steady pace as miners join or leave. Chain weight already counts work per block, so it's ready for this.
+- **Slashing**: burn the stake of a validator caught signing two blocks at the same height.
+- **Finality checkpoints**: stakers vote to make a block permanent, instead of relying only on the reorg limit.
+- **Validator turns that can't be gamed**: the next validator is seeded by the previous hash, which its forger can influence by choosing the timestamp. A commit-reveal randomness beacon would fix that.
+
+**💸 Fees and blocks**
+- **Block size limits**, so fees decide what gets in first.
+- **Fee estimates**: suggest a fee from what recent blocks accepted.
+
+**🔐 Wallets and privacy**
+- **Signing in the browser**, so secret keys never leave the page.
+- **HD wallets**: many addresses from one seed phrase.
+- **Multisig addresses** that need M of N signatures to spend.
+
+**🌳 Light clients**
+- **Merkle roots** in block headers, so a transaction can be proven to be in a block without downloading the whole block.
+- **Headers-first sync**: fetch and check headers before full blocks.
+
+**🌐 Network**
+- **Peer discovery**: learn new peers from existing ones.
+- **Ban misbehaving peers** that keep offering invalid chains.
+- **Incremental sync**: send only the blocks a peer is missing, instead of the whole chain.
+
+**🛠️ Developer experience**
+- **A block explorer page**: search by address, transaction or hash.
+- **A Docker Compose file** that starts a three-node network with one command.
+- **Property-based tests** that fuzz forks and transaction orderings.
