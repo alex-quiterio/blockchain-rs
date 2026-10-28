@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 
 use super::NodeService;
 use crate::domain::block::{Block, Transaction};
@@ -108,10 +109,13 @@ impl Network {
 
     /// Checks in with every peer once. Fetches blocks only from a peer whose chain could beat
     /// ours, and its mempool only when something is waiting in it.
+    /// Every peer is reached at once, so a slow one doesn't hold up the rest.
     pub async fn sync(&self) -> SyncReport {
+        let urls = self.peer_urls();
+        let pulls = join_all(urls.iter().map(|url| self.pull(url))).await;
         let mut report = SyncReport::default();
-        for url in self.peer_urls() {
-            let status = match self.pull(&url).await {
+        for (url, pulled) in urls.into_iter().zip(pulls) {
+            let status = match pulled {
                 Ok((theirs, adopted)) => {
                     report.reached += 1;
                     if adopted {
@@ -138,7 +142,7 @@ impl Network {
         let mut adopted = false;
         if theirs.tip != ours.hash && theirs.weight >= ours.weight.value() {
             let shorter = ours.height.min(theirs.height) as usize + 1;
-            for from in self.fallbacks(shorter, false) {
+            for from in [self.recent_start(shorter), 0] {
                 let blocks = self.client.chain_from(url, from).await?;
                 match self.node.extend(blocks) {
                     Ok((Extension::MissingParent, _)) => continue,
@@ -157,41 +161,42 @@ impl Network {
     }
 
     /// Tells every peer but `except` about this node's newest block, after it mined, forged or
-    /// adopted one. Only the tip goes out. A peer that lacks its parent gets the blocks a fork
-    /// could reach back to, and one further behind than that gets the whole chain.
+    /// adopted one, all at once. Only the tip goes out. A peer that lacks its parent gets the
+    /// blocks a fork could reach back to. A push never sends more: a peer further behind than
+    /// that catches up by pulling, which isn't held to a request's size limit.
     pub async fn broadcast_tip(&self, except: Option<&str>) {
         let length = self.node.tip().height as usize + 1;
-        for url in self.peer_urls().into_iter().filter(|url| Some(url.as_str()) != except) {
-            for from in self.fallbacks(length, true) {
+        join_all(self.peers_except(except).iter().map(|url| async move {
+            let tip = length - 1;
+            let recent = self.recent_start(length);
+            for from in [tip, recent] {
                 let blocks = self.node.blocks_from(from);
-                match self.client.offer_blocks(&url, &blocks, self.me.as_deref()).await {
-                    Ok(Extension::MissingParent) => continue,
-                    _ => break,
+                let offered = self.client.offer_blocks(url, &blocks, self.me.as_deref()).await;
+                if from == recent || !matches!(offered, Ok(Extension::MissingParent)) {
+                    break;
                 }
             }
-        }
+        }))
+        .await;
     }
 
-    /// Passes a transaction this node accepted on to every peer but the one it came from.
+    /// Passes a transaction this node accepted on to every peer but the one it came from, all
+    /// at once.
     pub async fn broadcast_transaction(&self, tx: &Transaction, except: Option<&str>) {
-        for url in self.peer_urls().into_iter().filter(|url| Some(url.as_str()) != except) {
-            let _ = self.client.offer_transaction(&url, tx, self.me.as_deref()).await;
-        }
+        let me = self.me.as_deref();
+        let peers = self.peers_except(except);
+        join_all(peers.iter().map(|url| self.client.offer_transaction(url, tx, me))).await;
     }
 
-    /// Heights to send or fetch blocks from, nearest first, for chains whose shorter one has
-    /// `length` blocks: just the tip (when pushing), then as far back as a fork may reach, then
-    /// everything.
-    fn fallbacks(&self, length: usize, tip_first: bool) -> Vec<usize> {
+    /// Where the blocks a fork could reach back to begin, for chains whose shorter one has
+    /// `length` blocks. Never genesis, which every node shares.
+    fn recent_start(&self, length: usize) -> usize {
         let depth = self.node.rules().max_reorg_depth as usize;
-        let recent = length.saturating_sub(depth + 1).max(1);
-        let mut heights: Vec<usize> = Vec::new();
-        for height in [tip_first.then(|| length - 1), Some(recent), Some(0)].into_iter().flatten() {
-            if heights.last().is_none_or(|&last| height < last) {
-                heights.push(height);
-            }
-        }
-        heights
+        length.saturating_sub(depth + 1).max(1)
+    }
+
+    fn peers_except(&self, except: Option<&str>) -> Vec<String> {
+        self.peer_urls().into_iter().filter(|url| Some(url.as_str()) != except).collect()
     }
 
     fn peer_urls(&self) -> Vec<String> {
@@ -209,7 +214,8 @@ fn normalize(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+    use std::time::Duration;
 
     use super::*;
     use crate::domain::address::Address;
@@ -223,11 +229,16 @@ mod tests {
     struct Mesh {
         nodes: Arc<Mutex<HashMap<String, Arc<Network>>>>,
         log: Arc<Mutex<Vec<String>>>,
+        /// Peers that take a second to answer anything.
+        slow: Arc<Mutex<HashSet<String>>>,
     }
 
     impl Mesh {
-        fn get(&self, url: &str, what: String) -> Result<Arc<Network>, String> {
+        async fn reach(&self, url: &str, what: String) -> Result<Arc<Network>, String> {
             self.log.lock().unwrap().push(format!("{url} {what}"));
+            if self.slow.lock().unwrap().contains(url) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
             self.nodes.lock().unwrap().get(url).cloned().ok_or_else(|| format!("{url} is down"))
         }
 
@@ -252,7 +263,7 @@ mod tests {
     impl PeerClient for Mesh {
         fn status<'a>(&'a self, peer: &'a str) -> PeerResult<'a, PeerTip> {
             Box::pin(async move {
-                let tip = self.get(peer, "status".into())?.node().tip();
+                let tip = self.reach(peer, "status".into()).await?.node().tip();
                 Ok(PeerTip {
                     height: tip.height,
                     tip: tip.hash,
@@ -263,11 +274,15 @@ mod tests {
         }
         fn chain_from<'a>(&'a self, peer: &'a str, height: usize) -> PeerResult<'a, Vec<Block>> {
             Box::pin(async move {
-                Ok(self.get(peer, format!("chain from {height}"))?.node().blocks_from(height))
+                Ok(self
+                    .reach(peer, format!("chain from {height}"))
+                    .await?
+                    .node()
+                    .blocks_from(height))
             })
         }
         fn pending<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<Transaction>> {
-            Box::pin(async move { Ok(self.get(peer, "pending".into())?.node().pending()) })
+            Box::pin(async move { Ok(self.reach(peer, "pending".into()).await?.node().pending()) })
         }
         fn offer_blocks<'a>(
             &'a self,
@@ -278,7 +293,8 @@ mod tests {
             Box::pin(async move {
                 let what = format!("offered {} block(s)", blocks.len());
                 let (extension, _) = self
-                    .get(peer, what)?
+                    .reach(peer, what)
+                    .await?
                     .node()
                     .extend(blocks.to_vec())
                     .map_err(|e| e.to_string())?;
@@ -292,7 +308,8 @@ mod tests {
             _me: Option<&'a str>,
         ) -> PeerResult<'a, ()> {
             Box::pin(async move {
-                self.get(peer, "offered a transaction".into())?
+                self.reach(peer, "offered a transaction".into())
+                    .await?
                     .node()
                     .submit(tx.clone())
                     .map_err(|e| e.to_string())
@@ -300,7 +317,7 @@ mod tests {
         }
         fn introduce<'a>(&'a self, peer: &'a str, me: &'a str) -> PeerResult<'a, ()> {
             Box::pin(async move {
-                self.get(peer, "introduced".into())?.add_peer(me).await?;
+                self.reach(peer, "introduced".into()).await?.add_peer(me).await?;
                 Ok(())
             })
         }
@@ -389,7 +406,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_peer_behind_gets_recent_blocks_then_the_whole_chain() {
+    async fn a_peer_behind_gets_recent_blocks_and_pulls_the_rest() {
         let mesh = Mesh::default();
         let a = mesh.join("http://a");
         let b = mesh.join("http://b");
@@ -402,20 +419,46 @@ mod tests {
         assert_eq!(mesh.sent(), ["http://b offered 1 block(s)", "http://b offered 2 block(s)"]);
         assert_eq!(b.node().blocks(), a.node().blocks());
 
-        // Further behind than a fork may reach (3 blocks here): the whole chain goes.
+        // Further behind than a fork may reach (3 blocks here): a push never sends the whole
+        // chain, so b catches up when it next pulls.
         for _ in 0..5 {
             a.node().mine(&miner()).unwrap();
         }
         a.broadcast_tip(None).await;
-        assert_eq!(
-            mesh.sent(),
-            [
-                "http://b offered 1 block(s)",
-                "http://b offered 4 block(s)",
-                "http://b offered 8 block(s)"
-            ]
-        );
+        assert_eq!(mesh.sent(), ["http://b offered 1 block(s)", "http://b offered 4 block(s)"]);
+        assert_eq!(b.node().blocks().len(), 3);
+
+        b.sync().await;
+        assert_eq!(mesh.sent(), ["http://a status", "http://a chain from 1"]);
         assert_eq!(b.node().blocks(), a.node().blocks());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_peer_holds_up_nobody() {
+        let mesh = Mesh::default();
+        let a = mesh.join("http://a");
+        for url in ["http://b", "http://c", "http://d"] {
+            mesh.join(url);
+            a.add_peer(url).await.unwrap();
+            mesh.slow.lock().unwrap().insert(url.to_string());
+        }
+        a.node().mine(&miner()).unwrap();
+
+        // Each peer takes a second; one after another would take three.
+        let started = tokio::time::Instant::now();
+        a.broadcast_tip(None).await;
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+        let tx = Transaction::signed(
+            &crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap(),
+            miner().as_str(),
+            1,
+            0,
+            0,
+        );
+        let started = tokio::time::Instant::now();
+        a.broadcast_transaction(&tx, None).await;
+        a.sync().await;
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
     }
 
     #[tokio::test]

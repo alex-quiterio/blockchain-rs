@@ -25,7 +25,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ⛏️ **Proof of work** | Mine a block by finding a hash below a target. The difficulty adjusts every few blocks to keep them coming at a steady pace as miners join or leave. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
-| 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own, sending older blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing. |
+| 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own to every peer at once, sending the last few blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing, which is how a node far behind catches up. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
 | 💾 **Storage** | The chain is saved to JSON with atomic writes and fully replayed on startup, so a tampered file is refused. |
 | 🌳 **Merkle roots** | A block's hash covers the Merkle root of its transactions, not the transactions themselves. A light client keeps only headers and checks that a payment is in a block from a proof of a few hashes. |
@@ -259,7 +259,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 104 tests: unit, HTTP and property-based
+cargo test        # 105 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

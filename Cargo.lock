@@ -157,6 +157,7 @@ dependencies = [
  "axum",
  "chrono",
  "ed25519-dalek",
+ "futures-util",
  "hex",
  "http-body-util",
  "proptest",
