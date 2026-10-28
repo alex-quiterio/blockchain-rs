@@ -292,7 +292,7 @@ proptest! {
         let history = chain.work_history();
         for (height, pair) in history.windows(2).enumerate().map(|(i, w)| (i + 1, w)) {
             let (before, after) = (pair[0], pair[1]);
-            if height % 4 != 0 || height < 8 {
+            if !height.is_multiple_of(4) || height < 8 {
                 prop_assert_eq!(before, after, "work only changes at adjustment heights");
             }
             prop_assert!(after <= before * 4 && after * 4 >= before, "at most 4x per adjustment");
@@ -319,7 +319,7 @@ proptest! {
             _ => target.index += 1,
         }
         // Re-hashing the altered block isn't enough either: it breaks the work or the next link.
-        if field % 2 == 0 {
+        if field.is_multiple_of(2) {
             target.hash = target.computed_hash();
         }
 

@@ -36,7 +36,7 @@ pub fn next_work(blocks: &[Block], tip_work: u128, retarget: Option<Retarget>) -
         return tip_work;
     };
     let height = blocks.len() as u64;
-    if height < 2 * r.interval || height % r.interval != 0 {
+    if height < 2 * r.interval || !height.is_multiple_of(r.interval) {
         return tip_work;
     }
     let first = &blocks[(height - 1 - r.interval) as usize];
