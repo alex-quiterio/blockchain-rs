@@ -7,6 +7,7 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::Blockchain;
 use crate::domain::error::ChainError;
+use crate::domain::ledger::ValidatorState;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 use crate::domain::weight::ChainWeight;
@@ -46,6 +47,9 @@ pub struct Account {
     pub balance: u64,
     pub staked: u64,
     pub next_nonce: u64,
+    pub validator: ValidatorState,
+    /// If the next stake must commit, the epoch to commit for.
+    pub commitment_due: Option<u64>,
 }
 
 /// How the chain picks its next block, as of now.
@@ -54,6 +58,8 @@ pub struct ConsensusState {
     /// Under proof of stake, who must forge next. `None` means anyone may.
     pub next_validator: Option<Address>,
     pub stakes: Vec<(String, u64)>,
+    /// The randomness the next validator is drawn from.
+    pub beacon: String,
 }
 
 pub struct NodeService {
@@ -98,6 +104,8 @@ impl NodeService {
             balance: chain.balance(address),
             staked: chain.staked(address),
             next_nonce: chain.next_nonce(address),
+            validator: chain.validator_state(address),
+            commitment_due: chain.commitment_due(address),
         }
     }
 
@@ -120,12 +128,17 @@ impl NodeService {
             rules: chain.rules(),
             next_validator: chain.next_validator(),
             stakes: chain.stakes(),
+            beacon: chain.beacon().to_string(),
         }
     }
 
     /// The unsigned block `validator` should sign next. Changes nothing.
-    pub fn propose(&self, validator: &Address) -> Result<Block, ChainError> {
-        self.chain.lock().unwrap().propose(validator)
+    pub fn propose(
+        &self,
+        validator: &Address,
+        reveal: Option<String>,
+    ) -> Result<Block, ChainError> {
+        self.chain.lock().unwrap().propose(validator, reveal)
     }
 
     /// Appends a proof-of-stake block signed elsewhere and saves it.

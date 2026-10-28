@@ -38,12 +38,46 @@ const Keys = {
     return toHex(new Uint8Array(await crypto.subtle.sign(this.ALGORITHM, key, bytes)));
   },
 
-  /** A transaction signed exactly as the node expects: `from|to|amount|nonce`, plus `|fee=N`. */
-  async transaction(wallet, to, amount, nonce, fee) {
-    const payload = `${wallet.address}|${to}|${amount}|${nonce}${fee ? `|fee=${fee}` : ""}`;
+  /**
+   * A transaction signed exactly as the node expects: `from|to|amount|nonce`, then `|fee=N` and
+   * `|commit=C` when there's a fee or a commitment.
+   */
+  async transaction(wallet, to, amount, nonce, fee, commitment) {
+    const extras = `${fee ? `|fee=${fee}` : ""}${commitment ? `|commit=${commitment}` : ""}`;
+    const payload = `${wallet.address}|${to}|${amount}|${nonce}${extras}`;
     const signature = await this.sign(Wallets.secretOf(wallet.address), payload);
     const tx = { from: wallet.address, to, amount, nonce, signature };
-    return fee ? { ...tx, fee } : tx;
+    return { ...tx, ...(fee ? { fee } : {}), ...(commitment ? { commitment } : {}) };
+  },
+};
+
+// ---- Validator randomness: a hash chain committed to once, revealed a link per block -----
+
+const Randao = {
+  LENGTH: 1000, // must match randao::LENGTH on the node
+
+  async sha256(text) {
+    return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))));
+  },
+
+  async hashTimes(value, times) {
+    for (let i = 0; i < times; i++) value = await this.sha256(value);
+    return value;
+  },
+
+  /** The secret start of commitment number `epoch`, derived from the key so nothing extra is stored. */
+  seed(secretKey, epoch) {
+    return this.sha256(`blockchain-rs/randao|${secretKey}|${epoch}`);
+  },
+
+  /** What a first stake publishes: the seed hashed LENGTH times. */
+  async commitment(secretKey, epoch) {
+    return this.hashTimes(await this.seed(secretKey, epoch), this.LENGTH);
+  },
+
+  /** The link to reveal next, with `remaining` reveals left: one hash short of the last one shown. */
+  async reveal(secretKey, epoch, remaining) {
+    return this.hashTimes(await this.seed(secretKey, epoch), remaining - 1);
   },
 };
 
@@ -354,7 +388,11 @@ function breakdown(block, prev, payout, transfers) {
   }
   if (block.validator) {
     row("Proof", yes("signed"), " by ", party(block.validator),
-      ". The validator was drawn at random, weighted by stake, using the previous hash as the seed, so every node agrees whose turn it was.");
+      ". The validator was drawn at random, weighted by stake, from a randomness beacon that only validators' committed reveals can move, so every node agrees whose turn it was and nobody could steer it.");
+    if (block.reveal) {
+      row("Randomness", "revealed ", el("span", { className: "formula", textContent: short(block.reveal) }),
+        ", the next link of a hash chain the validator committed to when staking. It was fixed in advance, so they had nothing to choose; it's mixed into the beacon that picked the next validator.");
+    }
   } else {
     const d = state.consensus?.difficulty ?? block.hash.match(/^0*/)[0].length;
     row("Proof", yes(`starts with ${"0".repeat(d)}`),
@@ -555,7 +593,9 @@ function renderForge() {
 
   children.push(explain("How does proof of stake work?",
     `Validators lock coins by sending them to <code>stake</code>. Locked coins can't be spent until they're unstaked.`,
-    `For each block, one validator is drawn at random, weighted by stake. The previous block's hash seeds the draw, so every node picks the same one.`,
+    `For each block, one validator is drawn at random, weighted by stake, from a randomness <b>beacon</b>. Every node computes the same draw.`,
+    `When you first stake, this page commits to the end of a secret hash chain made from your key. Each block you forge must reveal the next link back, which anyone can check by hashing it once.`,
+    `Reveals are fixed the moment you commit, so a forger can't try different timestamps or contents to make the draw pick them again. Each reveal is mixed into the beacon, which picks the next validator.`,
     `That validator signs the block instead of doing work. Anyone can check the signature, and a block from the wrong validator is rejected.`,
     `The validator earns the reward plus the block's fees, so more stake means more turns and more income.`,
     `When forks disagree, the one with the most stake behind its blocks wins, not the longest. A long chain nobody staked on can't outweigh a short one backed by real stake.`));
@@ -706,9 +746,13 @@ function forge(button, wallet) {
   if (!wallet) return toast("Create a wallet first", true);
   busy(button, async () => {
     requireUnlocked();
-    // The node proposes, this page signs, and only the signature goes back.
-    const block = await api("POST", "/forge/proposal", { validator: wallet.address });
-    block.signature = await Keys.sign(Wallets.secretOf(wallet.address), block.hash);
+    // The node proposes, this page signs, and only the signature and the reveal go back.
+    const secret = Wallets.secretOf(wallet.address);
+    const account = await api("GET", `/balances/${wallet.address}`);
+    const due = state.consensus.next_validator && account.reveals_left;
+    const reveal = due ? await Randao.reveal(secret, account.next_epoch - 1, account.reveals_left) : undefined;
+    const block = await api("POST", "/forge/proposal", { validator: wallet.address, reveal });
+    block.signature = await Keys.sign(secret, block.hash);
     await api("POST", "/blocks", block);
     toast(`${wallet.name} forged block ${block.index}`);
   });
@@ -759,8 +803,12 @@ $("send-form").onsubmit = (e) => {
     if (!to) return;
     const amount = Number($("send-amount").value);
     const fee = Number($("send-fee").value) || 0;
-    const { next_nonce } = await api("GET", `/balances/${from.address}`);
-    const tx = await Keys.transaction(from, to, amount, next_nonce, fee);
+    const { next_nonce, commitment_due } = await api("GET", `/balances/${from.address}`);
+    // A first stake commits to the reveal chain this wallet will forge with.
+    const commitment = to === STAKE && commitment_due != null
+      ? await Randao.commitment(Wallets.secretOf(from.address), commitment_due)
+      : undefined;
+    const tx = await Keys.transaction(from, to, amount, next_nonce, fee, commitment);
     await api("POST", "/transactions", tx);
     toast(`Queued from ${from.name}. It confirms in the next block.`);
   });

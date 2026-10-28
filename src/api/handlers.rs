@@ -13,9 +13,11 @@ use super::dto::{
 use super::AppState;
 use crate::application::NodeError;
 use crate::domain::address::Address;
+use crate::domain::block::STAKE;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::crypto;
 use crate::domain::error::ChainError;
+use crate::domain::randao;
 use crate::domain::rules::Consensus;
 
 /// Maps domain and application errors onto HTTP status codes and JSON error bodies.
@@ -35,7 +37,9 @@ impl From<ChainError> for ApiError {
         let status = match err {
             ChainError::InsufficientFunds { .. }
             | ChainError::InsufficientStake { .. }
-            | ChainError::BadNonce { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            | ChainError::BadNonce { .. }
+            | ChainError::MissingCommitment
+            | ChainError::UnexpectedCommitment => StatusCode::UNPROCESSABLE_ENTITY,
             ChainError::BadSignature => StatusCode::UNAUTHORIZED,
             ChainError::NotYourTurn { .. } => StatusCode::FORBIDDEN,
             ChainError::NotProofOfWork
@@ -108,6 +112,9 @@ pub async fn get_balance(
         balance: account.balance,
         staked: account.staked,
         next_nonce: account.next_nonce,
+        next_epoch: account.validator.next_epoch,
+        reveals_left: account.validator.reveals_left,
+        commitment_due: account.commitment_due,
     }))
 }
 
@@ -118,8 +125,14 @@ pub async fn sign_transaction(
 ) -> Result<Json<Transaction>, ApiError> {
     let key = crypto::parse_secret_key(&req.secret_key)
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
-    let nonce = req.nonce.unwrap_or_else(|| state.node.next_nonce(&Address::of(&key)));
-    Ok(Json(Transaction::signed(&key, &req.to, req.amount, nonce, req.fee)))
+    let from = Address::of(&key);
+    let nonce = req.nonce.unwrap_or_else(|| state.node.next_nonce(&from));
+    if req.to != STAKE {
+        return Ok(Json(Transaction::signed(&key, &req.to, req.amount, nonce, req.fee)));
+    }
+    let due = state.node.account(&from).commitment_due;
+    let commitment = req.commitment.or_else(|| due.map(|epoch| randao::commitment(&key, epoch)));
+    Ok(Json(Transaction::stake(&key, req.amount, nonce, req.fee, commitment)))
 }
 
 pub async fn submit_transaction(
@@ -166,6 +179,7 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
             .into_iter()
             .map(|(address, amount)| StakeEntry { address, amount })
             .collect(),
+        beacon: consensus.rules.is_proof_of_stake().then_some(consensus.beacon),
     })
 }
 
@@ -175,7 +189,7 @@ pub async fn propose(
     State(state): State<AppState>,
     Json(req): Json<ProposalRequest>,
 ) -> Result<Json<Block>, ApiError> {
-    Ok(Json(state.node.propose(&Address::parse(&req.validator)?)?))
+    Ok(Json(state.node.propose(&Address::parse(&req.validator)?, req.reveal)?))
 }
 
 /// Accepts a proof-of-stake block signed by its validator.

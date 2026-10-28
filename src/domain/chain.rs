@@ -8,7 +8,9 @@ use super::block::{Block, Transaction};
 use super::crypto;
 use super::error::ChainError;
 use super::ledger::Ledger;
+use super::ledger::ValidatorState;
 use super::mempool::Mempool;
+use super::randao;
 use super::rules::{meets_difficulty, select_validator, ChainRules, Consensus};
 use super::weight::ChainWeight;
 
@@ -27,10 +29,11 @@ pub struct Blockchain {
 
 impl Blockchain {
     pub fn new(rules: ChainRules) -> Self {
+        let genesis = Block::genesis(&rules);
         Self {
-            blocks: vec![Block::genesis(&rules)],
+            ledger: Ledger::starting_at(&genesis.hash),
+            blocks: vec![genesis],
             mempool: Mempool::default(),
-            ledger: Ledger::default(),
             weight: ChainWeight::ZERO,
             rules,
         }
@@ -81,13 +84,34 @@ impl Blockchain {
     }
 
     /// Who must forge the next block. `None` on proof-of-work chains, and on proof-of-stake chains
-    /// where nothing is staked yet, when anyone may forge.
+    /// where nobody with reveals left has staked, when anyone may forge.
+    ///
+    /// The draw is seeded by the randomness beacon, which only validators' committed reveals
+    /// move. The block hash isn't involved, so a forger can't steer the next turn by trying
+    /// different timestamps or contents.
     pub fn next_validator(&self) -> Option<Address> {
         if !self.rules.is_proof_of_stake() {
             return None;
         }
-        let selected = select_validator(&self.ledger.stakes(), &self.tip().hash)?;
+        let selected = select_validator(&self.ledger.validator_stakes(), self.ledger.beacon())?;
         Some(Address::parse(&selected).expect("only valid senders can stake"))
+    }
+
+    /// The randomness beacon the next validator is drawn from.
+    pub fn beacon(&self) -> &str {
+        self.ledger.beacon()
+    }
+
+    /// Where `address` stands with its reveal chain.
+    pub fn validator_state(&self, address: &Address) -> ValidatorState {
+        self.ledger.validator_state(address.as_str())
+    }
+
+    /// If `address`'s next stake must carry a commitment, the epoch to make it for. Counts stakes
+    /// already waiting in the mempool, so a second stake in a row doesn't commit again.
+    pub fn commitment_due(&self, address: &Address) -> Option<u64> {
+        let state = self.mempool.projected(&self.ledger).validator_state(address.as_str());
+        state.reveals_left.is_none().then_some(state.next_epoch)
     }
 
     /// Validates a transaction against confirmed state plus the mempool, then queues it.
@@ -103,20 +127,46 @@ impl Blockchain {
         self.append(miner, |index, now, prev, txs| Block::mine(index, now, prev, txs, difficulty))
     }
 
-    /// Proof of stake: the selected validator signs the next block with `key`.
+    /// Proof of stake: the selected validator signs the next block with `key`, revealing the
+    /// next link of their reveal chain, which `key` also lets us work out.
     pub fn forge(&mut self, key: &SigningKey) -> Result<&Block, ChainError> {
         let validator = Address::of(key);
         self.check_turn(&validator)?;
-        self.append(&validator, |index, now, prev, txs| Block::forge(index, now, prev, txs, key))
+        let reveal = self
+            .due_reveal(&validator)
+            .map(|(epoch, remaining)| randao::reveal(key, epoch, remaining));
+        self.append(&validator, |index, now, prev, txs| {
+            Block::forge(index, now, prev, txs, key, reveal)
+        })
     }
 
-    /// Proof of stake, without the key: the block the selected `validator` should sign next. It
-    /// changes nothing; sign its hash and hand it to `append_forged`.
-    pub fn propose(&self, validator: &Address) -> Result<Block, ChainError> {
+    /// Proof of stake, without the key: the block the selected `validator` should sign next,
+    /// carrying their `reveal`. It changes nothing; sign its hash and hand it to `append_forged`.
+    pub fn propose(
+        &self,
+        validator: &Address,
+        reveal: Option<String>,
+    ) -> Result<Block, ChainError> {
         self.check_turn(validator)?;
+        match (self.due_reveal(validator), &reveal) {
+            (Some(_), None) => return Err(ChainError::BadReveal),
+            (None, Some(_)) => return Err(ChainError::BadReveal),
+            (Some(_), Some(r)) if !self.ledger.clone().apply_reveal(validator.as_str(), r) => {
+                return Err(ChainError::BadReveal)
+            }
+            _ => {}
+        }
         let (index, transactions) = self.next_contents(validator);
         let prev_hash = self.tip().hash.clone();
-        Ok(Block::propose(index, Utc::now(), prev_hash, transactions, validator))
+        Ok(Block::propose(index, Utc::now(), prev_hash, transactions, validator, reveal))
+    }
+
+    /// The commitment epoch and reveals left that `validator`'s next block must reveal from, or
+    /// `None` while anyone may forge and no reveal is due.
+    fn due_reveal(&self, validator: &Address) -> Option<(u64, u32)> {
+        self.next_validator()?;
+        let state = self.ledger.validator_state(validator.as_str());
+        Some((state.next_epoch.checked_sub(1)?, state.reveals_left?))
     }
 
     /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
@@ -163,26 +213,23 @@ impl Blockchain {
         (index, transactions)
     }
 
-    /// Pays `producer` the reward plus fees, applies the mempool and appends the block `seal` makes.
+    /// Pays `producer` the reward plus fees, includes the mempool and appends the block `seal`
+    /// makes, after checking it exactly as a peer replaying the chain would.
     fn append(
         &mut self,
         producer: &Address,
         seal: impl FnOnce(u64, DateTime<Utc>, String, Vec<Transaction>) -> Block,
     ) -> Result<&Block, ChainError> {
         let (index, transactions) = self.next_contents(producer);
-        let payout = transactions[0].amount;
-
-        let mut ledger = self.ledger.clone();
-        ledger.credit(producer.as_str(), payout);
-        for tx in &transactions[1..] {
-            ledger.apply_transfer(tx)?;
+        let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
+        let (mut ledger, mut weight) = (self.ledger.clone(), self.weight);
+        if !apply_block(self.tip(), &block, &mut ledger, &mut weight, &self.rules) {
+            return Err(ChainError::InvalidBlock);
         }
-
-        let prev_hash = self.tip().hash.clone();
-        self.blocks.push(seal(index, Utc::now(), prev_hash, transactions));
-        self.weight = self.weight.with_block(&self.rules, self.ledger.staked(producer.as_str()));
+        self.blocks.push(block);
         self.mempool.clear();
         self.ledger = ledger;
+        self.weight = weight;
         Ok(self.tip())
     }
 
@@ -247,7 +294,7 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<(Ledger, ChainWeight)>
     {
         return None;
     }
-    let mut ledger = Ledger::default();
+    let mut ledger = Ledger::starting_at(&genesis.hash);
     let mut weight = ChainWeight::ZERO;
     for (prev, block) in blocks.iter().zip(&blocks[1..]) {
         if !apply_block(prev, block, &mut ledger, &mut weight, rules) {
@@ -269,7 +316,7 @@ fn apply_block(
     if block.index != prev.index + 1
         || block.prev_hash != prev.hash
         || block.hash != block.computed_hash()
-        || !is_sealed_by_consensus(block, prev, ledger, rules)
+        || !is_sealed_by_consensus(block, ledger, rules)
     {
         return false;
     }
@@ -285,14 +332,33 @@ fn apply_block(
     {
         return false;
     }
+    if !reveals_as_required(block, ledger, rules) {
+        return false;
+    }
     *weight = weight.with_block(rules, ledger.staked(&coinbase.to));
     ledger.credit(&coinbase.to, coinbase.amount);
     transfers.iter().all(|tx| ledger.apply_transfer(tx).is_ok())
 }
 
+/// Proof of stake: when a validator was selected, the block must open their commitment, which
+/// moves their reveal chain along and mixes the reveal into the beacon. While anyone may forge,
+/// there's nothing to reveal and the beacon stays put, so nobody can steer it then either.
+fn reveals_as_required(block: &Block, ledger: &mut Ledger, rules: &ChainRules) -> bool {
+    if !rules.is_proof_of_stake() {
+        return true;
+    }
+    let selected = select_validator(&ledger.validator_stakes(), ledger.beacon()).is_some();
+    match (&block.validator, &block.reveal) {
+        (Some(validator), Some(reveal)) if selected => ledger.apply_reveal(validator, reveal),
+        (_, None) => !selected,
+        _ => false,
+    }
+}
+
 /// Genesis is never signed. Under proof of work it still needs the work.
 fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
-    let unsigned = genesis.validator.is_none() && genesis.signature.is_none();
+    let unsigned =
+        genesis.validator.is_none() && genesis.signature.is_none() && genesis.reveal.is_none();
     match rules.consensus {
         Consensus::ProofOfWork { difficulty } => {
             unsigned && meets_difficulty(&genesis.hash, difficulty)
@@ -303,22 +369,18 @@ fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
 
 /// Proof of work: the hash has enough zeros and nobody signed it. Proof of stake: the validator
 /// selected from the stakes before this block signed it.
-fn is_sealed_by_consensus(
-    block: &Block,
-    prev: &Block,
-    ledger: &Ledger,
-    rules: &ChainRules,
-) -> bool {
+fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules) -> bool {
     match rules.consensus {
         Consensus::ProofOfWork { difficulty } => {
             block.validator.is_none()
                 && block.signature.is_none()
+                && block.reveal.is_none()
                 && meets_difficulty(&block.hash, difficulty)
         }
         Consensus::ProofOfStake => {
             block.nonce == 0
                 && block.is_signed_by_validator()
-                && select_validator(&ledger.stakes(), &prev.hash)
+                && select_validator(&ledger.validator_stakes(), ledger.beacon())
                     .is_none_or(|expected| block.validator.as_deref() == Some(&expected))
         }
     }
@@ -327,7 +389,7 @@ fn is_sealed_by_consensus(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::block::{STAKE, UNSTAKE};
+    use crate::domain::block::UNSTAKE;
 
     const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
 
@@ -606,8 +668,16 @@ mod tests {
 
     const POS: ChainRules = ChainRules::proof_of_stake(50);
 
+    /// A first stake, committing to the key's reveal chain for epoch 0.
     fn stake(key: &SigningKey, amount: u64, nonce: u64) -> Transaction {
-        Transaction::signed(key, STAKE, amount, nonce, 0)
+        Transaction::stake(key, amount, nonce, 0, Some(randao::commitment(key, 0)))
+    }
+
+    /// The reveal `key`'s next block must carry, as a wallet would work it out.
+    fn reveal_for(chain: &Blockchain, key: &SigningKey) -> Option<String> {
+        chain.next_validator()?;
+        let state = chain.validator_state(&Address::of(key));
+        Some(randao::reveal(key, state.next_epoch - 1, state.reveals_left?))
     }
 
     #[test]
@@ -706,7 +776,9 @@ mod tests {
         // Bob forges a block out of turn by going around `forge`.
         let mut blocks = chain.blocks().to_vec();
         let reward = Transaction::coinbase(&Address::of(&bob_key), 50, 3);
-        blocks.push(Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key));
+        let bob_block =
+            Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key, None);
+        blocks.push(bob_block);
         assert!(!validate_blocks(&blocks, &POS));
     }
 
@@ -743,7 +815,7 @@ mod tests {
         chain.submit(Transaction::signed(&alice_key, bob.as_str(), 5, 0, 2)).unwrap();
 
         let before = chain.blocks().len();
-        let mut block = chain.propose(&bob).unwrap();
+        let mut block = chain.propose(&bob, None).unwrap();
         assert_eq!(chain.blocks().len(), before, "proposing changes nothing");
         assert_eq!(block.signature, None);
         block.sign(&bob_key);
@@ -763,7 +835,7 @@ mod tests {
         chain.submit(stake(&alice_key, 10, 0)).unwrap();
         chain.forge(&alice_key).unwrap();
 
-        let proposal = chain.propose(&alice).unwrap();
+        let proposal = chain.propose(&alice, reveal_for(&chain, &alice_key)).unwrap();
 
         let mut unsigned = proposal.clone();
         assert_eq!(chain.append_forged(unsigned.clone()), Err(ChainError::InvalidBlock));
@@ -791,9 +863,141 @@ mod tests {
         chain.forge(&alice_key).unwrap();
         chain.submit(stake(&alice_key, 10, 0)).unwrap();
         chain.forge(&alice_key).unwrap();
-        assert!(matches!(chain.propose(&bob), Err(ChainError::NotYourTurn { .. })));
+        assert!(matches!(chain.propose(&bob, None), Err(ChainError::NotYourTurn { .. })));
         let pow = Blockchain::new(RULES);
-        assert_eq!(pow.propose(&bob).err(), Some(ChainError::NotProofOfStake));
+        assert_eq!(pow.propose(&bob, None).err(), Some(ChainError::NotProofOfStake));
+    }
+
+    // ---- Validator randomness ----------------------------------------------------------------
+
+    /// A chain where Alice and Bob have both staked and validators are being drawn.
+    fn staked_chain() -> (Blockchain, [SigningKey; 2]) {
+        let mut chain = Blockchain::new(POS);
+        let (_, alice_key) = wallet();
+        let (_, bob_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.forge(&bob_key).unwrap();
+        chain.submit(stake(&alice_key, 30, 0)).unwrap();
+        chain.submit(stake(&bob_key, 30, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+        (chain, [alice_key, bob_key])
+    }
+
+    fn key_of(keys: &[SigningKey; 2], address: &Address) -> SigningKey {
+        keys.iter().find(|k| Address::of(k) == *address).unwrap().clone()
+    }
+
+    #[test]
+    fn a_forger_cannot_steer_who_forges_next() {
+        let (chain, keys) = staked_chain();
+        let forger = key_of(&keys, &chain.next_validator().unwrap());
+        let (_, carol_key) = wallet();
+
+        // The same forger tries many versions of their block: other timestamps, other contents.
+        let mut next = std::collections::HashSet::new();
+        let mut tips = std::collections::HashSet::new();
+        for i in 0..20 {
+            let mut attempt = chain.clone();
+            if i % 2 == 1 {
+                attempt
+                    .submit(Transaction::signed(&forger, Address::of(&carol_key).as_str(), i, 1, i))
+                    .unwrap();
+            }
+            attempt.forge(&forger).unwrap();
+            tips.insert(attempt.tip().hash.clone());
+            next.insert(attempt.next_validator());
+        }
+        assert_eq!(tips.len(), 20, "every attempt made a different block");
+        assert_eq!(next.len(), 1, "but none of them changed who's next");
+    }
+
+    #[test]
+    fn a_reveal_must_open_the_validators_commitment() {
+        let (mut chain, keys) = staked_chain();
+        let validator = chain.next_validator().unwrap();
+        let key = key_of(&keys, &validator);
+        let due = reveal_for(&chain, &key).unwrap();
+
+        assert_eq!(chain.propose(&validator, None).err(), Some(ChainError::BadReveal));
+        assert_eq!(
+            chain.propose(&validator, Some("0".repeat(64))).err(),
+            Some(ChainError::BadReveal)
+        );
+        let skipped_ahead = randao::reveal(&key, 0, randao::LENGTH - 2);
+        assert_eq!(
+            chain.propose(&validator, Some(skipped_ahead)).err(),
+            Some(ChainError::BadReveal)
+        );
+
+        // A validly signed block with a made-up reveal still fails validation.
+        let (index, txs) = chain.next_contents(&validator);
+        let mut forged = Block::forge(index, Utc::now(), chain.tip().hash.clone(), txs, &key, None);
+        forged.reveal = Some("f".repeat(64));
+        forged.hash = forged.computed_hash();
+        forged.sign(&key);
+        assert_eq!(chain.append_forged(forged).err(), Some(ChainError::InvalidBlock));
+
+        let beacon = chain.beacon().to_string();
+        let mut block = chain.propose(&validator, Some(due.clone())).unwrap();
+        block.sign(&key);
+        chain.append_forged(block).unwrap();
+        assert_eq!(chain.beacon(), randao::mix(&beacon, &due));
+        assert_eq!(chain.validator_state(&validator).reveals_left, Some(randao::LENGTH - 1));
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn only_a_first_stake_commits() {
+        let mut chain = Blockchain::new(POS);
+        let (alice, alice_key) = wallet();
+        chain.forge(&alice_key).unwrap();
+        chain.forge(&alice_key).unwrap();
+
+        assert_eq!(
+            chain.submit(Transaction::stake(&alice_key, 10, 0, 0, None)),
+            Err(ChainError::MissingCommitment)
+        );
+        assert_eq!(chain.commitment_due(&alice), Some(0));
+        chain.submit(stake(&alice_key, 10, 0)).unwrap();
+        assert_eq!(chain.commitment_due(&alice), None, "the waiting stake already commits");
+        assert_eq!(
+            chain.submit(Transaction::stake(
+                &alice_key,
+                5,
+                1,
+                0,
+                Some(randao::commitment(&alice_key, 1))
+            )),
+            Err(ChainError::UnexpectedCommitment)
+        );
+        chain.submit(Transaction::stake(&alice_key, 5, 1, 0, None)).unwrap();
+        chain.forge(&alice_key).unwrap();
+        assert_eq!(chain.staked(&alice), 15);
+
+        // Unstaking everything ends the chain; staking again needs commitment number 1.
+        chain.submit(Transaction::signed(&alice_key, UNSTAKE, 15, 2, 0)).unwrap();
+        chain.forge(&alice_key).unwrap();
+        assert_eq!(chain.validator_state(&alice).reveals_left, None);
+        assert_eq!(chain.commitment_due(&alice), Some(1));
+        let again =
+            Transaction::stake(&alice_key, 10, 3, 0, Some(randao::commitment(&alice_key, 1)));
+        chain.submit(again).unwrap();
+        chain.forge(&alice_key).unwrap();
+        chain.forge(&alice_key).unwrap();
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn the_beacon_only_moves_with_reveals() {
+        let mut pow = chain();
+        let genesis_beacon = pow.beacon().to_string();
+        pow.mine(&wallet().0).unwrap();
+        assert_eq!(pow.beacon(), genesis_beacon, "mining reveals nothing");
+
+        let mut pos = Blockchain::new(POS);
+        let start = pos.beacon().to_string();
+        pos.forge(&wallet().1).unwrap();
+        assert_eq!(pos.beacon(), start, "nobody can steer it while anyone may forge");
     }
 
     // ---- Fees -----------------------------------------------------------------------------

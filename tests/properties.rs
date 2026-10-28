@@ -8,9 +8,10 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 
 use blockchain::domain::address::Address;
-use blockchain::domain::block::{Block, Transaction, STAKE, UNSTAKE};
+use blockchain::domain::block::{Block, Transaction, UNSTAKE};
 use blockchain::domain::chain::{validate_blocks, Blockchain};
 use blockchain::domain::error::ChainError;
+use blockchain::domain::randao;
 use blockchain::domain::rules::ChainRules;
 
 const WALLETS: usize = 4;
@@ -91,7 +92,9 @@ fn run(rules: ChainRules, ops: &[Op]) -> Blockchain {
             }
             Op::Stake { from, amount, fee } => {
                 let nonce = chain.next_nonce(&address(from));
-                Some(Transaction::signed(&key(from), STAKE, amount, nonce, fee))
+                let commitment =
+                    chain.commitment_due(&address(from)).map(|e| randao::commitment(&key(from), e));
+                Some(Transaction::stake(&key(from), amount, nonce, fee, commitment))
             }
             Op::Unstake { from, amount } => {
                 let nonce = chain.next_nonce(&address(from));
@@ -234,6 +237,40 @@ proptest! {
         }
         node.mine(&address(0)).unwrap();
         prop_assert!(node.is_valid());
+    }
+
+    #[test]
+    fn no_version_of_a_block_changes_who_forges_next(
+        stakes in prop::collection::vec(1..=50u64, 2..=WALLETS),
+        versions in prop::collection::vec((0..WALLETS, 0..20u64, 0..5u64), 2..8),
+    ) {
+        // Everyone earns a reward while anyone may forge, then stakes some of it.
+        let mut chain = Blockchain::new(POS);
+        for i in 0..stakes.len() {
+            chain.forge(&key(i)).unwrap();
+        }
+        for (i, &amount) in stakes.iter().enumerate() {
+            let commitment = chain.commitment_due(&address(i)).map(|e| randao::commitment(&key(i), e));
+            chain.submit(Transaction::stake(&key(i), amount, 0, 0, commitment)).unwrap();
+        }
+        add_block(&mut chain, 0);
+        let selected = chain.next_validator().expect("validators are being drawn");
+        let forger = (0..WALLETS).find(|&i| address(i) == selected).unwrap();
+
+        // The selected forger tries different blocks: other contents, fees and timestamps.
+        let mut next = std::collections::HashSet::new();
+        for &(to, amount, fee) in &versions {
+            let mut attempt = chain.clone();
+            if amount > 0 {
+                let nonce = attempt.next_nonce(&selected);
+                let tx = Transaction::signed(&key(forger), address(to).as_str(), amount, nonce, fee);
+                let _ = attempt.submit(tx);
+            }
+            attempt.forge(&key(forger)).unwrap();
+            prop_assert!(attempt.is_valid());
+            next.insert(attempt.next_validator());
+        }
+        prop_assert_eq!(next.len(), 1, "the forger steered the next turn");
     }
 
     #[test]

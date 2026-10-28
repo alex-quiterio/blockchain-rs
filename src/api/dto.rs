@@ -20,6 +20,8 @@ pub struct SignRequest {
     /// Optional tip for whoever adds the block.
     #[serde(default)]
     pub fee: u64,
+    /// For a first stake. Worked out from `secret_key` when left out.
+    pub commitment: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,6 +34,8 @@ pub struct ForgeRequest {
 pub struct ProposalRequest {
     /// The address that will sign the block.
     pub validator: String,
+    /// The next link of the validator's reveal chain. Leave it out while anyone may forge.
+    pub reveal: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,6 +55,8 @@ pub struct ConsensusResponse {
     pub next_validator: Option<String>,
     pub stakes: Vec<StakeEntry>,
     pub total_stake: u64,
+    /// Proof of stake only: the randomness the next validator is drawn from.
+    pub beacon: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,6 +70,12 @@ pub struct BalanceResponse {
     pub balance: u64,
     pub staked: u64,
     pub next_nonce: u64,
+    /// The epoch this address's next commitment would be, and so the one after its active one.
+    pub next_epoch: u64,
+    /// Reveals left on its active commitment, if it has one.
+    pub reveals_left: Option<u32>,
+    /// If its next stake must carry a commitment, the epoch to make it for.
+    pub commitment_due: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -14,6 +14,15 @@ impl Mempool {
         Self(candidates.into_iter().filter(|tx| projected.apply_transfer(tx).is_ok()).collect())
     }
 
+    /// The ledger as it will be once everything waiting is confirmed.
+    pub fn projected(&self, confirmed: &Ledger) -> Ledger {
+        let mut projected = confirmed.clone();
+        for tx in &self.0 {
+            projected.apply_transfer(tx).expect("the mempool always applies");
+        }
+        projected
+    }
+
     pub fn transactions(&self) -> &[Transaction] {
         &self.0
     }

@@ -7,6 +7,7 @@ pub mod crypto;
 pub mod error;
 pub mod ledger;
 pub mod mempool;
+pub mod randao;
 pub mod repository;
 pub mod rules;
 pub mod weight;

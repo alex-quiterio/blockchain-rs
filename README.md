@@ -23,7 +23,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | 🔐 **Wallets** | ed25519 keypairs made and used in your browser. Keys never leave the page, and they're saved encrypted with your passphrase. |
 | ✍️ **Transactions** | Signed over `from \| to \| amount \| nonce` (plus the fee, when there is one). The nonce stops replays. |
 | ⛏️ **Proof of work** | Mine a block by finding a hash with `DIFFICULTY` leading zeros. |
-| 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake and seeded by the previous hash, then signs the block. |
+| 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
 | 🌐 **Peers & sync** | Nodes introduce themselves both ways, gossip new blocks and transactions, and pull from each other every few seconds. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
@@ -133,6 +133,22 @@ Exact ties go to the lower tip hash, so two nodes on equal forks always pick the
 
 The first transaction in each block is the **payout**: the reward plus the block's fees, to whoever mined or forged it. Validation checks that sum.
 
+### 🎲 Validator turns nobody can steer
+
+Under proof of stake, the next validator is drawn from a **randomness beacon**, not from the previous block's hash. Seeding the draw from the hash would hand the forger a lever: they could try timestamp after timestamp until the draw picked them again. The beacon works like Ethereum's RANDAO:
+
+1. **Commit.** A validator's first stake publishes the end of a secret hash chain, `H¹⁰⁰⁰(seed)`. The seed is derived from their key, so their wallet can recompute any link and nobody else can.
+2. **Reveal.** Every block they forge must reveal the next link back: a value whose hash is the last one shown. Anyone can check it with one hash, and it was fixed the moment they committed.
+3. **Mix.** The reveal is mixed into the beacon, `R ← H(R ‖ reveal)`, and the beacon picks the next validator.
+
+```mermaid
+flowchart LR
+    S["seed<br/>(from the key)"] -- "hash ×1000" --> C["commitment<br/>published when staking"]
+    C -. "each forge reveals<br/>the link before" .-> R1["reveal"] --> M["beacon ← H(beacon ‖ reveal)"] --> V["next validator"]
+```
+
+A forger's block can differ in timestamp and contents, but its reveal can't, so none of those differences change who's next. While nothing is staked, anyone may forge and the beacon doesn't move at all. Unstaking everything ends a commitment, and a validator who uses up all 1,000 reveals sits out until they stake again with a new one.
+
 ## 🏛️ Architecture
 
 The code follows domain-driven design. Dependencies only point inward:
@@ -149,6 +165,7 @@ flowchart TB
   - `chain.rs`: the `Blockchain` aggregate root, which mines, forges, validates and runs `adopt_if_heavier`
   - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself
   - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
+  - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
   - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
   - `mempool.rs`, `ledger.rs`: pending transactions, and the balances, stakes and nonces
   - `address.rs`: a value object that can only hold a valid public key
@@ -164,15 +181,15 @@ flowchart TB
 | Method | Path | What it does |
 | --- | --- | --- |
 | POST | `/wallets` | Make a keypair: `{address, secret_key}`. |
-| GET | `/balances/:address` | `{balance, staked, next_nonce}`. |
-| POST | `/transactions/sign` | `{secret_key, to, amount, fee?, nonce?}` → a signed transaction. `to` may be `stake` or `unstake`. |
+| GET | `/balances/:address` | `{balance, staked, next_nonce, next_epoch, reveals_left, commitment_due}`. The last three tell a wallet which commitment or reveal to send. |
+| POST | `/transactions/sign` | `{secret_key, to, amount, fee?, nonce?, commitment?}` → a signed transaction. `to` may be `stake` or `unstake`. A first stake's commitment is worked out from the key if left out. |
 | POST | `/transactions` | Submit a signed transaction. It's gossiped to peers. |
 | GET | `/transactions/pending` | The mempool. |
 | POST | `/mine` | Proof of work: `{miner}`. |
-| POST | `/forge/proposal` | Proof of stake: `{validator}` → the unsigned block that validator should sign next. |
+| POST | `/forge/proposal` | Proof of stake: `{validator, reveal?}` → the unsigned block that validator should sign next. The reveal is required once validators are being drawn. |
 | POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
 | POST | `/forge` | Proof of stake shortcut for scripts: `{secret_key}` of the selected validator. |
-| GET | `/consensus` | Rules, stakes and whose turn it is next. |
+| GET | `/consensus` | Rules, stakes, the randomness beacon and whose turn it is next. |
 | GET | `/chain` | Every block. |
 | POST | `/chain` | Offer a chain: adopted if valid and heavier. `409` if it would undo too many blocks. |
 | GET | `/chain/valid` | `{valid, length, weight}` after a full replay. |
@@ -191,7 +208,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 64 tests: unit, HTTP and property-based
+cargo test        # 72 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.
@@ -201,6 +218,7 @@ cargo test        # 64 tests: unit, HTTP and property-based
   - Random transfers, stakes and blocks never create or destroy coins, and never break nonces or replay.
   - Transactions arriving in any order end in the same balances.
   - Forks offered in any order settle on the same chain.
+  - No version of a block, whatever its timestamp, contents or fees, changes who forges next.
   - Tampered forks are never adopted.
 
   Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
@@ -215,7 +233,7 @@ Nothing here is built yet. Each would make a good next step.
 - **Difficulty that adjusts** to keep blocks coming at a steady pace as miners join or leave. Chain weight already counts work per block, so it's ready for this.
 - **Slashing**: burn the stake of a validator caught signing two blocks at the same height.
 - **Finality checkpoints**: stakers vote to make a block permanent, instead of relying only on the reorg limit.
-- **Validator turns that can't be gamed**: the next validator is seeded by the previous hash, which its forger can influence by choosing the timestamp. A commit-reveal randomness beacon would fix that.
+- **Skipping absent validators**: a selected validator who never forges stalls the chain. Time slots that pass the turn on after a timeout would fix it, and withholding a reveal would then cost a block reward.
 
 **💸 Fees and blocks**
 - **Block size limits**, so fees decide what gets in first.

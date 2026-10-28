@@ -40,6 +40,10 @@ pub struct Transaction {
     /// transactions without one keep their original JSON and signature.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fee: u64,
+    /// Stakes only: the end of the staker's reveal hash chain, needed the first time they stake
+    /// (see `randao`). Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -47,23 +51,64 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl Transaction {
-    pub fn signing_payload(from: &str, to: &str, amount: u64, nonce: u64, fee: u64) -> Vec<u8> {
+    pub fn signing_payload(
+        from: &str,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+        fee: u64,
+        commitment: Option<&str>,
+    ) -> Vec<u8> {
         let mut payload = format!("{from}|{to}|{amount}|{nonce}");
         if fee > 0 {
             payload.push_str(&format!("|fee={fee}"));
         }
+        if let Some(commitment) = commitment {
+            payload.push_str(&format!("|commit={commitment}"));
+        }
         payload.into_bytes()
     }
 
-    /// A transfer (or stake, or unstake, by `to`) from `key`'s address, signed with it.
+    /// A transfer (or unstake, or later stake, by `to`) from `key`'s address, signed with it.
     pub fn signed(key: &SigningKey, to: &str, amount: u64, nonce: u64, fee: u64) -> Self {
+        Self::signed_with(key, to, amount, nonce, fee, None)
+    }
+
+    /// A stake from `key`'s address. `commitment` is required the first time, and refused
+    /// while an earlier one is still in use.
+    pub fn stake(
+        key: &SigningKey,
+        amount: u64,
+        nonce: u64,
+        fee: u64,
+        commitment: Option<String>,
+    ) -> Self {
+        Self::signed_with(key, STAKE, amount, nonce, fee, commitment)
+    }
+
+    fn signed_with(
+        key: &SigningKey,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+        fee: u64,
+        commitment: Option<String>,
+    ) -> Self {
         let from = Address::of(key).to_string();
-        let signature = crypto::sign(key, &Self::signing_payload(&from, to, amount, nonce, fee));
-        Self { from, to: to.to_string(), amount, nonce, signature, fee }
+        let payload = Self::signing_payload(&from, to, amount, nonce, fee, commitment.as_deref());
+        let signature = crypto::sign(key, &payload);
+        Self { from, to: to.to_string(), amount, nonce, signature, fee, commitment }
     }
 
     pub fn payload(&self) -> Vec<u8> {
-        Self::signing_payload(&self.from, &self.to, self.amount, self.nonce, self.fee)
+        Self::signing_payload(
+            &self.from,
+            &self.to,
+            self.amount,
+            self.nonce,
+            self.fee,
+            self.commitment.as_deref(),
+        )
     }
 
     pub fn is_coinbase(&self) -> bool {
@@ -89,6 +134,7 @@ impl Transaction {
             nonce: height,
             signature: String::new(),
             fee: 0,
+            commitment: None,
         }
     }
 }
@@ -106,6 +152,10 @@ pub struct Block {
     /// their JSON and hashes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validator: Option<String>,
+    /// Proof of stake only: the next link of the validator's reveal chain, mixed into the beacon
+    /// that picks who forges next. Absent while nothing is staked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<String>,
     /// Proof of stake only: the validator's signature over `hash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -152,8 +202,11 @@ impl Block {
         prev_hash: String,
         transactions: Vec<Transaction>,
         key: &SigningKey,
+        reveal: Option<String>,
     ) -> Self {
-        let mut block = Self::propose(index, timestamp, prev_hash, transactions, &Address::of(key));
+        let validator = Address::of(key);
+        let mut block =
+            Self::propose(index, timestamp, prev_hash, transactions, &validator, reveal);
         block.sign(key);
         block
     }
@@ -166,9 +219,11 @@ impl Block {
         prev_hash: String,
         transactions: Vec<Transaction>,
         validator: &Address,
+        reveal: Option<String>,
     ) -> Self {
         let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
         block.validator = Some(validator.to_string());
+        block.reveal = reveal;
         block.hash = block.computed_hash();
         block
     }
@@ -192,6 +247,7 @@ impl Block {
             nonce: 0,
             hash: String::new(),
             validator: None,
+            reveal: None,
             signature: None,
         }
     }
@@ -202,9 +258,9 @@ impl Block {
         let ts = self.timestamp.to_rfc3339_opts(SecondsFormat::Nanos, true);
         let (index, prev, nonce) = (self.index, &self.prev_hash, self.nonce);
         let mut fields = format!("{index}|{ts}|{prev}|{txs}|{nonce}");
-        if let Some(validator) = &self.validator {
+        for extra in [&self.validator, &self.reveal].into_iter().flatten() {
             fields.push('|');
-            fields.push_str(validator);
+            fields.push_str(extra);
         }
         crypto::sha256_hex(fields.as_bytes())
     }

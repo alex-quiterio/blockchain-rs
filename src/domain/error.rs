@@ -28,6 +28,12 @@ pub enum ChainError {
     NotYourTurn {
         expected: String,
     },
+    /// A first stake must commit to a reveal chain.
+    MissingCommitment,
+    /// Only a first stake carries a commitment.
+    UnexpectedCommitment,
+    /// A forger's reveal doesn't open their commitment, or is missing or not due.
+    BadReveal,
     /// A submitted block doesn't build on the current tip, usually because another block won.
     StaleBlock,
     /// A submitted block fails a check: its hash, signature, payout or transactions.
@@ -57,6 +63,15 @@ impl fmt::Display for ChainError {
             Self::NotProofOfWork => write!(f, "this chain uses proof of stake: forge, don't mine"),
             Self::NotProofOfStake => write!(f, "this chain uses proof of work: mine, don't forge"),
             Self::NotYourTurn { expected } => write!(f, "the next block is {expected}'s to forge"),
+            Self::MissingCommitment => {
+                write!(f, "a first stake needs a commitment: the end of a 64-hex reveal chain")
+            }
+            Self::UnexpectedCommitment => {
+                write!(f, "only a first stake carries a commitment; this one is still in use")
+            }
+            Self::BadReveal => {
+                write!(f, "the reveal doesn't open the validator's commitment, or isn't due")
+            }
             Self::StaleBlock => write!(f, "block does not build on the current tip"),
             Self::InvalidBlock => write!(f, "block does not validate"),
             Self::ReorgTooDeep { depth, max } => {
