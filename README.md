@@ -25,7 +25,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ⛏️ **Proof of work** | Mine a block by finding a hash below a target. The difficulty adjusts every few blocks to keep them coming at a steady pace as miners join or leave. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
-| 🌐 **Peers & sync** | Nodes introduce themselves both ways, gossip new blocks and transactions, and pull from each other every few seconds. |
+| 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own, sending older blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
 | 💾 **Storage** | The chain is saved to JSON with atomic writes and fully replayed on startup, so a tampered file is refused. |
 | 🔍 **Validation** | Replays everything: links, hashes, work or signatures, rewards, fees, nonces, balances and stakes. |
@@ -235,7 +235,7 @@ flowchart TB
 | GET | `/chain` | Every block, or with `?from=N` the blocks from height N on. |
 | GET | `/chain/work` | Proof of work: the work each block required, by height. |
 | GET | `/status` | `{height, tip, weight, pending}`, cheap enough to poll every second. |
-| POST | `/chain` | Offer a chain: adopted if valid and heavier. `409` if it would undo too many blocks. |
+| POST | `/chain` | Offer blocks, the whole chain or just the newest: adopted if they make a valid, heavier chain. `{replaced, length, missing_parent}`, where `missing_parent` asks for blocks from further back. `409` if it would undo too many blocks. |
 | GET | `/chain/valid` | `{valid, length, weight}` after a full replay. |
 | GET · POST | `/peers` | List peers, or add one with `{url}`. |
 | POST | `/sync` | Pull from every peer now. |
@@ -252,7 +252,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 82 tests: unit, HTTP and property-based
+cargo test        # 90 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.
@@ -294,7 +294,6 @@ Nothing here is built yet. Each would make a good next step.
 **🌐 Network**
 - **Peer discovery**: learn new peers from existing ones.
 - **Ban misbehaving peers** that keep offering invalid chains.
-- **Incremental sync**: send only the blocks a peer is missing, instead of the whole chain.
 
 **🛠️ Developer experience**
 - **A block explorer page**: search by address, transaction or hash.

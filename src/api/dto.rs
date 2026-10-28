@@ -97,10 +97,13 @@ pub struct ValidityResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceResponse {
-    /// Whether the offered chain was adopted.
+    /// Whether the offered blocks were adopted.
     pub replaced: bool,
     /// This node's chain length afterwards.
     pub length: usize,
+    /// The offered blocks build on one this node doesn't have: send more from further back.
+    #[serde(default)]
+    pub missing_parent: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

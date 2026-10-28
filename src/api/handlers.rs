@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -11,10 +11,11 @@ use super::dto::{
     SignRequest, StakeEntry, StatusResponse, SyncResponse, ValidityResponse, WalletResponse,
 };
 use super::AppState;
-use crate::application::NodeError;
+use crate::application::{NodeError, PEER_HEADER};
 use crate::domain::address::Address;
 use crate::domain::block::STAKE;
 use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::Extension;
 use crate::domain::crypto;
 use crate::domain::error::ChainError;
 use crate::domain::randao;
@@ -91,19 +92,23 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
     })
 }
 
-/// Offers this node another node's chain. It's adopted only if it is valid and heavier.
+/// Offers this node another node's blocks, from genesis or from any height on. They're adopted
+/// only if they make a valid, heavier chain. A peer gossiping a new block sends just that block.
 pub async fn replace_chain(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(blocks): Json<Vec<Block>>,
 ) -> Result<Json<ReplaceResponse>, ApiError> {
     let node = state.node.clone();
-    let (replaced, length) = tokio::task::spawn_blocking(move || node.adopt_if_heavier(blocks))
+    let (extension, length) = tokio::task::spawn_blocking(move || node.extend(blocks))
         .await
         .expect("replace task panicked")?;
+    let replaced = extension == Extension::Adopted;
     if replaced {
-        gossip_chain(&state);
+        gossip_chain(&state, sender(&headers));
     }
-    Ok(Json(ReplaceResponse { replaced, length }))
+    let missing_parent = extension == Extension::MissingParent;
+    Ok(Json(ReplaceResponse { replaced, length, missing_parent }))
 }
 
 pub async fn get_validity(State(state): State<AppState>) -> Json<ValidityResponse> {
@@ -155,11 +160,12 @@ pub async fn sign_transaction(
 
 pub async fn submit_transaction(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(tx): Json<Transaction>,
 ) -> Result<(StatusCode, Json<Transaction>), ApiError> {
     state.node.submit(tx.clone())?;
-    let (network, gossiped) = (state.network.clone(), tx.clone());
-    tokio::spawn(async move { network.broadcast_transaction(&gossiped).await });
+    let (network, gossiped, from) = (state.network.clone(), tx.clone(), sender(&headers));
+    tokio::spawn(async move { network.broadcast_transaction(&gossiped, from.as_deref()).await });
     Ok((StatusCode::ACCEPTED, Json(tx)))
 }
 
@@ -176,7 +182,7 @@ pub async fn mine(
     let block = tokio::task::spawn_blocking(move || node.mine(&miner))
         .await
         .expect("mining task panicked")?;
-    gossip_chain(&state);
+    gossip_chain(&state, None);
     Ok((StatusCode::CREATED, Json(block)))
 }
 
@@ -227,7 +233,7 @@ pub async fn submit_block(
     Json(block): Json<Block>,
 ) -> Result<(StatusCode, Json<Block>), ApiError> {
     let block = state.node.append_forged(block)?;
-    gossip_chain(&state);
+    gossip_chain(&state, None);
     Ok((StatusCode::CREATED, Json(block)))
 }
 
@@ -240,7 +246,7 @@ pub async fn forge(
     let key = crypto::parse_secret_key(&req.secret_key)
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
     let block = state.node.forge(&key)?;
-    gossip_chain(&state);
+    gossip_chain(&state, None);
     Ok((StatusCode::CREATED, Json(block)))
 }
 
@@ -274,7 +280,7 @@ pub async fn add_peer(
 pub async fn sync(State(state): State<AppState>) -> Json<SyncResponse> {
     let report = state.network.sync().await;
     if report.adopted_from.is_some() {
-        gossip_chain(&state);
+        gossip_chain(&state, report.adopted_from.clone());
     }
     Json(SyncResponse {
         adopted_from: report.adopted_from,
@@ -291,8 +297,14 @@ pub async fn get_node(State(state): State<AppState>) -> Json<NodeResponse> {
     })
 }
 
-/// Tells peers about a new tip without making the caller wait for them.
-fn gossip_chain(state: &AppState) {
+/// Tells peers, except the one it came from, about a new tip without making the caller wait.
+fn gossip_chain(state: &AppState, except: Option<String>) {
     let network = state.network.clone();
-    tokio::spawn(async move { network.broadcast_chain().await });
+    tokio::spawn(async move { network.broadcast_tip(except.as_deref()).await });
+}
+
+/// The peer that relayed a block or transaction, if it said.
+fn sender(headers: &HeaderMap) -> Option<String> {
+    let url = headers.get(PEER_HEADER)?.to_str().ok()?;
+    Some(url.trim_end_matches('/').to_string())
 }

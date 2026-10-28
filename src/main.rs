@@ -64,7 +64,7 @@ async fn keep_in_sync(network: Arc<Network>, peers: String, every: Duration) {
         let report = network.sync().await;
         if let Some(peer) = report.adopted_from {
             tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
-            network.broadcast_chain().await;
+            network.broadcast_tip(Some(&peer)).await;
         }
     }
 }

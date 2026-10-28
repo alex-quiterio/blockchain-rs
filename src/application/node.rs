@@ -5,7 +5,7 @@ use ed25519_dalek::SigningKey;
 
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
-use crate::domain::chain::Blockchain;
+use crate::domain::chain::{Blockchain, Extension};
 use crate::domain::error::ChainError;
 use crate::domain::ledger::ValidatorState;
 use crate::domain::repository::{ChainRepository, RepositoryError};
@@ -162,6 +162,10 @@ impl NodeService {
         }
     }
 
+    pub fn rules(&self) -> ChainRules {
+        self.chain.lock().unwrap().rules()
+    }
+
     /// Proof of work: the work each block required, by height.
     pub fn work_history(&self) -> Vec<u128> {
         self.chain.lock().unwrap().work_history()
@@ -196,6 +200,15 @@ impl NodeService {
         self.commit(|chain| {
             let adopted = chain.adopt_if_heavier(blocks)?;
             Ok((adopted, chain.blocks().len()))
+        })
+    }
+
+    /// Offers another node's blocks from some height on. Returns what came of it and the length
+    /// afterwards.
+    pub fn extend(&self, blocks: Vec<Block>) -> Result<(Extension, usize), NodeError> {
+        self.commit(|chain| {
+            let extension = chain.extend(blocks)?;
+            Ok((extension, chain.blocks().len()))
         })
     }
 

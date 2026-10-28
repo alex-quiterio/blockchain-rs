@@ -26,6 +26,27 @@ pub struct Blockchain {
     rules: ChainRules,
 }
 
+/// What came of offering a chain some blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extension {
+    /// They made a heavier chain, which is now ours.
+    Adopted,
+    /// We already had them, or our chain is heavier.
+    Ignored,
+    /// They build on a block we don't have, so the sender should send more from further back.
+    MissingParent,
+}
+
+impl From<bool> for Extension {
+    fn from(adopted: bool) -> Self {
+        if adopted {
+            Self::Adopted
+        } else {
+            Self::Ignored
+        }
+    }
+}
+
 /// What replaying blocks in order adds up to.
 #[derive(Clone)]
 struct Tally {
@@ -318,6 +339,49 @@ impl Blockchain {
         Ok(true)
     }
 
+    /// Takes another node's blocks from some height on, so peers can send only what's new. Blocks
+    /// that build on our tip are checked one by one, without replaying the rest of the chain. A
+    /// stretch that forks off one of our blocks is weighed as a whole chain by `adopt_if_heavier`.
+    /// Blocks from height 0 are a whole chain already.
+    pub fn extend(&mut self, blocks: Vec<Block>) -> Result<Extension, ChainError> {
+        let start = blocks.first().ok_or(ChainError::InvalidChain)?.index as usize;
+        if start == 0 {
+            return self.adopt_if_heavier(blocks).map(Extension::from);
+        }
+        match self.blocks.get(start - 1) {
+            Some(parent) if parent.hash == blocks[0].prev_hash => {}
+            _ => return Ok(Extension::MissingParent),
+        }
+        let known = self.blocks[start..]
+            .iter()
+            .zip(&blocks)
+            .take_while(|(ours, theirs)| ours.hash == theirs.hash)
+            .count();
+        let new = &blocks[known..];
+        if new.is_empty() {
+            return Ok(Extension::Ignored);
+        }
+        if start + known < self.blocks.len() {
+            let mut candidate = self.blocks[..start].to_vec();
+            candidate.extend(blocks);
+            return self.adopt_if_heavier(candidate).map(Extension::from);
+        }
+
+        let mut tally = self.tally.clone();
+        let height = self.blocks.len();
+        for block in new {
+            if !apply_block(&self.blocks, block, &mut tally, &self.rules) {
+                self.blocks.truncate(height);
+                return Err(ChainError::InvalidBlock);
+            }
+            self.blocks.push(block.clone());
+        }
+        let waiting = self.mempool.transactions().to_vec();
+        self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
+        self.tally = tally;
+        Ok(Extension::Adopted)
+    }
+
     /// Replays the whole chain: links, hashes, consensus, rewards, signatures and balances.
     pub fn is_valid(&self) -> bool {
         validate_blocks(&self.blocks, &self.rules)
@@ -600,6 +664,70 @@ mod tests {
         assert_eq!(ours.adopt_if_heavier(before[..2].to_vec()), Ok(false));
         assert_eq!(ours.adopt_if_heavier(before.clone()), Ok(false));
         assert_eq!(ours.blocks(), before);
+    }
+
+    #[test]
+    fn extend_appends_new_blocks_on_our_tip() {
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut ours = chain();
+        ours.mine(&alice).unwrap();
+        let mut theirs = ours.clone();
+        let payment = transfer(&alice_key, &bob, 20, 0);
+        ours.submit(payment.clone()).unwrap();
+        theirs.submit(payment).unwrap();
+        theirs.mine(&bob).unwrap();
+        theirs.mine(&bob).unwrap();
+
+        // Overlapping blocks we already have are skipped.
+        assert_eq!(ours.extend(theirs.blocks()[1..].to_vec()), Ok(Extension::Adopted));
+        assert_eq!(ours.blocks(), theirs.blocks());
+        assert_eq!(ours.balance(&bob), 120);
+        assert!(ours.pending().is_empty(), "the confirmed payment left the mempool");
+        assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::Ignored));
+        assert!(ours.is_valid());
+    }
+
+    #[test]
+    fn extend_asks_for_more_when_the_parent_is_missing() {
+        let mut ours = chain();
+        let mut theirs = chain();
+        theirs.mine(&wallet().0).unwrap();
+        theirs.mine(&wallet().0).unwrap();
+
+        assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::MissingParent));
+        assert_eq!(ours.extend(theirs.blocks()[1..].to_vec()), Ok(Extension::Adopted));
+        assert_eq!(ours.blocks(), theirs.blocks());
+    }
+
+    #[test]
+    fn extend_weighs_a_fork_like_a_whole_chain() {
+        let (alice, _) = wallet();
+        let (bob, _) = wallet();
+        let mut ours = chain();
+        ours.mine(&alice).unwrap();
+        let mut theirs = ours.clone();
+        ours.mine(&alice).unwrap();
+        theirs.mine(&bob).unwrap();
+        theirs.mine(&bob).unwrap();
+
+        assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::Adopted));
+        assert_eq!(ours.blocks(), theirs.blocks());
+        assert_eq!(ours.balance(&alice), 50);
+    }
+
+    #[test]
+    fn extend_refuses_a_bad_block_and_keeps_ours() {
+        let mut ours = chain();
+        let mut theirs = chain();
+        theirs.mine(&wallet().0).unwrap();
+        let mut block = theirs.blocks()[1].clone();
+        block.transactions[0].amount = 1_000;
+        block.hash = block.computed_hash();
+
+        assert_eq!(ours.extend(vec![block]), Err(ChainError::InvalidBlock));
+        assert_eq!(ours.blocks().len(), 1);
+        assert_eq!(ours.extend(vec![]), Err(ChainError::InvalidChain));
     }
 
     #[test]

@@ -124,13 +124,33 @@ async fn nodes_settle_on_the_heaviest_chain() {
     let (_, their_chain) = call(&theirs, "GET", "/chain", None).await;
     let (status, body) = call(&ours, "POST", "/chain", Some(their_chain.clone())).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({ "replaced": true, "length": 3 }));
+    assert_eq!(body, json!({ "replaced": true, "length": 3, "missing_parent": false }));
     let (_, our_chain) = call(&ours, "GET", "/chain", None).await;
     assert_eq!(our_chain, their_chain);
 
     // Offering our now-equal chain back changes nothing.
     let (_, body) = call(&theirs, "POST", "/chain", Some(our_chain)).await;
-    assert_eq!(body, json!({ "replaced": false, "length": 3 }));
+    assert_eq!(body, json!({ "replaced": false, "length": 3, "missing_parent": false }));
+}
+
+#[tokio::test]
+async fn a_node_takes_new_blocks_alone_and_asks_for_more_when_it_must() {
+    let (ours, theirs) = (app(), app());
+    let (_, miner) = call(&ours, "POST", "/wallets", None).await;
+    let miner = json!({ "miner": miner["address"] });
+    for _ in 0..3 {
+        call(&theirs, "POST", "/mine", Some(miner.clone())).await;
+    }
+
+    let (_, tip) = call(&theirs, "GET", "/chain?from=3", None).await;
+    let (_, body) = call(&ours, "POST", "/chain", Some(tip.clone())).await;
+    assert_eq!(body, json!({ "replaced": false, "length": 1, "missing_parent": true }));
+
+    let (_, recent) = call(&theirs, "GET", "/chain?from=1", None).await;
+    let (_, body) = call(&ours, "POST", "/chain", Some(recent)).await;
+    assert_eq!(body, json!({ "replaced": true, "length": 4, "missing_parent": false }));
+    let (_, body) = call(&ours, "POST", "/chain", Some(tip)).await;
+    assert_eq!(body, json!({ "replaced": false, "length": 4, "missing_parent": false }));
 }
 
 #[tokio::test]
