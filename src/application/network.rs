@@ -21,8 +21,13 @@ pub trait PeerClient: Send + Sync {
     /// Where the peer's chain stands. `me` tells the peer who's asking, so it can add us back if
     /// it forgot us.
     fn status<'a>(&'a self, peer: &'a str, me: Option<&'a str>) -> PeerResult<'a, PeerTip>;
-    /// The peer's blocks from `height` on.
-    fn chain_from<'a>(&'a self, peer: &'a str, height: usize) -> PeerResult<'a, Vec<Block>>;
+    /// Up to `limit` of the peer's blocks, from `height` on.
+    fn chain_from<'a>(
+        &'a self,
+        peer: &'a str,
+        height: usize,
+        limit: usize,
+    ) -> PeerResult<'a, Vec<Block>>;
     fn pending<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<Transaction>>;
     /// Offers blocks from some height on. `me` tells the peer who sent them.
     fn offer_blocks<'a>(
@@ -75,12 +80,23 @@ pub struct Network {
     /// This node's own URL, given to peers so they can reach back.
     me: Option<String>,
     peers: Mutex<BTreeMap<String, PeerStatus>>,
+    /// How many blocks to fetch per request when catching up.
+    page: usize,
 }
+
+/// Blocks per request when catching up: small enough to arrive well within a request's timeout,
+/// large enough that a node far behind needs few of them.
+pub const SYNC_PAGE: usize = 500;
 
 impl Network {
     pub fn new(node: Arc<NodeService>, client: Box<dyn PeerClient>, me: Option<String>) -> Self {
         let me = me.map(|url| normalize(&url));
-        Self { node, client, me, peers: Mutex::default() }
+        Self { node, client, me, peers: Mutex::default(), page: SYNC_PAGE }
+    }
+
+    /// Fetches `page` blocks per request when catching up, instead of `SYNC_PAGE`.
+    pub fn with_sync_page(self, page: usize) -> Self {
+        Self { page: page.max(1), ..self }
     }
 
     pub fn node(&self) -> &Arc<NodeService> {
@@ -155,15 +171,23 @@ impl Network {
         let ours = self.node.tip();
         let mut adopted = false;
         if theirs.tip != ours.hash && theirs.weight >= ours.weight.value() {
+            // From as far back as a fork may reach, a page at a time. Each page builds on the
+            // last, so it's checked block by block, and no single response grows with the chain.
             let shorter = ours.height.min(theirs.height) as usize + 1;
-            for from in [self.recent_start(shorter), 0] {
-                let blocks = self.client.chain_from(url, from).await?;
-                match self.node.extend(blocks) {
-                    Ok((Extension::MissingParent, _)) => continue,
-                    Ok((extension, _)) => adopted = extension == Extension::Adopted,
-                    Err(_) => {}
+            let mut from = self.recent_start(shorter);
+            loop {
+                let page = self.client.chain_from(url, from, self.page).await?;
+                let fetched = page.len();
+                match self.node.extend(page) {
+                    Ok((Extension::Adopted, _)) => adopted = true,
+                    Ok((Extension::Ignored, _)) => {}
+                    // They fork off further back than we may undo, or sent a bad block.
+                    Ok((Extension::MissingParent, _)) | Err(_) => break,
                 }
-                break;
+                if fetched < self.page {
+                    break;
+                }
+                from += fetched;
             }
         }
         if theirs.pending > 0 {
@@ -291,13 +315,15 @@ mod tests {
                 })
             })
         }
-        fn chain_from<'a>(&'a self, peer: &'a str, height: usize) -> PeerResult<'a, Vec<Block>> {
+        fn chain_from<'a>(
+            &'a self,
+            peer: &'a str,
+            height: usize,
+            limit: usize,
+        ) -> PeerResult<'a, Vec<Block>> {
             Box::pin(async move {
-                Ok(self
-                    .reach(peer, format!("chain from {height}"))
-                    .await?
-                    .node()
-                    .blocks_from(height))
+                let network = self.reach(peer, format!("chain from {height}")).await?;
+                Ok(network.node().blocks_from(height).into_iter().take(limit).collect())
             })
         }
         fn pending<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<Transaction>> {
@@ -450,6 +476,45 @@ mod tests {
         b.sync().await;
         assert_eq!(mesh.sent(), ["http://a status", "http://a chain from 1"]);
         assert_eq!(b.node().blocks(), a.node().blocks());
+    }
+
+    #[tokio::test]
+    async fn a_node_far_behind_catches_up_a_page_at_a_time() {
+        let mesh = Mesh::default();
+        let a = mesh.join("http://a");
+        for _ in 0..7 {
+            a.node().mine(&miner()).unwrap();
+        }
+        let fresh = Arc::new(
+            Network::new(
+                Arc::new(
+                    NodeService::open(
+                        Box::new(InMemoryRepository::default()),
+                        ChainRules::proof_of_work(2, 50).with_max_reorg_depth(3),
+                    )
+                    .unwrap(),
+                ),
+                Box::new(mesh.clone()),
+                Some("http://fresh".into()),
+            )
+            .with_sync_page(3),
+        );
+        mesh.nodes.lock().unwrap().insert("http://fresh".into(), fresh.clone());
+        fresh.add_peer("http://a").await.unwrap();
+        mesh.sent();
+
+        let report = fresh.sync().await;
+        assert_eq!(report.adopted_from.as_deref(), Some("http://a"));
+        assert_eq!(fresh.node().blocks(), a.node().blocks());
+        assert_eq!(
+            mesh.sent(),
+            [
+                "http://a status",
+                "http://a chain from 1",
+                "http://a chain from 4",
+                "http://a chain from 7"
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -78,15 +78,14 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Every block, or with `?from=N` the blocks from height N on.
+/// Every block, or with `?from=N` the blocks from height N on, and with `&limit=M` at most M of
+/// them.
 pub async fn get_chain(
     State(state): State<AppState>,
     Query(query): Query<ChainQuery>,
 ) -> Json<Vec<Block>> {
-    Json(match query.from {
-        Some(height) => state.node.blocks_from(height),
-        None => state.node.blocks(),
-    })
+    let from = query.from.unwrap_or(0);
+    Json(state.node.blocks_between(from, query.limit.unwrap_or(usize::MAX)))
 }
 
 /// Every block's header, or with `?from=N` the headers from height N on. What a light client
@@ -300,9 +299,16 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
     })
 }
 
-/// Proof of work: the work each block required, by height, as strings.
-pub async fn get_work(State(state): State<AppState>) -> Json<Vec<String>> {
-    Json(state.node.work_history().iter().map(u128::to_string).collect())
+/// Proof of work: the work each block required, by height, as strings. Takes `?from=N&limit=M`
+/// like `/chain`.
+pub async fn get_work(
+    State(state): State<AppState>,
+    Query(query): Query<ChainQuery>,
+) -> Json<Vec<String>> {
+    let history = state.node.work_history();
+    let from = query.from.unwrap_or(0).min(history.len());
+    let shown = history[from..].iter().take(query.limit.unwrap_or(usize::MAX));
+    Json(shown.map(u128::to_string).collect())
 }
 
 /// The unsigned block a validator should sign next. Signing it where the key lives and sending

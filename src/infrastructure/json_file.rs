@@ -1,41 +1,84 @@
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::domain::block::Block;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 
-/// Keeps the chain as a JSON array of blocks in one file.
+/// Keeps the chain in one file, one block of JSON per line. A new block is appended, so saving
+/// costs the same however long the chain gets; the file is only rewritten after a fork, or when
+/// what's on disk isn't known. Files from older versions, one JSON array, still load, and are
+/// rewritten line by line on the next save.
 pub struct JsonFileRepository {
     path: PathBuf,
+    /// How many blocks the file holds, one per line, when that's known for sure.
+    lines: Mutex<Option<usize>>,
 }
 
 impl JsonFileRepository {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self { path: path.into(), lines: Mutex::new(None) }
+    }
+
+    /// Writes every block to a temporary file and renames it over the real one, so a crash
+    /// never leaves half a chain.
+    fn rewrite(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
+        let mut tmp = self.path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        fs::write(&tmp, lines_of(blocks)?)?;
+        fs::rename(&tmp, &self.path)?;
+        Ok(())
     }
 }
 
 impl ChainRepository for JsonFileRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
-        let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        if text.trim_start().starts_with('[') {
+            return Ok(Some(serde_json::from_str(&text)?));
+        }
+        let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+        let mut blocks = Vec::with_capacity(lines.len());
+        for (i, line) in lines.iter().enumerate() {
+            match serde_json::from_str(line) {
+                Ok(block) => blocks.push(block),
+                // A crash part way through appending leaves the last line cut short. That block
+                // was never confirmed as saved, so it's dropped, and peers will send it again.
+                Err(_) if i + 1 == lines.len() && i > 0 => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let torn = blocks.len() < lines.len();
+        *self.lines.lock().unwrap() = (!torn).then_some(blocks.len());
+        Ok(Some(blocks))
     }
 
-    /// Writes to a temporary file and renames it over the real one, so a crash never
-    /// leaves half a chain.
-    fn save(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
-        let json = serde_json::to_vec_pretty(blocks)?;
-        let mut tmp = self.path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &self.path)?;
+    fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
+        let mut lines = self.lines.lock().unwrap();
+        match *lines {
+            Some(saved) if saved <= unchanged && saved <= blocks.len() => {
+                let mut file = OpenOptions::new().append(true).open(&self.path)?;
+                file.write_all(&lines_of(&blocks[saved..])?)?;
+            }
+            _ => self.rewrite(blocks)?,
+        }
+        *lines = Some(blocks.len());
         Ok(())
     }
+}
+
+fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, RepositoryError> {
+    let mut out = Vec::new();
+    for block in blocks {
+        serde_json::to_writer(&mut out, block)?;
+        out.push(b'\n');
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -78,7 +121,7 @@ mod tests {
         let mut chain = Blockchain::new(rules);
         chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
 
-        repo.save(chain.blocks()).unwrap();
+        repo.save(chain.blocks(), 0).unwrap();
         let loaded = repo.load().unwrap().unwrap();
         assert_eq!(loaded, chain.blocks());
         // Timestamps must survive to the nanosecond, or the block hashes stop matching.
@@ -90,5 +133,66 @@ mod tests {
         let path = TempPath::new("garbage");
         fs::write(&path.0, b"not json").unwrap();
         assert!(JsonFileRepository::new(&path.0).load().is_err());
+    }
+
+    fn chain_of(length: usize) -> Vec<Block> {
+        let mut chain = Blockchain::new(ChainRules::proof_of_work(2, 50));
+        for _ in 1..length {
+            chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
+        }
+        chain.blocks().to_vec()
+    }
+
+    #[test]
+    fn new_blocks_are_appended_and_a_fork_rewrites() {
+        let path = TempPath::new("append");
+        let repo = JsonFileRepository::new(&path.0);
+        let blocks = chain_of(4);
+        repo.save(&blocks[..2], 0).unwrap();
+        repo.save(&blocks[..3], 2).unwrap();
+        repo.save(&blocks, 3).unwrap();
+        let text = fs::read_to_string(&path.0).unwrap();
+        assert_eq!(text.lines().count(), 4, "one block per line");
+        assert_eq!(repo.load().unwrap().unwrap(), blocks);
+
+        // A fork replaces the last two blocks.
+        let mut forked = blocks[..2].to_vec();
+        forked.extend(chain_of(4)[2..].iter().cloned());
+        repo.save(&forked, 2).unwrap();
+        assert_eq!(JsonFileRepository::new(&path.0).load().unwrap().unwrap(), forked);
+    }
+
+    #[test]
+    fn a_torn_last_line_is_dropped_and_the_next_save_repairs_it() {
+        let path = TempPath::new("torn");
+        let repo = JsonFileRepository::new(&path.0);
+        let blocks = chain_of(3);
+        repo.save(&blocks[..2], 0).unwrap();
+        let line = serde_json::to_string(&blocks[2]).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&path.0)
+            .unwrap()
+            .write_all(&line.as_bytes()[..40])
+            .unwrap();
+
+        let repo = JsonFileRepository::new(&path.0);
+        assert_eq!(repo.load().unwrap().unwrap(), blocks[..2]);
+        repo.save(&blocks, 2).unwrap();
+        assert_eq!(JsonFileRepository::new(&path.0).load().unwrap().unwrap(), blocks);
+    }
+
+    #[test]
+    fn an_older_file_with_a_json_array_still_loads() {
+        let path = TempPath::new("legacy");
+        let blocks = chain_of(3);
+        fs::write(&path.0, serde_json::to_vec_pretty(&blocks).unwrap()).unwrap();
+        let repo = JsonFileRepository::new(&path.0);
+        assert_eq!(repo.load().unwrap().unwrap(), blocks);
+
+        // What's on disk isn't in lines yet, so the next save rewrites it whole.
+        repo.save(&blocks, 3).unwrap();
+        assert_eq!(fs::read_to_string(&path.0).unwrap().lines().count(), 3);
+        assert_eq!(repo.load().unwrap().unwrap(), blocks);
     }
 }

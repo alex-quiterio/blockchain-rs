@@ -25,9 +25,9 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ⛏️ **Proof of work** | Mine a block by finding a hash below a target. The difficulty adjusts every few blocks to keep them coming at a steady pace as miners join or leave. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
-| 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own to every peer at once, sending the last few blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing, which is how a node far behind catches up. A node that hears from a peer it doesn't know adds it back, so links heal after a restart. |
+| 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own to every peer at once, sending the last few blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing, 500 blocks at a time, which is how a node far behind catches up. A node that hears from a peer it doesn't know adds it back, so links heal after a restart. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
-| 💾 **Storage** | The chain is saved to JSON with atomic writes and fully replayed on startup, so a tampered file is refused. |
+| 💾 **Storage** | The chain is saved as JSON, one block per line. A new block is appended, so saving costs the same however long the chain gets; only a fork rewrites the file, atomically. It's fully replayed on startup, so a tampered file is refused. |
 | 🌳 **Merkle roots** | A block's hash covers the Merkle root of its transactions, not the transactions themselves. A light client keeps only headers and checks that a payment is in a block from a proof of a few hashes. |
 | 🔍 **Validation** | Replays everything: links, hashes, Merkle roots, work or signatures, rewards, fees, nonces, balances and stakes. |
 
@@ -239,8 +239,8 @@ flowchart TB
 | POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
 | POST | `/forge` | Proof of stake shortcut for scripts: `{secret_key}` of the selected validator. |
 | GET | `/consensus` | Rules, the next block's work and the next adjustment, stakes, the randomness beacon and whose turn it is next. |
-| GET | `/chain` | Every block, or with `?from=N` the blocks from height N on. |
-| GET | `/chain/work` | Proof of work: the work each block required, by height. |
+| GET | `/chain` | Every block, or with `?from=N` the blocks from height N on, and with `&limit=M` at most M of them. |
+| GET | `/chain/work` | Proof of work: the work each block required, by height. Takes `?from=N&limit=M` like `/chain`. |
 | GET | `/status` | `{height, tip, weight, pending}`, cheap enough to poll every second. |
 | POST | `/chain` | Offer blocks, the whole chain or just the newest: adopted if they make a valid, heavier chain. `{replaced, length, missing_parent}`, where `missing_parent` asks for blocks from further back. `409` if it would undo too many blocks. |
 | GET | `/chain/valid` | `{valid, length, weight}` after a full replay. |
@@ -259,7 +259,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 107 tests: unit, HTTP and property-based
+cargo test        # 112 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

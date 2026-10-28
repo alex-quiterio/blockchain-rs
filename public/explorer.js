@@ -4,7 +4,7 @@
 const POLL_MS = 4000;
 const LATEST = 20;
 
-const ctx = { consensus: null, works: [], tip: null };
+const ctx = { consensus: null, tip: null, height: -1 };
 
 // ---- Links and small views --------------------------------------------------
 
@@ -104,7 +104,7 @@ async function blockPage(id) {
     checkRow(facts, "Proof", Check.signedBy(block.validator, block.hash, block.signature).then((v) => [v, "the validator's signature over the hash"]),
       "by ", who(block.validator));
   } else {
-    const work = ctx.works[block.index];
+    const [work] = (await api("GET", `/chain/work?from=${block.index}&limit=1`)).map(Number);
     checkRow(facts, "Proof of work", Promise.resolve([work != null && Check.meetsWork(block.hash, work), `hash is below the target for ${fmt(work)} hashes`]),
       `nonce ${fmt(block.nonce)}`);
   }
@@ -288,10 +288,12 @@ async function render() {
   }
 }
 
+/** Polls the node's status; the rules and next block's work are fetched only when the tip moves. */
 async function refreshContext() {
-  const [status, consensus, works] = await Promise.all([api("GET", "/status"), api("GET", "/consensus"), api("GET", "/chain/work").catch(() => [])]);
+  const status = await api("GET", "/status");
   const changed = status.tip !== ctx.tip;
-  Object.assign(ctx, { consensus, works: works.map(Number), tip: status.tip, height: status.height });
+  if (changed) ctx.consensus = await api("GET", "/consensus");
+  Object.assign(ctx, { tip: status.tip, height: status.height });
   return changed;
 }
 

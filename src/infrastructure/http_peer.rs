@@ -79,8 +79,13 @@ impl PeerClient for HttpPeerClient {
         })
     }
 
-    fn chain_from<'a>(&'a self, peer: &'a str, height: usize) -> PeerResult<'a, Vec<Block>> {
-        Box::pin(self.get(format!("{peer}/chain?from={height}")))
+    fn chain_from<'a>(
+        &'a self,
+        peer: &'a str,
+        height: usize,
+        limit: usize,
+    ) -> PeerResult<'a, Vec<Block>> {
+        Box::pin(self.get(format!("{peer}/chain?from={height}&limit={limit}")))
     }
 
     fn pending<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<Transaction>> {

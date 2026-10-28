@@ -120,7 +120,7 @@ impl NodeService {
             Some(blocks) => Blockchain::restore(blocks, rules)?,
             None => {
                 let chain = Blockchain::new(rules);
-                repository.save(chain.blocks()).map_err(NodeError::Storage)?;
+                repository.save(chain.blocks(), 0).map_err(NodeError::Storage)?;
                 chain
             }
         };
@@ -135,6 +135,13 @@ impl NodeService {
     pub fn blocks_from(&self, height: usize) -> Vec<Block> {
         let chain = self.chain.lock().unwrap();
         chain.blocks().get(height..).unwrap_or_default().to_vec()
+    }
+
+    /// Up to `limit` blocks from `height` on, without copying the rest.
+    pub fn blocks_between(&self, height: usize, limit: usize) -> Vec<Block> {
+        let chain = self.chain.lock().unwrap();
+        let blocks = chain.blocks().get(height..).unwrap_or_default();
+        blocks[..limit.min(blocks.len())].to_vec()
     }
 
     /// The headers from `height` on: everything a light client needs to follow the chain.
@@ -332,11 +339,22 @@ impl NodeService {
         let mut next = chain.clone();
         let result = change(&mut next)?;
         if next.tip().hash != chain.tip().hash {
-            self.repository.save(next.blocks()).map_err(NodeError::Storage)?;
+            let unchanged = shared_prefix(chain.blocks(), next.blocks());
+            self.repository.save(next.blocks(), unchanged).map_err(NodeError::Storage)?;
         }
         *chain = next;
         Ok(result)
     }
+}
+
+/// How many leading blocks two versions of a chain share. Found from the end, since a new block
+/// or a fork only ever changes the last few.
+fn shared_prefix(old: &[Block], new: &[Block]) -> usize {
+    let mut shared = old.len().min(new.len());
+    while shared > 0 && old[shared - 1].hash != new[shared - 1].hash {
+        shared -= 1;
+    }
+    shared
 }
 
 fn placement(chain: &Blockchain, block: &Block, position: usize) -> Placement {
@@ -371,8 +389,8 @@ mod tests {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             self.0.load()
         }
-        fn save(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
-            self.0.save(blocks)
+        fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
+            self.0.save(blocks, unchanged)
         }
     }
 
@@ -382,7 +400,7 @@ mod tests {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             Ok(None)
         }
-        fn save(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
+        fn save(&self, blocks: &[Block], _unchanged: usize) -> Result<(), RepositoryError> {
             // Let the genesis block through so the node can start.
             if blocks.len() == 1 {
                 Ok(())
@@ -422,7 +440,7 @@ mod tests {
         node(repo.clone()).mine(&new_address()).unwrap();
         let mut blocks = repo.load().unwrap().unwrap();
         blocks[1].transactions[0].amount = 1_000;
-        repo.save(&blocks).unwrap();
+        repo.save(&blocks, 0).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
         assert!(matches!(err, NodeError::Chain(ChainError::InvalidChain)));
@@ -528,6 +546,36 @@ mod tests {
         let heights: Vec<_> =
             node.history(&alice).iter().map(|l| l.block.as_ref().unwrap().height).collect();
         assert_eq!(heights, [2, 2, 1]);
+    }
+
+    /// Records how many blocks each save said were unchanged.
+    #[derive(Clone, Default)]
+    struct RecordingRepository(Arc<Mutex<Vec<(usize, usize)>>>);
+
+    impl ChainRepository for RecordingRepository {
+        fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
+            Ok(None)
+        }
+        fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
+            self.0.lock().unwrap().push((blocks.len(), unchanged));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn saves_say_how_much_of_the_chain_is_unchanged() {
+        let repo = RecordingRepository::default();
+        let ours = node(repo.clone());
+        ours.mine(&new_address()).unwrap();
+        ours.mine(&new_address()).unwrap();
+        let theirs = node(InMemoryRepository::default());
+        theirs.extend(ours.blocks()[1..2].to_vec()).unwrap();
+        theirs.mine(&new_address()).unwrap();
+        theirs.mine(&new_address()).unwrap();
+        ours.extend(theirs.blocks()[2..].to_vec()).unwrap();
+
+        // Genesis, two new blocks, then a fork that keeps the first two and replaces the third.
+        assert_eq!(*repo.0.lock().unwrap(), [(1, 0), (2, 1), (3, 2), (4, 2)]);
     }
 
     #[test]

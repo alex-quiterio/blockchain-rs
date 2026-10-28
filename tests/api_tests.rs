@@ -321,6 +321,14 @@ async fn the_explorer_finds_blocks_transactions_and_addresses() {
 
     let (_, by_height) = call(&app, "GET", "/blocks/1", None).await;
     assert_eq!(by_height, first);
+    let (_, page) = call(&app, "GET", "/chain?from=1&limit=1", None).await;
+    assert_eq!(page, json!([first]));
+    let (_, page) = call(&app, "GET", "/chain?from=9&limit=5", None).await;
+    assert_eq!(page, json!([]));
+    let (_, works) = call(&app, "GET", "/chain/work?from=1&limit=1", None).await;
+    assert_eq!(works.as_array().unwrap().len(), 1);
+    let (_, works) = call(&app, "GET", "/chain/work?from=9", None).await;
+    assert_eq!(works, json!([]));
     let (_, by_hash) =
         call(&app, "GET", &format!("/blocks/{}", first["hash"].as_str().unwrap()), None).await;
     assert_eq!(by_hash, first);

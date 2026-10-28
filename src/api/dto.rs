@@ -149,6 +149,8 @@ pub struct NodeResponse {
 pub struct ChainQuery {
     /// Only return blocks from this height on.
     pub from: Option<usize>,
+    /// Return at most this many.
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

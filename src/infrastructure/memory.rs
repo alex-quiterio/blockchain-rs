@@ -14,7 +14,7 @@ impl ChainRepository for InMemoryRepository {
         Ok(self.blocks.lock().unwrap().clone())
     }
 
-    fn save(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
+    fn save(&self, blocks: &[Block], _unchanged: usize) -> Result<(), RepositoryError> {
         *self.blocks.lock().unwrap() = Some(blocks.to_vec());
         Ok(())
     }

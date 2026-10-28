@@ -211,25 +211,60 @@ Wallets.load();
 
 // ---- Chain state, as last seen ---------------------------------------------
 
-const state = { blocks: [], pending: [], valid: null, consensus: null, accounts: {}, peers: [], node: null, seenTip: null };
+// Only the latest blocks are kept and drawn, so the page costs the same however long the chain
+// gets. The explorer shows the rest.
+const SHOWN_BLOCKS = 30;
+
+// `blocks` holds the latest few, oldest first; `works` is the required work, by height.
+const state = { height: -1, blocks: [], works: {}, pending: [], valid: null, consensus: null, accounts: {}, peers: [], node: null, seenTip: null };
 
 const isStake = () => state.consensus?.kind === "proof_of_stake";
 const tip = () => state.blocks.at(-1)?.hash;
 // Fees only move coins around; the supply grows by the block reward alone.
-const supply = () => (state.blocks.length - 1) * (state.consensus?.reward ?? 0);
+const supply = () => Math.max(0, state.height) * (state.consensus?.reward ?? 0);
+/** The block at a height, if it's among the ones kept. */
+const blockAt = (height) => state.blocks[height - (state.blocks[0]?.index ?? 0)];
+/** Enough blocks to draw the shown ones, the block before each, and a retarget window back. */
+const kept = () => SHOWN_BLOCKS + 1 + (state.consensus?.retarget_interval ?? 0);
 
 async function load() {
-  const [blocks, pending, validity, consensus, peers, node, works] = await Promise.all([
-    api("GET", "/chain"), api("GET", "/transactions/pending"), api("GET", "/chain/valid"),
-    api("GET", "/consensus"), api("GET", "/peers"), state.node || api("GET", "/node"),
-    api("GET", "/chain/work"),
+  const [status, pending, consensus, peers, node] = await Promise.all([
+    api("GET", "/status"), api("GET", "/transactions/pending"), api("GET", "/consensus"),
+    api("GET", "/peers"), state.node || api("GET", "/node"),
   ]);
+  Object.assign(state, { pending, consensus, peers, node });
+  const forked = await loadBlocks(status);
+  // A full replay of the chain: once on opening, and again only if a fork replaced our tip.
+  if (state.valid === null || forked) state.valid = (await api("GET", "/chain/valid")).valid;
   const accounts = await Promise.all(Wallets.list.map((w) => api("GET", `/balances/${w.address}`)));
+  state.accounts = Object.fromEntries(accounts.map((a) => [a.address, a]));
+}
+
+/**
+ * Brings the kept blocks up to the node's tip. Usually that's fetching just the new ones; if they
+ * don't link to our tip, a fork replaced it, and the latest few are fetched again. Returns
+ * whether that happened.
+ */
+async function loadBlocks(status) {
+  if (status.tip === tip()) return false;
+  const have = state.blocks.at(-1)?.index ?? -1;
+  const window = Math.max(0, status.height + 1 - kept());
+  let blocks = null;
+  if (have >= 0 && status.height > have && status.height - have < kept()) {
+    const fresh = await api("GET", `/chain?from=${have + 1}`);
+    if (fresh[0]?.prev_hash === tip()) blocks = state.blocks.concat(fresh).slice(-kept());
+  }
+  const forked = blocks === null && have >= 0 && status.height - have < kept();
+  blocks ??= await api("GET", `/chain?from=${window}`);
+  const start = blocks[0]?.index ?? 0;
+  // Per-block required work; past 2^53 it's approximate, which is fine for display.
+  const works = isStake() ? [] : await api("GET", `/chain/work?from=${start}&limit=${blocks.length}`);
   Object.assign(state, {
-    blocks, pending, consensus, peers, node, valid: validity.valid,
-    works: works.map(Number), // per-block required work; past 2^53 it's approximate, which is fine for display
-    accounts: Object.fromEntries(accounts.map((a) => [a.address, a])),
+    height: status.height,
+    blocks,
+    works: Object.fromEntries(works.map((w, i) => [start + i, Number(w)])),
   });
+  return forked;
 }
 
 // ---- View helpers -----------------------------------------------------------
@@ -384,8 +419,9 @@ function breakdown(block, prev, payout, transfers) {
     const before = state.works[block.index - 1];
     if (block.index > 0 && before && work !== before) {
       const { target_block_secs: target, retarget_interval: n } = state.consensus;
-      const took = (new Date(state.blocks[block.index - 1].timestamp) - new Date(state.blocks[block.index - 1 - n].timestamp)) / 1000;
-      row("Difficulty", work > before ? "↑ " : "↓ ", el("b", { textContent: `${(work / before).toFixed(2)}×` }),
+      const [last, first] = [blockAt(block.index - 1), blockAt(block.index - 1 - n)];
+      const took = last && first ? (new Date(last.timestamp) - new Date(first.timestamp)) / 1000 : NaN;
+      if (!Number.isNaN(took)) row("Difficulty", work > before ? "↑ " : "↓ ", el("b", { textContent: `${(work / before).toFixed(2)}×` }),
         `: the last ${n} blocks took ${took.toFixed(0)}s against a target of ${target * n}s, so ${work > before ? "mining got harder" : "mining got easier"} (by at most 4×).`);
     }
   }
@@ -411,7 +447,7 @@ function breakdown(block, prev, payout, transfers) {
 function renderStats() {
   const c = state.consensus;
   $("stat-consensus").textContent = c ? (isStake() ? "Proof of stake" : `Proof of work · ${fmtWork(Number(c.work))}`) : "–";
-  $("stat-height").textContent = state.blocks.length ? fmt(state.blocks.length - 1) : "–";
+  $("stat-height").textContent = state.height >= 0 ? fmt(state.height) : "–";
   $("stat-supply").textContent = fmt(supply());
   $("stat-pending").textContent = fmt(state.pending.length);
   const pill = $("validity");
@@ -624,14 +660,18 @@ function renderChain() {
   const fresh = state.seenTip !== null && tip() !== state.seenTip;
   state.seenTip = tip();
   const open = new Set([...document.querySelectorAll(".breakdown[open]")].map((d) => d.dataset.hash));
+  const shown = state.blocks.slice(-SHOWN_BLOCKS).reverse();
+  const older = shown.at(-1)?.index ?? 0;
   $("blocks").replaceChildren(
-    ...state.blocks.slice().reverse().map((block, i) => {
-      const view = blockView(block, state.blocks[block.index - 1], fresh && i === 0);
+    ...shown.map((block, i) => {
+      const view = blockView(block, blockAt(block.index - 1), fresh && i === 0);
       const details = view.querySelector(".breakdown");
       details.dataset.hash = block.hash;
       details.open = open.has(block.hash);
       return view;
     }),
+    older > 0 ? el("li", { className: "older" },
+      el("a", { href: `/explorer.html#/block/${older - 1}`, textContent: `${fmt(older)} older blocks in the Explorer →` })) : null,
   );
 }
 
@@ -650,7 +690,7 @@ function updateSendSummary() {
 
 function renderPeers() {
   $("peer-count").textContent = state.peers.length || "";
-  const ours = state.blocks.length;
+  const ours = state.height + 1;
   $("peers").replaceChildren(
     ...(state.peers.length
       ? state.peers.map((p) => {
@@ -834,14 +874,13 @@ setInterval(() => {
   }
 }, 30_000);
 
-// Pick up changes made elsewhere: other tabs, other nodes syncing, `POST /chain`.
+// Pick up changes made elsewhere: other tabs, other nodes syncing, `POST /chain`. Only the
+// node's status is polled; blocks are fetched when its tip moves.
 setInterval(async () => {
   if (document.hidden || working) return;
   try {
-    const [blocks, pending, peers] = await Promise.all([
-      api("GET", "/chain"), api("GET", "/transactions/pending"), api("GET", "/peers"),
-    ]);
-    if (blocks.at(-1)?.hash !== tip() || pending.length !== state.pending.length) return refresh();
+    const [status, peers] = await Promise.all([api("GET", "/status"), api("GET", "/peers")]);
+    if (status.tip !== tip() || status.pending !== state.pending.length) return refresh();
     state.peers = peers;
     renderPeers();
   } catch { /* node down; the next tick tries again */ }

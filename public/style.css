@@ -324,3 +324,6 @@ button.small:hover { border-color: var(--muted); transform: none; }
   .search { order: 3; flex-basis: 100%; max-width: none; }
 }
 
+.timeline .older { list-style: none; text-align: center; padding: .6rem 0 0; font-size: .85rem; }
+.timeline .older a { color: var(--link); text-decoration: none; }
+.timeline .older a:hover { text-decoration: underline; }
