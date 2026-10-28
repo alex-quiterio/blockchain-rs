@@ -5,11 +5,22 @@ use super::crypto;
 /// How a chain decides who may add the next block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Consensus {
-    /// Anyone may add a block whose hash starts with `difficulty` hex zeros. Finding one takes work.
-    ProofOfWork { difficulty: usize },
+    /// Anyone may add a block whose hash is small enough. The chain starts out needing
+    /// `difficulty` leading hex zeros, 16^difficulty hashes on average, and with `retarget` the
+    /// requirement follows the pace of blocks from there.
+    ProofOfWork { difficulty: usize, retarget: Option<Retarget> },
     /// One staker per block, picked at random and weighted by stake, signs it. Costs no work,
     /// but a validator who cheats can be spotted from their signature.
     ProofOfStake,
+}
+
+/// How proof-of-work difficulty keeps blocks coming at a steady pace as miners join or leave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retarget {
+    /// The time the chain aims to take per block.
+    pub target_block_secs: u64,
+    /// How many blocks pass between adjustments.
+    pub interval: u64,
 }
 
 /// The consensus rules. Every node on a network has to share them, or their chains won't validate
@@ -29,7 +40,7 @@ pub const DEFAULT_MAX_REORG_DEPTH: u64 = 64;
 impl ChainRules {
     pub const fn proof_of_work(difficulty: usize, reward: u64) -> Self {
         Self {
-            consensus: Consensus::ProofOfWork { difficulty },
+            consensus: Consensus::ProofOfWork { difficulty, retarget: None },
             reward,
             max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
         }
@@ -47,6 +58,35 @@ impl ChainRules {
         Self { max_reorg_depth, ..self }
     }
 
+    /// Proof of work only: adjusts the difficulty every `interval` blocks to aim for one block
+    /// every `target_block_secs`.
+    pub const fn with_retarget(self, target_block_secs: u64, interval: u64) -> Self {
+        match self.consensus {
+            Consensus::ProofOfWork { difficulty, .. } => {
+                let retarget = Some(Retarget { target_block_secs, interval });
+                Self { consensus: Consensus::ProofOfWork { difficulty, retarget }, ..self }
+            }
+            Consensus::ProofOfStake => self,
+        }
+    }
+
+    /// Proof of work: the expected hashes per block the chain starts out at, 16^difficulty.
+    pub fn initial_work(&self) -> u128 {
+        match self.consensus {
+            Consensus::ProofOfWork { difficulty, .. } => {
+                16u128.saturating_pow(difficulty.try_into().unwrap_or(u32::MAX))
+            }
+            Consensus::ProofOfStake => 0,
+        }
+    }
+
+    pub fn retarget(&self) -> Option<Retarget> {
+        match self.consensus {
+            Consensus::ProofOfWork { retarget, .. } => retarget,
+            Consensus::ProofOfStake => None,
+        }
+    }
+
     pub fn is_proof_of_stake(&self) -> bool {
         self.consensus == Consensus::ProofOfStake
     }
@@ -55,9 +95,15 @@ impl ChainRules {
 impl fmt::Display for ChainRules {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.consensus {
-            Consensus::ProofOfWork { difficulty } => {
+            Consensus::ProofOfWork { difficulty, retarget: None } => {
                 write!(f, "proof of work, difficulty {difficulty}")?
             }
+            Consensus::ProofOfWork { difficulty, retarget: Some(r) } => write!(
+                f,
+                "proof of work, starting difficulty {difficulty}, adjusting every {} blocks \
+                 towards one block per {}s",
+                r.interval, r.target_block_secs
+            )?,
             Consensus::ProofOfStake => write!(f, "proof of stake")?,
         }
         write!(f, ", reward {}", self.reward)
@@ -68,10 +114,6 @@ impl Default for ChainRules {
     fn default() -> Self {
         Self::proof_of_work(4, 50)
     }
-}
-
-pub fn meets_difficulty(hash: &str, difficulty: usize) -> bool {
-    hash.len() >= difficulty && hash.bytes().take(difficulty).all(|b| b == b'0')
 }
 
 /// Picks who forges the block after `prev_hash`: a stake-weighted draw seeded by that hash, so
@@ -94,14 +136,6 @@ pub fn select_validator(stakes: &[(String, u64)], prev_hash: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn difficulty_counts_leading_zeros() {
-        assert!(meets_difficulty("000abc", 3));
-        assert!(meets_difficulty("0000ab", 3));
-        assert!(!meets_difficulty("00abcd", 3));
-        assert!(!meets_difficulty("00", 3));
-    }
 
     #[test]
     fn nobody_is_selected_without_stake() {

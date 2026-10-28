@@ -14,6 +14,8 @@ x-node: &node
   environment: &env
     CONSENSUS: ${CONSENSUS:-pow}
     DIFFICULTY: ${DIFFICULTY:-4}
+    TARGET_BLOCK_SECS: ${TARGET_BLOCK_SECS:-10}
+    RETARGET_BLOCKS: ${RETARGET_BLOCKS:-10}
     SYNC_SECS: ${SYNC_SECS:-3}
     RUST_LOG: info
 
@@ -49,6 +51,21 @@ services:
       PUBLIC_URL: http://node-c:3000
       PEERS: http://node-b:3000
     volumes: [node-c:/data]
+
+  # Floods the three nodes with random transactions and prints how they cope:
+  #   docker compose --profile load run --rm loadgen
+  loadgen:
+    image: blockchain-rs:local
+    profiles: [load]
+    depends_on: [node-a, node-b, node-c]
+    command: ["loadgen"]
+    environment:
+      NODES: http://node-a:3000,http://node-b:3000,http://node-c:3000
+      RATE: ${RATE:-20}
+      SECS: ${SECS:-60}
+      WALLETS: ${WALLETS:-12}
+      BLOCK_EVERY: ${BLOCK_EVERY:-5}
+      MAX_FEE: ${MAX_FEE:-5}
 
 volumes:
   node-a:

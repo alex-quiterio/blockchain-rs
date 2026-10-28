@@ -14,9 +14,10 @@ impl ChainWeight {
         self.0
     }
 
-    /// This weight plus one more block's.
-    pub fn with_block(self, rules: &ChainRules, producer_stake: u64) -> Self {
-        Self(self.0.saturating_add(block_weight(rules, producer_stake)))
+    /// This weight plus one more block's: `work` under proof of work, `producer_stake` under
+    /// proof of stake.
+    pub fn with_block(self, rules: &ChainRules, producer_stake: u64, work: u128) -> Self {
+        Self(self.0.saturating_add(block_weight(rules, producer_stake, work)))
     }
 }
 
@@ -26,14 +27,12 @@ impl fmt::Display for ChainWeight {
     }
 }
 
-/// One block's weight. Proof of work: the hashes it takes on average to find, 16^difficulty.
-/// Proof of stake: what its validator had staked going in, or 1 while nothing is staked, so
+/// One block's weight. Proof of work: the work it required, the hashes it takes on average to
+/// find. Proof of stake: what its validator had staked going in, or 1 while nothing is staked, so
 /// blocks forged by big stakers outweigh blocks anyone could have forged.
-fn block_weight(rules: &ChainRules, producer_stake: u64) -> u128 {
+fn block_weight(rules: &ChainRules, producer_stake: u64, work: u128) -> u128 {
     match rules.consensus {
-        Consensus::ProofOfWork { difficulty } => {
-            16u128.saturating_pow(difficulty.try_into().unwrap_or(u32::MAX))
-        }
+        Consensus::ProofOfWork { .. } => work,
         Consensus::ProofOfStake => u128::from(producer_stake.max(1)),
     }
 }
@@ -44,7 +43,10 @@ mod tests {
 
     #[test]
     fn work_grows_sixteenfold_per_zero() {
-        let block = |d| ChainWeight::ZERO.with_block(&ChainRules::proof_of_work(d, 50), 0).value();
+        let block = |d| {
+            let rules = ChainRules::proof_of_work(d, 50);
+            ChainWeight::ZERO.with_block(&rules, 0, rules.initial_work()).value()
+        };
         assert_eq!(block(0), 1);
         assert_eq!(block(2), 256);
         assert_eq!(block(4), 65_536);
@@ -54,7 +56,7 @@ mod tests {
     #[test]
     fn stake_weighs_what_the_validator_staked_and_at_least_one() {
         let pos = ChainRules::proof_of_stake(50);
-        assert_eq!(ChainWeight::ZERO.with_block(&pos, 0).value(), 1);
-        assert_eq!(ChainWeight::ZERO.with_block(&pos, 30).with_block(&pos, 10).value(), 40);
+        assert_eq!(ChainWeight::ZERO.with_block(&pos, 0, 0).value(), 1);
+        assert_eq!(ChainWeight::ZERO.with_block(&pos, 30, 0).with_block(&pos, 10, 0).value(), 40);
     }
 }

@@ -33,6 +33,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/chain", get(handlers::get_chain).post(handlers::replace_chain))
         .route("/chain/valid", get(handlers::get_validity))
+        .route("/chain/work", get(handlers::get_work))
+        .route("/status", get(handlers::get_status))
         .route("/wallets", post(handlers::create_wallet))
         .route("/balances/:address", get(handlers::get_balance))
         .route("/transactions", post(handlers::submit_transaction))

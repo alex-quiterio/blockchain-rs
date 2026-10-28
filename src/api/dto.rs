@@ -57,6 +57,15 @@ pub struct ConsensusResponse {
     pub total_stake: u64,
     /// Proof of stake only: the randomness the next validator is drawn from.
     pub beacon: Option<String>,
+    /// Proof of work only: the hashes the next block should take to find, on average. A string,
+    /// since it can outgrow a JSON number.
+    pub work: Option<String>,
+    /// Proof of work with retargeting: the pace the difficulty aims for.
+    pub target_block_secs: Option<u64>,
+    /// Proof of work with retargeting: blocks between adjustments.
+    pub retarget_interval: Option<u64>,
+    /// Proof of work with retargeting: the next height whose work is adjusted.
+    pub next_retarget: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -128,6 +137,22 @@ pub struct NodeResponse {
     /// The git commit the node was built from. `-dirty` means uncommitted changes.
     pub commit: String,
     pub started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ChainQuery {
+    /// Only return blocks from this height on.
+    pub from: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatusResponse {
+    pub height: u64,
+    pub tip: String,
+    /// A string, since it can outgrow a JSON number.
+    pub weight: String,
+    /// Transactions waiting in the mempool.
+    pub pending: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

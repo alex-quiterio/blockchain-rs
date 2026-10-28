@@ -22,7 +22,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | --- | --- |
 | 🔐 **Wallets** | ed25519 keypairs made and used in your browser. Keys never leave the page, and they're saved encrypted with your passphrase. |
 | ✍️ **Transactions** | Signed over `from \| to \| amount \| nonce` (plus the fee, when there is one). The nonce stops replays. |
-| ⛏️ **Proof of work** | Mine a block by finding a hash with `DIFFICULTY` leading zeros. |
+| ⛏️ **Proof of work** | Mine a block by finding a hash below a target. The difficulty adjusts every few blocks to keep them coming at a steady pace as miners join or leave. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
 | 🌐 **Peers & sync** | Nodes introduce themselves both ways, gossip new blocks and transactions, and pull from each other every few seconds. |
@@ -80,6 +80,32 @@ BIND_ADDR=127.0.0.1:3002 CHAIN_FILE=c.json PEERS=http://127.0.0.1:3001 ./target/
 
 Each node's UI shows its peers and whether they're ahead, behind or in step.
 
+### 🌊 Put it under pressure
+
+The load generator floods a network with random signed transactions, with random fees, and adds blocks on a schedule like a pool of miners. It prints what happens every second.
+
+```sh
+docker compose --profile load run --rm loadgen        # against the Docker network
+# or against nodes you started yourself:
+NODES=http://127.0.0.1:3000,http://127.0.0.1:3001 cargo run --release --bin loadgen
+```
+
+```
+  25s  sent 751 (30.0/s)  ok 594  rejected 157  confirmed 565  latency p50 2.4s p95 6.0s  fees/block 66.2  |  a h20 mp29 · b h20 mp29 · c h20 mp17  ✓ in sync
+──── Summary ────
+  Sent            1201 in 44s (27.3/s)
+  Accepted        888 (73.9%)
+  Rejected        157 (nonce out of order)
+  Rejected        156 (not enough funds)
+  Confirmed       888 (0 still waiting)
+  Latency         p50 3.4s  p95 10.5s  max 14.5s
+  Blocks          16 (55.5 tx and 64.2 in fees each)
+```
+
+Each wallet sends through one "home" node, as a real user would, so the others only hear about its transactions by gossip. You can watch mempools fill and drain, nodes fall behind and catch up, and forks settle. The rejections are honest load effects: wallets spending faster than their coins confirm, and nonces racing ahead of a rejected transaction. Tune it with `RATE`, `SECS`, `WALLETS`, `BLOCK_EVERY` and `MAX_FEE`.
+
+The first run of it found a real bottleneck: every new transaction re-checked the whole mempool, so nodes stalled for 20 seconds under load. The mempool now keeps a running projection and checks each transaction once.
+
 <details>
 <summary><b>📸 Proof of work, light mode</b></summary>
 <br />
@@ -91,7 +117,9 @@ Each node's UI shows its peers and whether they're ahead, behind or in step.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `CONSENSUS` | `pow` | `pow` or `pos`. |
-| `DIFFICULTY` | `4` | Leading hex zeros a proof-of-work hash needs. |
+| `DIFFICULTY` | `4` | Proof of work's starting difficulty, in leading hex zeros: 16⁴ = 65,536 hashes a block. |
+| `TARGET_BLOCK_SECS` | `10` | The pace the difficulty aims for. `0` keeps it fixed. |
+| `RETARGET_BLOCKS` | `10` | Blocks between difficulty adjustments. |
 | `REWARD` | `50` | Coins paid for each block, before fees. |
 | `BIND_ADDR` | `127.0.0.1:3000` | Where the node listens. |
 | `CHAIN_FILE` | `chain.json` | Where the chain is saved. |
@@ -126,12 +154,24 @@ When forks compete, a node keeps the **heaviest** valid chain, not the longest:
 
 | Consensus | One block weighs | Why |
 | --- | --- | --- |
-| ⛏️ Proof of work | 16^difficulty | The hashes it takes on average to find, so the fork with the most work wins. |
+| ⛏️ Proof of work | the work it required | The hashes it takes on average to find at its difficulty, so the fork with the most work wins. |
 | 🪙 Proof of stake | its validator's stake (at least 1) | A short fork forged by real stakers outweighs a long one nobody staked on. |
 
 Exact ties go to the lower tip hash, so two nodes on equal forks always pick the same one. And no fork may undo more than `MAX_REORG_DEPTH` blocks, however heavy it is, so old history can't be rewritten.
 
 The first transaction in each block is the **payout**: the reward plus the block's fees, to whoever mined or forged it. Validation checks that sum.
+
+### ⏱️ Difficulty that follows the miners
+
+Proof of work counts difficulty as **work**: how many hashes a block takes to find on average. A block is accepted when its hash, read as a number, is at most `MAX / work`. For a work of 16ᵈ that's exactly "starts with d zeros", but any value in between works too, so the difficulty can move in small steps.
+
+Every `RETARGET_BLOCKS` blocks, the node compares how long the last ones took with how long they should have taken, and scales the work by the difference, by at most 4× either way:
+
+```
+new work = old work × (target time ÷ time they took)        e.g. 10 blocks in 50s, aiming for 100s → 2× the work
+```
+
+The pace comes from timestamps, which the miner chooses, so two Bitcoin rules keep them honest. A block must be later than the median of the 11 before it, so it can't be backdated to fake a slow pace. And it can be at most 2 hours ahead of the node's clock. Chains mined before the difficulty could adjust still load: their blocks meet the same targets. Each block's breakdown in the UI shows the work it needed and, where the difficulty changed, why.
 
 ### 🎲 Validator turns nobody can steer
 
@@ -167,7 +207,8 @@ flowchart TB
   - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
   - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
   - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
-  - `mempool.rs`, `ledger.rs`: pending transactions, and the balances, stakes and nonces
+  - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
+  - `mempool.rs`, `ledger.rs`: pending transactions, kept as a running projection, and the balances, stakes and nonces
   - `address.rs`: a value object that can only hold a valid public key
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port
 - **`application/`**
@@ -175,6 +216,7 @@ flowchart TB
   - `Network` keeps the peers in step through the `PeerClient` port.
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
 - **`api/`** is the HTTP interface. **`public/`** is the web UI, plain HTML, CSS and JS with no build step.
+- **`src/bin/loadgen.rs`** is the load generator, a separate client that only talks to nodes over HTTP.
 
 ## 📡 API
 
@@ -189,8 +231,10 @@ flowchart TB
 | POST | `/forge/proposal` | Proof of stake: `{validator, reveal?}` → the unsigned block that validator should sign next. The reveal is required once validators are being drawn. |
 | POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
 | POST | `/forge` | Proof of stake shortcut for scripts: `{secret_key}` of the selected validator. |
-| GET | `/consensus` | Rules, stakes, the randomness beacon and whose turn it is next. |
-| GET | `/chain` | Every block. |
+| GET | `/consensus` | Rules, the next block's work and the next adjustment, stakes, the randomness beacon and whose turn it is next. |
+| GET | `/chain` | Every block, or with `?from=N` the blocks from height N on. |
+| GET | `/chain/work` | Proof of work: the work each block required, by height. |
+| GET | `/status` | `{height, tip, weight, pending}`, cheap enough to poll every second. |
 | POST | `/chain` | Offer a chain: adopted if valid and heavier. `409` if it would undo too many blocks. |
 | GET | `/chain/valid` | `{valid, length, weight}` after a full replay. |
 | GET · POST | `/peers` | List peers, or add one with `{url}`. |
@@ -208,7 +252,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 72 tests: unit, HTTP and property-based
+cargo test        # 82 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.
@@ -219,6 +263,7 @@ cargo test        # 72 tests: unit, HTTP and property-based
   - Transactions arriving in any order end in the same balances.
   - Forks offered in any order settle on the same chain.
   - No version of a block, whatever its timestamp, contents or fees, changes who forges next.
+  - Whatever the pace of blocks, the difficulty changes only at adjustment heights, by at most 4×, and the chain's weight is exactly the work its blocks required. This one caught a rounding bug that let an adjustment exceed 4×.
   - Tampered forks are never adopted.
 
   Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
@@ -230,7 +275,6 @@ CI runs `fmt`, `clippy -D warnings` and the tests on every push and pull request
 Nothing here is built yet. Each would make a good next step.
 
 **⚖️ Consensus**
-- **Difficulty that adjusts** to keep blocks coming at a steady pace as miners join or leave. Chain weight already counts work per block, so it's ready for this.
 - **Slashing**: burn the stake of a validator caught signing two blocks at the same height.
 - **Finality checkpoints**: stakers vote to make a block permanent, instead of relying only on the reorg limit.
 - **Skipping absent validators**: a selected validator who never forges stalls the chain. Time slots that pass the turn on after a timeout would fix it, and withholding a reveal would then cost a block reward.
@@ -254,4 +298,4 @@ Nothing here is built yet. Each would make a good next step.
 
 **🛠️ Developer experience**
 - **A block explorer page**: search by address, transaction or hash.
-- **A load generator** that floods a network with random transactions to watch fees and sync under pressure.
+- **Load generator scenarios**: partition a node mid-run, or add miners part way, to watch forks and retargeting react.

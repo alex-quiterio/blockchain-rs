@@ -4,6 +4,7 @@ pub mod address;
 pub mod block;
 pub mod chain;
 pub mod crypto;
+pub mod difficulty;
 pub mod error;
 pub mod ledger;
 pub mod mempool;

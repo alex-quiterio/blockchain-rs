@@ -114,12 +114,14 @@ impl Ledger {
         if tx.amount == 0 {
             return Err(ChainError::ZeroAmount);
         }
-        if !crypto::verify(&tx.from, &tx.payload(), &tx.signature) {
-            return Err(ChainError::BadSignature);
-        }
+        // The nonce is checked before the signature: stale and replayed transactions, the
+        // common case when peers gossip, are turned away without the costly verification.
         let expected = self.next_nonce(&tx.from);
         if tx.nonce != expected {
             return Err(ChainError::BadNonce { expected, got: tx.nonce });
+        }
+        if !crypto::verify(&tx.from, &tx.payload(), &tx.signature) {
+            return Err(ChainError::BadSignature);
         }
         // A first stake must commit to a reveal chain; any other transaction must not.
         let needs_commitment = kind == TxKind::Stake && self.active_commitment(&tx.from).is_none();

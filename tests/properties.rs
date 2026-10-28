@@ -274,6 +274,33 @@ proptest! {
     }
 
     #[test]
+    fn difficulty_follows_the_pace_within_its_limits(gaps in prop::collection::vec(0..60i64, 1..40)) {
+        // Starts at 16 hashes a block, aims for one every 10s, adjusts every 4 blocks.
+        let rules = ChainRules::proof_of_work(1, REWARD).with_retarget(10, 4);
+        let mut chain = Blockchain::new(rules);
+        let mut at = chrono::Utc::now() - chrono::TimeDelta::days(1);
+        for (i, gap) in gaps.iter().enumerate() {
+            at += chrono::TimeDelta::seconds(*gap) + chrono::TimeDelta::milliseconds(1);
+            let work = chain.next_work();
+            let (index, prev) = (chain.blocks().len() as u64, chain.tip().hash.clone());
+            let payout = vec![Transaction::coinbase(&address(i % WALLETS), REWARD, index)];
+            let mut blocks = chain.blocks().to_vec();
+            blocks.push(Block::mine(index, at, prev, payout, work));
+            chain = Blockchain::restore(blocks, rules).expect("every honestly mined block is valid");
+        }
+
+        let history = chain.work_history();
+        for (height, pair) in history.windows(2).enumerate().map(|(i, w)| (i + 1, w)) {
+            let (before, after) = (pair[0], pair[1]);
+            if height % 4 != 0 || height < 8 {
+                prop_assert_eq!(before, after, "work only changes at adjustment heights");
+            }
+            prop_assert!(after <= before * 4 && after * 4 >= before, "at most 4x per adjustment");
+        }
+        prop_assert_eq!(chain.weight().value(), history[1..].iter().sum::<u128>());
+    }
+
+    #[test]
     fn tampered_forks_are_never_adopted(block in 1..5usize, field in 0..6u8, extra in 1..4usize) {
         let mut ours = Blockchain::new(POW);
         ours.mine(&address(0)).unwrap();

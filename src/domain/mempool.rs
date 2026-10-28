@@ -1,50 +1,58 @@
+use std::collections::HashSet;
+
 use super::block::Transaction;
 use super::error::ChainError;
 use super::ledger::Ledger;
 
 /// Signed transfers waiting to be mined, in the order they arrived. Together they always apply
 /// cleanly on top of the confirmed ledger.
+///
+/// It keeps the ledger as it will be once everything waiting is confirmed, so admitting one more
+/// transaction only checks that one, instead of the whole queue again. Under load, with hundreds
+/// waiting and peers gossiping each other's queues, that's the difference between a node that
+/// keeps up and one that stalls.
 #[derive(Debug, Clone, Default)]
-pub struct Mempool(Vec<Transaction>);
+pub struct Mempool {
+    waiting: Vec<Transaction>,
+    /// The confirmed ledger with every waiting transaction applied.
+    projected: Ledger,
+    /// The signatures of everything waiting, to drop gossiped duplicates at once.
+    signatures: HashSet<String>,
+}
 
 impl Mempool {
+    /// An empty mempool on top of `confirmed`.
+    pub fn on(confirmed: &Ledger) -> Self {
+        Self { projected: confirmed.clone(), ..Self::default() }
+    }
+
     /// Keeps the candidates that still apply on top of `confirmed`, in order, dropping the rest.
     pub fn rebuilt(candidates: impl IntoIterator<Item = Transaction>, confirmed: &Ledger) -> Self {
-        let mut projected = confirmed.clone();
-        Self(candidates.into_iter().filter(|tx| projected.apply_transfer(tx).is_ok()).collect())
+        let mut pool = Self::on(confirmed);
+        for tx in candidates {
+            let _ = pool.admit(tx);
+        }
+        pool
     }
 
     /// The ledger as it will be once everything waiting is confirmed.
-    pub fn projected(&self, confirmed: &Ledger) -> Ledger {
-        let mut projected = confirmed.clone();
-        for tx in &self.0 {
-            projected.apply_transfer(tx).expect("the mempool always applies");
-        }
-        projected
+    pub fn projected(&self) -> &Ledger {
+        &self.projected
     }
 
     pub fn transactions(&self) -> &[Transaction] {
-        &self.0
-    }
-
-    /// How many waiting transfers `address` has sent.
-    pub fn sent_by(&self, address: &str) -> u64 {
-        self.0.iter().filter(|tx| tx.from == address).count() as u64
+        &self.waiting
     }
 
     /// Queues `tx` if it applies after everything already waiting.
-    pub fn admit(&mut self, tx: Transaction, confirmed: &Ledger) -> Result<(), ChainError> {
-        let mut projected = confirmed.clone();
-        for queued in &self.0 {
-            projected.apply_transfer(queued)?;
+    pub fn admit(&mut self, tx: Transaction) -> Result<(), ChainError> {
+        if self.signatures.contains(&tx.signature) {
+            return Err(ChainError::AlreadyPending);
         }
-        projected.apply_transfer(&tx)?;
-        self.0.push(tx);
+        self.projected.apply_transfer(&tx)?;
+        self.signatures.insert(tx.signature.clone());
+        self.waiting.push(tx);
         Ok(())
-    }
-
-    pub fn clear(&mut self) {
-        self.0.clear();
     }
 }
 
@@ -69,14 +77,40 @@ mod tests {
     #[test]
     fn admits_transfers_that_fit_after_the_queue() {
         let (ledger, key, to) = funded();
-        let mut pool = Mempool::default();
-        pool.admit(pay(&key, &to, 30, 0), &ledger).unwrap();
-        pool.admit(pay(&key, &to, 20, 1), &ledger).unwrap();
+        let mut pool = Mempool::on(&ledger);
+        pool.admit(pay(&key, &to, 30, 0)).unwrap();
+        pool.admit(pay(&key, &to, 20, 1)).unwrap();
         assert_eq!(
-            pool.admit(pay(&key, &to, 1, 2), &ledger),
+            pool.admit(pay(&key, &to, 1, 2)),
             Err(ChainError::InsufficientFunds { balance: 0, amount: 1 })
         );
-        assert_eq!(pool.sent_by(Address::of(&key).as_str()), 2);
+        assert_eq!(pool.projected().next_nonce(Address::of(&key).as_str()), 2);
+        assert_eq!(
+            ledger.next_nonce(Address::of(&key).as_str()),
+            0,
+            "the confirmed ledger is untouched"
+        );
+    }
+
+    #[test]
+    fn a_gossiped_duplicate_is_turned_away_at_once() {
+        let (ledger, key, to) = funded();
+        let mut pool = Mempool::on(&ledger);
+        let tx = pay(&key, &to, 5, 0);
+        pool.admit(tx.clone()).unwrap();
+        assert_eq!(pool.admit(tx), Err(ChainError::AlreadyPending));
+        assert_eq!(pool.transactions().len(), 1);
+    }
+
+    #[test]
+    fn a_rejected_transaction_leaves_no_trace() {
+        let (ledger, key, to) = funded();
+        let mut pool = Mempool::on(&ledger);
+        let mut forged = pay(&key, &to, 5, 0);
+        forged.amount = 50;
+        assert_eq!(pool.admit(forged), Err(ChainError::BadSignature));
+        pool.admit(pay(&key, &to, 50, 0)).unwrap();
+        assert_eq!(pool.projected().balance(Address::of(&key).as_str()), 0);
     }
 
     #[test]

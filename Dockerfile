@@ -14,6 +14,7 @@ FROM debian:bookworm-slim
 # The node serves the UI from the path it was built at.
 COPY --from=build /app/public /app/public
 COPY --from=build /app/target/release/blockchain /usr/local/bin/blockchain
+COPY --from=build /app/target/release/loadgen /usr/local/bin/loadgen
 ENV BIND_ADDR=0.0.0.0:3000 \
     CHAIN_FILE=/data/chain.json
 VOLUME /data

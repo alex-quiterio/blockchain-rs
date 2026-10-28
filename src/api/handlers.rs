@@ -1,14 +1,14 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 
 use super::dto::{
-    AddPeerResponse, BalanceResponse, ConsensusResponse, ErrorResponse, ForgeRequest, MineRequest,
-    NodeResponse, PeerRequest, PeerResponse, ProposalRequest, ReplaceResponse, SignRequest,
-    StakeEntry, SyncResponse, ValidityResponse, WalletResponse,
+    AddPeerResponse, BalanceResponse, ChainQuery, ConsensusResponse, ErrorResponse, ForgeRequest,
+    MineRequest, NodeResponse, PeerRequest, PeerResponse, ProposalRequest, ReplaceResponse,
+    SignRequest, StakeEntry, StatusResponse, SyncResponse, ValidityResponse, WalletResponse,
 };
 use super::AppState;
 use crate::application::NodeError;
@@ -69,8 +69,26 @@ impl IntoResponse for ApiError {
     }
 }
 
-pub async fn get_chain(State(state): State<AppState>) -> Json<Vec<Block>> {
-    Json(state.node.blocks())
+/// Every block, or with `?from=N` the blocks from height N on.
+pub async fn get_chain(
+    State(state): State<AppState>,
+    Query(query): Query<ChainQuery>,
+) -> Json<Vec<Block>> {
+    Json(match query.from {
+        Some(height) => state.node.blocks_from(height),
+        None => state.node.blocks(),
+    })
+}
+
+/// Height, tip, weight and mempool size, without replaying the chain.
+pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
+    let tip = state.node.tip();
+    Json(StatusResponse {
+        height: tip.height,
+        tip: tip.hash,
+        weight: tip.weight.to_string(),
+        pending: tip.pending,
+    })
 }
 
 /// Offers this node another node's chain. It's adopted only if it is valid and heavier.
@@ -164,8 +182,10 @@ pub async fn mine(
 
 pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusResponse> {
     let consensus = state.node.consensus();
+    let pos = consensus.rules.is_proof_of_stake();
+    let retarget = consensus.rules.retarget();
     let (kind, difficulty) = match consensus.rules.consensus {
-        Consensus::ProofOfWork { difficulty } => ("proof_of_work", Some(difficulty)),
+        Consensus::ProofOfWork { difficulty, .. } => ("proof_of_work", Some(difficulty)),
         Consensus::ProofOfStake => ("proof_of_stake", None),
     };
     Json(ConsensusResponse {
@@ -179,8 +199,17 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
             .into_iter()
             .map(|(address, amount)| StakeEntry { address, amount })
             .collect(),
-        beacon: consensus.rules.is_proof_of_stake().then_some(consensus.beacon),
+        beacon: pos.then_some(consensus.beacon),
+        work: (!pos).then(|| consensus.next_work.to_string()),
+        target_block_secs: retarget.map(|r| r.target_block_secs),
+        retarget_interval: retarget.map(|r| r.interval),
+        next_retarget: consensus.next_retarget,
     })
+}
+
+/// Proof of work: the work each block required, by height, as strings.
+pub async fn get_work(State(state): State<AppState>) -> Json<Vec<String>> {
+    Json(state.node.work_history().iter().map(u128::to_string).collect())
 }
 
 /// The unsigned block a validator should sign next. Signing it where the key lives and sending

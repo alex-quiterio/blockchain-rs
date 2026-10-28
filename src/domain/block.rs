@@ -5,7 +5,8 @@ use ed25519_dalek::SigningKey;
 
 use super::address::Address;
 use super::crypto;
-use super::rules::{meets_difficulty, ChainRules, Consensus};
+use super::difficulty::meets_work;
+use super::rules::{ChainRules, Consensus};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
@@ -166,8 +167,8 @@ impl Block {
     pub fn genesis(rules: &ChainRules) -> Self {
         let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is a valid time");
         match rules.consensus {
-            Consensus::ProofOfWork { difficulty } => {
-                Self::mine(0, epoch, "0".repeat(64), Vec::new(), difficulty)
+            Consensus::ProofOfWork { .. } => {
+                Self::mine(0, epoch, "0".repeat(64), Vec::new(), rules.initial_work())
             }
             Consensus::ProofOfStake => {
                 let mut block = Self::unsealed(0, epoch, "0".repeat(64), Vec::new());
@@ -177,18 +178,19 @@ impl Block {
         }
     }
 
-    /// Proof of work: tries nonces from zero until the hash starts with `difficulty` zeros.
+    /// Proof of work: tries nonces from zero until the hash meets `work`, which takes `work`
+    /// tries on average.
     pub fn mine(
         index: u64,
         timestamp: DateTime<Utc>,
         prev_hash: String,
         transactions: Vec<Transaction>,
-        difficulty: usize,
+        work: u128,
     ) -> Self {
         let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
         loop {
             block.hash = block.computed_hash();
-            if meets_difficulty(&block.hash, difficulty) {
+            if meets_work(&block.hash, work) {
                 return block;
             }
             block.nonce += 1;

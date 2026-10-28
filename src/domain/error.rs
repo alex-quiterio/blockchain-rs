@@ -34,6 +34,8 @@ pub enum ChainError {
     UnexpectedCommitment,
     /// A forger's reveal doesn't open their commitment, or is missing or not due.
     BadReveal,
+    /// The exact transaction is already waiting in the mempool, usually because of gossip.
+    AlreadyPending,
     /// A submitted block doesn't build on the current tip, usually because another block won.
     StaleBlock,
     /// A submitted block fails a check: its hash, signature, payout or transactions.
@@ -72,6 +74,7 @@ impl fmt::Display for ChainError {
             Self::BadReveal => {
                 write!(f, "the reveal doesn't open the validator's commitment, or isn't due")
             }
+            Self::AlreadyPending => write!(f, "transaction is already waiting to be mined"),
             Self::StaleBlock => write!(f, "block does not build on the current tip"),
             Self::InvalidBlock => write!(f, "block does not validate"),
             Self::ReorgTooDeep { depth, max } => {

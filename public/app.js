@@ -242,13 +242,15 @@ const feesOf = (txs) => txs.reduce((sum, tx) => sum + (tx.fee || 0), 0);
 const supply = () => (state.blocks.length - 1) * (state.consensus?.reward ?? 0);
 
 async function load() {
-  const [blocks, pending, validity, consensus, peers, node] = await Promise.all([
+  const [blocks, pending, validity, consensus, peers, node, works] = await Promise.all([
     api("GET", "/chain"), api("GET", "/transactions/pending"), api("GET", "/chain/valid"),
     api("GET", "/consensus"), api("GET", "/peers"), state.node || api("GET", "/node"),
+    api("GET", "/chain/work"),
   ]);
   const accounts = await Promise.all(Wallets.list.map((w) => api("GET", `/balances/${w.address}`)));
   Object.assign(state, {
     blocks, pending, consensus, peers, node, valid: validity.valid,
+    works: works.map(Number), // per-block required work; past 2^53 it's approximate, which is fine for display
     accounts: Object.fromEntries(accounts.map((a) => [a.address, a])),
   });
 }
@@ -280,9 +282,16 @@ function avatar(address, small = false) {
   return tile;
 }
 
-function hashView(hash) {
+/** The leading hex zeros a given amount of work guarantees: 16^d hashes means d zeros. */
+const zerosFor = (work) => Math.max(0, Math.floor(Math.log(work) / Math.log(16) + 1e-9));
+/** "65,536", or "4.3M" once it gets long. */
+const fmtWork = (work) => (work >= 1e6
+  ? new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(work)
+  : fmt(work));
+
+function hashView(hash, work) {
   const zeros = hash.match(/^0*/)[0].length;
-  const shown = isStake() ? 0 : Math.min(zeros, state.consensus?.difficulty ?? zeros);
+  const shown = isStake() || !work ? 0 : Math.min(zeros, zerosFor(work));
   return el("div", { className: "hash", title: hash },
     el("span", { className: "zeros", textContent: hash.slice(0, shown) }), hash.slice(shown));
 }
@@ -365,14 +374,30 @@ function blockView(block, prev, fresh) {
         genesis ? null : el("span", { className: "when", textContent: ago(block.timestamp), title: new Date(block.timestamp).toLocaleString() }),
         genesis ? null : el("span", { className: `badge-kind ${forged ? "pos" : "pow"}`, textContent: forged ? "forged" : "mined" }),
         el("span", { className: "ntx", textContent: `${block.transactions.length} tx` })),
-      hashView(block.hash),
+      hashView(block.hash, state.works?.[block.index]),
       el("div", { className: "meta" },
         forged
           ? el("span", {}, "forged by ", party(block.validator))
           : el("span", {}, "nonce ", el("span", { className: "mono", textContent: fmt(block.nonce) })),
         el("span", {}, "prev ", el("span", { className: "mono", textContent: short(block.prev_hash) }))),
-      block.transactions.length ? el("ul", { className: "txs" }, block.transactions.map(txView)) : null,
+      txList(block.transactions),
       breakdown(block, prev, payout, rest)));
+}
+
+const SHOWN_TXS = 6;
+
+/** A block's transactions; long lists show the first few and fold the rest away. */
+function txList(transactions) {
+  if (!transactions.length) return null;
+  const list = el("ul", { className: "txs" }, transactions.slice(0, SHOWN_TXS).map(txView));
+  if (transactions.length > SHOWN_TXS) {
+    const rest = transactions.slice(SHOWN_TXS);
+    const more = el("details", { className: "more-txs" },
+      el("summary", { textContent: `${fmt(rest.length)} more transactions · ${fmt(feesOf(rest))} in fees` }),
+      el("ul", { className: "txs" }, rest.map(txView)));
+    list.append(el("li", {}, more));
+  }
+  return list;
 }
 
 /** The "why is this block valid" story, one fact per row. */
@@ -394,9 +419,16 @@ function breakdown(block, prev, payout, transfers) {
         ", the next link of a hash chain the validator committed to when staking. It was fixed in advance, so they had nothing to choose; it's mixed into the beacon that picked the next validator.");
     }
   } else {
-    const d = state.consensus?.difficulty ?? block.hash.match(/^0*/)[0].length;
-    row("Proof", yes(`starts with ${"0".repeat(d)}`),
-      ` Found on try ${fmt(block.nonce + 1)}. Each try changes the nonce and rehashes; on average it takes ${fmt(16 ** d)} tries.`);
+    const work = state.works[block.index];
+    row("Proof", yes(`below the target for ${fmtWork(work)} hashes`),
+      ` Found on try ${fmt(block.nonce + 1)}. Each try changes the nonce and rehashes; at this difficulty it takes ${fmtWork(work)} tries on average.`);
+    const before = state.works[block.index - 1];
+    if (block.index > 0 && before && work !== before) {
+      const { target_block_secs: target, retarget_interval: n } = state.consensus;
+      const took = (new Date(state.blocks[block.index - 1].timestamp) - new Date(state.blocks[block.index - 1 - n].timestamp)) / 1000;
+      row("Difficulty", work > before ? "↑ " : "↓ ", el("b", { textContent: `${(work / before).toFixed(2)}×` }),
+        `: the last ${n} blocks took ${took.toFixed(0)}s against a target of ${target * n}s, so ${work > before ? "mining got harder" : "mining got easier"} (by at most 4×).`);
+    }
   }
   if (payout) {
     const fees = feesOf(transfers);
@@ -411,7 +443,7 @@ function breakdown(block, prev, payout, transfers) {
 
 function renderStats() {
   const c = state.consensus;
-  $("stat-consensus").textContent = c ? (isStake() ? "Proof of stake" : `Proof of work · ${c.difficulty}`) : "–";
+  $("stat-consensus").textContent = c ? (isStake() ? "Proof of stake" : `Proof of work · ${fmtWork(Number(c.work))}`) : "–";
   $("stat-height").textContent = state.blocks.length ? fmt(state.blocks.length - 1) : "–";
   $("stat-supply").textContent = fmt(supply());
   $("stat-pending").textContent = fmt(state.pending.length);
@@ -547,11 +579,20 @@ function renderProducer() {
   const button = el("button", { className: "gold", textContent: "Mine block" });
   const form = el("form", { className: "inline" }, el("label", { className: "grow" }, "Reward to ", select), button);
   form.onsubmit = (e) => { e.preventDefault(); mine(button, select.value); };
-  const d = state.consensus?.difficulty ?? 0;
-  $("producer").replaceChildren(form, explain("How does proof of work work?",
+  const c = state.consensus;
+  const work = Number(c.work);
+  const pace = c.target_block_secs
+    ? el("p", { className: "summary pace" },
+      "Next block: about ", el("b", { textContent: fmtWork(work) }), " hashes. Aiming for one block every ",
+      el("b", { textContent: `${c.target_block_secs}s` }), `; the next adjustment is at block ${fmt(c.next_retarget)}.`)
+    : el("p", { className: "summary pace" }, "Next block: about ", el("b", { textContent: fmtWork(work) }), " hashes, at a fixed difficulty.");
+  $("producer").replaceChildren(form, pace, explain("How does proof of work work?",
     `The miner bundles the mempool and a payout to themselves into a block, then hashes it again and again, changing the <code>nonce</code> each time.`,
-    `The block counts only once its hash starts with <code>${"0".repeat(d)}</code>. That takes about ${fmt(16 ** d)} tries, so rewriting history means redoing all that work.`,
-    `When forks disagree, the chain with the most total work wins. Exact ties go to the lower tip hash, so every node picks the same one.`));
+    `The block counts only once its hash, read as a number, is below a target. Right now that takes about ${fmtWork(work)} tries, so rewriting history means redoing all that work.`,
+    c.target_block_secs
+      ? `The target moves to keep blocks coming every ${c.target_block_secs}s. Every ${c.retarget_interval} blocks the node checks how long they took: faster means harder, slower means easier, by at most 4× at a time. Timestamps must be after the median of the last 11 and at most 2 hours ahead, so miners can't fake the pace.`
+      : `The difficulty is fixed on this node. Start it with <code>TARGET_BLOCK_SECS</code> above 0 to let it adjust.`,
+    `When forks disagree, the chain with the most total work wins, not the longest. Exact ties go to the lower tip hash, so every node picks the same one.`));
 }
 
 function renderForge() {
@@ -723,7 +764,7 @@ function showProducing(text) {
 
 function mine(button, miner) {
   if (!miner) return toast("Create a wallet first", true);
-  const done = showProducing(`Looking for a hash starting with ${"0".repeat(state.consensus.difficulty)}`);
+  const done = showProducing(`Trying about ${fmtWork(Number(state.consensus.work))} hashes`);
   busy(button, async () => {
     try {
       const block = await api("POST", "/mine", { miner });

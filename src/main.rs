@@ -23,7 +23,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reward = env_or("REWARD", ChainRules::default().reward);
     let rules = match std::env::var("CONSENSUS").as_deref() {
         Ok("pos") => ChainRules::proof_of_stake(reward),
-        Ok("pow") | Err(_) => ChainRules::proof_of_work(env_or("DIFFICULTY", 4), reward),
+        Ok("pow") | Err(_) => ChainRules::proof_of_work(env_or("DIFFICULTY", 4), reward)
+            .with_retarget(env_or("TARGET_BLOCK_SECS", 10), env_or("RETARGET_BLOCKS", 10)),
         Ok(other) => return Err(format!("CONSENSUS must be pow or pos, not {other}").into()),
     }
     .with_max_reorg_depth(env_or("MAX_REORG_DEPTH", DEFAULT_MAX_REORG_DEPTH));

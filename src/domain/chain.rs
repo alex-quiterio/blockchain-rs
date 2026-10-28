@@ -6,12 +6,13 @@ use ed25519_dalek::SigningKey;
 use super::address::Address;
 use super::block::{Block, Transaction};
 use super::crypto;
+use super::difficulty::{self, meets_work};
 use super::error::ChainError;
 use super::ledger::Ledger;
 use super::ledger::ValidatorState;
 use super::mempool::Mempool;
 use super::randao;
-use super::rules::{meets_difficulty, select_validator, ChainRules, Consensus};
+use super::rules::{select_validator, ChainRules, Consensus};
 use super::weight::ChainWeight;
 
 /// The aggregate root: confirmed blocks, the mempool and the ledger they produce.
@@ -20,29 +21,43 @@ use super::weight::ChainWeight;
 pub struct Blockchain {
     blocks: Vec<Block>,
     mempool: Mempool,
-    /// State after every confirmed block.
+    /// What the confirmed blocks add up to.
+    tally: Tally,
+    rules: ChainRules,
+}
+
+/// What replaying blocks in order adds up to.
+#[derive(Clone)]
+struct Tally {
+    /// Balances, stakes, nonces and the randomness beacon.
     ledger: Ledger,
     /// What the blocks are worth when forks compete.
     weight: ChainWeight,
-    rules: ChainRules,
+    /// Proof of work: the work the latest block required, which the next one starts from.
+    work: u128,
+}
+
+impl Tally {
+    fn at_genesis(genesis: &Block, rules: &ChainRules) -> Self {
+        Self {
+            ledger: Ledger::starting_at(&genesis.hash),
+            weight: ChainWeight::ZERO,
+            work: rules.initial_work(),
+        }
+    }
 }
 
 impl Blockchain {
     pub fn new(rules: ChainRules) -> Self {
         let genesis = Block::genesis(&rules);
-        Self {
-            ledger: Ledger::starting_at(&genesis.hash),
-            blocks: vec![genesis],
-            mempool: Mempool::default(),
-            weight: ChainWeight::ZERO,
-            rules,
-        }
+        let tally = Tally::at_genesis(&genesis, &rules);
+        Self { mempool: Mempool::on(&tally.ledger), blocks: vec![genesis], tally, rules }
     }
 
     /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
     pub fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
-        let (ledger, weight) = replay(&blocks, &rules).ok_or(ChainError::InvalidChain)?;
-        Ok(Self { blocks, mempool: Mempool::default(), ledger, weight, rules })
+        let tally = replay(&blocks, &rules).ok_or(ChainError::InvalidChain)?;
+        Ok(Self { blocks, mempool: Mempool::on(&tally.ledger), tally, rules })
     }
 
     pub fn rules(&self) -> ChainRules {
@@ -54,7 +69,30 @@ impl Blockchain {
     }
 
     pub fn weight(&self) -> ChainWeight {
-        self.weight
+        self.tally.weight
+    }
+
+    /// Proof of work: the hashes the next block should take to find, on average.
+    pub fn next_work(&self) -> u128 {
+        difficulty::next_work(&self.blocks, self.tally.work, self.rules.retarget())
+    }
+
+    /// Proof of work: the work each block required, by height. Genesis needs the starting work.
+    pub fn work_history(&self) -> Vec<u128> {
+        let mut work = self.rules.initial_work();
+        let mut history = vec![work];
+        for height in 1..self.blocks.len() {
+            work = difficulty::next_work(&self.blocks[..height], work, self.rules.retarget());
+            history.push(work);
+        }
+        history
+    }
+
+    /// Proof of work with retargeting: the height of the next block whose work is adjusted.
+    pub fn next_retarget_height(&self) -> Option<u64> {
+        let interval = self.rules.retarget()?.interval.max(1);
+        let height = self.blocks.len() as u64;
+        Some((height.div_ceil(interval) * interval).max(2 * interval))
     }
 
     pub fn tip(&self) -> &Block {
@@ -66,21 +104,21 @@ impl Blockchain {
     }
 
     pub fn balance(&self, address: &Address) -> u64 {
-        self.ledger.balance(address.as_str())
+        self.tally.ledger.balance(address.as_str())
     }
 
     pub fn staked(&self, address: &Address) -> u64 {
-        self.ledger.staked(address.as_str())
+        self.tally.ledger.staked(address.as_str())
     }
 
     /// Every confirmed stake, sorted by address.
     pub fn stakes(&self) -> Vec<(String, u64)> {
-        self.ledger.stakes()
+        self.tally.ledger.stakes()
     }
 
     /// The nonce a new transaction from `address` must carry, counting the mempool.
     pub fn next_nonce(&self, address: &Address) -> u64 {
-        self.ledger.next_nonce(address.as_str()) + self.mempool.sent_by(address.as_str())
+        self.mempool.projected().next_nonce(address.as_str())
     }
 
     /// Who must forge the next block. `None` on proof-of-work chains, and on proof-of-stake chains
@@ -93,38 +131,47 @@ impl Blockchain {
         if !self.rules.is_proof_of_stake() {
             return None;
         }
-        let selected = select_validator(&self.ledger.validator_stakes(), self.ledger.beacon())?;
+        let selected =
+            select_validator(&self.tally.ledger.validator_stakes(), self.tally.ledger.beacon())?;
         Some(Address::parse(&selected).expect("only valid senders can stake"))
     }
 
     /// The randomness beacon the next validator is drawn from.
     pub fn beacon(&self) -> &str {
-        self.ledger.beacon()
+        self.tally.ledger.beacon()
     }
 
     /// Where `address` stands with its reveal chain.
     pub fn validator_state(&self, address: &Address) -> ValidatorState {
-        self.ledger.validator_state(address.as_str())
+        self.tally.ledger.validator_state(address.as_str())
     }
 
     /// If `address`'s next stake must carry a commitment, the epoch to make it for. Counts stakes
     /// already waiting in the mempool, so a second stake in a row doesn't commit again.
     pub fn commitment_due(&self, address: &Address) -> Option<u64> {
-        let state = self.mempool.projected(&self.ledger).validator_state(address.as_str());
+        let state = self.mempool.projected().validator_state(address.as_str());
         state.reveals_left.is_none().then_some(state.next_epoch)
     }
 
     /// Validates a transaction against confirmed state plus the mempool, then queues it.
     pub fn submit(&mut self, tx: Transaction) -> Result<(), ChainError> {
-        self.mempool.admit(tx, &self.ledger)
+        self.mempool.admit(tx)
     }
 
     /// Proof of work: bundles the reward and every pending transaction into a new block.
     pub fn mine(&mut self, miner: &Address) -> Result<&Block, ChainError> {
-        let Consensus::ProofOfWork { difficulty } = self.rules.consensus else {
+        if self.rules.is_proof_of_stake() {
             return Err(ChainError::NotProofOfWork);
-        };
-        self.append(miner, |index, now, prev, txs| Block::mine(index, now, prev, txs, difficulty))
+        }
+        let work = self.next_work();
+        self.append(miner, |index, now, prev, txs| Block::mine(index, now, prev, txs, work))
+    }
+
+    /// Proof of work at a chosen time, so tests can play out any pace of blocks.
+    #[cfg(test)]
+    fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, ChainError> {
+        let work = self.next_work();
+        self.append(miner, |index, _, prev, txs| Block::mine(index, at, prev, txs, work))
     }
 
     /// Proof of stake: the selected validator signs the next block with `key`, revealing the
@@ -151,7 +198,9 @@ impl Blockchain {
         match (self.due_reveal(validator), &reveal) {
             (Some(_), None) => return Err(ChainError::BadReveal),
             (None, Some(_)) => return Err(ChainError::BadReveal),
-            (Some(_), Some(r)) if !self.ledger.clone().apply_reveal(validator.as_str(), r) => {
+            (Some(_), Some(r))
+                if !self.tally.ledger.clone().apply_reveal(validator.as_str(), r) =>
+            {
                 return Err(ChainError::BadReveal)
             }
             _ => {}
@@ -165,7 +214,7 @@ impl Blockchain {
     /// `None` while anyone may forge and no reveal is due.
     fn due_reveal(&self, validator: &Address) -> Option<(u64, u32)> {
         self.next_validator()?;
-        let state = self.ledger.validator_state(validator.as_str());
+        let state = self.tally.ledger.validator_state(validator.as_str());
         Some((state.next_epoch.checked_sub(1)?, state.reveals_left?))
     }
 
@@ -177,15 +226,14 @@ impl Blockchain {
         if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
             return Err(ChainError::StaleBlock);
         }
-        let (mut ledger, mut weight) = (self.ledger.clone(), self.weight);
-        if !apply_block(self.tip(), &block, &mut ledger, &mut weight, &self.rules) {
+        let mut tally = self.tally.clone();
+        if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
             return Err(ChainError::InvalidBlock);
         }
         let waiting = self.mempool.transactions().to_vec();
-        self.mempool = Mempool::rebuilt(waiting, &ledger);
+        self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
         self.blocks.push(block);
-        self.ledger = ledger;
-        self.weight = weight;
+        self.tally = tally;
         Ok(self.tip())
     }
 
@@ -222,14 +270,13 @@ impl Blockchain {
     ) -> Result<&Block, ChainError> {
         let (index, transactions) = self.next_contents(producer);
         let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
-        let (mut ledger, mut weight) = (self.ledger.clone(), self.weight);
-        if !apply_block(self.tip(), &block, &mut ledger, &mut weight, &self.rules) {
+        let mut tally = self.tally.clone();
+        if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
             return Err(ChainError::InvalidBlock);
         }
         self.blocks.push(block);
-        self.mempool.clear();
-        self.ledger = ledger;
-        self.weight = weight;
+        self.mempool = Mempool::on(&tally.ledger);
+        self.tally = tally;
         Ok(self.tip())
     }
 
@@ -241,9 +288,10 @@ impl Blockchain {
         if blocks.last().is_some_and(|tip| tip.hash == self.tip().hash) {
             return Ok(false);
         }
-        let (ledger, weight) = replay(&blocks, &self.rules).ok_or(ChainError::InvalidChain)?;
-        let theirs = (weight, Reverse(&blocks.last().expect("replay refuses empty chains").hash));
-        if theirs <= (self.weight, Reverse(&self.tip().hash)) {
+        let tally = replay(&blocks, &self.rules).ok_or(ChainError::InvalidChain)?;
+        let theirs =
+            (tally.weight, Reverse(&blocks.last().expect("replay refuses empty chains").hash));
+        if theirs <= (self.tally.weight, Reverse(&self.tip().hash)) {
             return Ok(false);
         }
 
@@ -264,10 +312,9 @@ impl Blockchain {
             .cloned()
             .collect();
 
-        self.mempool = Mempool::rebuilt(orphaned, &ledger);
+        self.mempool = Mempool::rebuilt(orphaned, &tally.ledger);
         self.blocks = blocks;
-        self.ledger = ledger;
-        self.weight = weight;
+        self.tally = tally;
         Ok(true)
     }
 
@@ -281,9 +328,8 @@ pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
     replay(blocks, rules).is_some()
 }
 
-/// Checks every block in order and returns the resulting ledger and the chain's weight, or `None`
-/// if any check fails.
-fn replay(blocks: &[Block], rules: &ChainRules) -> Option<(Ledger, ChainWeight)> {
+/// Checks every block in order and returns what they add up to, or `None` if any check fails.
+fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Tally> {
     let genesis = blocks.first()?;
     if genesis.index != 0
         || genesis.prev_hash != "0".repeat(64)
@@ -294,32 +340,29 @@ fn replay(blocks: &[Block], rules: &ChainRules) -> Option<(Ledger, ChainWeight)>
     {
         return None;
     }
-    let mut ledger = Ledger::starting_at(&genesis.hash);
-    let mut weight = ChainWeight::ZERO;
-    for (prev, block) in blocks.iter().zip(&blocks[1..]) {
-        if !apply_block(prev, block, &mut ledger, &mut weight, rules) {
+    let mut tally = Tally::at_genesis(genesis, rules);
+    for height in 1..blocks.len() {
+        if !apply_block(&blocks[..height], &blocks[height], &mut tally, rules) {
             return None;
         }
     }
-    Some((ledger, weight))
+    Some(tally)
 }
 
-/// Checks that `block` validly follows `prev` and applies it to `ledger` and `weight`. On `false`
-/// they may be half-updated, so callers check a copy.
-fn apply_block(
-    prev: &Block,
-    block: &Block,
-    ledger: &mut Ledger,
-    weight: &mut ChainWeight,
-    rules: &ChainRules,
-) -> bool {
+/// Checks that `block` validly follows the blocks `before` it and adds it to `tally`. On `false`
+/// the tally may be half-updated, so callers check a copy.
+fn apply_block(before: &[Block], block: &Block, tally: &mut Tally, rules: &ChainRules) -> bool {
+    let prev = before.last().expect("genesis comes first");
+    let work = difficulty::next_work(before, tally.work, rules.retarget());
     if block.index != prev.index + 1
         || block.prev_hash != prev.hash
         || block.hash != block.computed_hash()
-        || !is_sealed_by_consensus(block, ledger, rules)
+        || !difficulty::timestamp_fits(before, block.timestamp, Utc::now())
+        || !is_sealed_by_consensus(block, &tally.ledger, rules, work)
     {
         return false;
     }
+    let ledger = &mut tally.ledger;
     let Some((coinbase, transfers)) = block.transactions.split_first() else {
         return false;
     };
@@ -335,7 +378,8 @@ fn apply_block(
     if !reveals_as_required(block, ledger, rules) {
         return false;
     }
-    *weight = weight.with_block(rules, ledger.staked(&coinbase.to));
+    tally.weight = tally.weight.with_block(rules, ledger.staked(&coinbase.to), work);
+    tally.work = work;
     ledger.credit(&coinbase.to, coinbase.amount);
     transfers.iter().all(|tx| ledger.apply_transfer(tx).is_ok())
 }
@@ -360,22 +404,22 @@ fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
     let unsigned =
         genesis.validator.is_none() && genesis.signature.is_none() && genesis.reveal.is_none();
     match rules.consensus {
-        Consensus::ProofOfWork { difficulty } => {
-            unsigned && meets_difficulty(&genesis.hash, difficulty)
+        Consensus::ProofOfWork { .. } => {
+            unsigned && meets_work(&genesis.hash, rules.initial_work())
         }
         Consensus::ProofOfStake => unsigned && genesis.nonce == 0,
     }
 }
 
-/// Proof of work: the hash has enough zeros and nobody signed it. Proof of stake: the validator
-/// selected from the stakes before this block signed it.
-fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules) -> bool {
+/// Proof of work: the hash meets the work required at its height and nobody signed it. Proof of
+/// stake: the validator drawn from the stakes and beacon before this block signed it.
+fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, work: u128) -> bool {
     match rules.consensus {
-        Consensus::ProofOfWork { difficulty } => {
+        Consensus::ProofOfWork { .. } => {
             block.validator.is_none()
                 && block.signature.is_none()
                 && block.reveal.is_none()
-                && meets_difficulty(&block.hash, difficulty)
+                && meets_work(&block.hash, work)
         }
         Consensus::ProofOfStake => {
             block.nonce == 0
@@ -1059,5 +1103,102 @@ mod tests {
         assert!(json.get("fee").is_none());
         let json = serde_json::to_value(chain.tip()).unwrap();
         assert!(json.get("validator").is_none() && json.get("signature").is_none());
+    }
+
+    // ---- Difficulty adjustment -----------------------------------------------------------
+
+    /// Starts at 16 hashes a block, aiming for one block every 10s, adjusting every 5 blocks.
+    const ADJUSTING: ChainRules = ChainRules::proof_of_work(1, 50).with_retarget(10, 5);
+
+    /// Mines `count` blocks `secs` apart, starting where the chain's tip left off.
+    fn mine_paced(chain: &mut Blockchain, count: usize, secs: i64) {
+        let miner = wallet().0;
+        for _ in 0..count {
+            let last = chain.tip().timestamp.max(Utc::now() - chrono::TimeDelta::days(1));
+            chain.mine_at(&miner, last + chrono::TimeDelta::seconds(secs)).unwrap();
+        }
+    }
+
+    #[test]
+    fn blocks_that_come_too_fast_make_mining_harder_and_too_slow_easier() {
+        let mut chain = Blockchain::new(ADJUSTING);
+        mine_paced(&mut chain, 8, 1);
+        assert_eq!(chain.next_work(), 16, "no adjustment until height 10: genesis isn't timed");
+        mine_paced(&mut chain, 1, 1);
+        assert_eq!(chain.next_work(), 64, "1s blocks against a 10s target: 4x harder, the cap");
+
+        mine_paced(&mut chain, 5, 100);
+        assert_eq!(chain.next_work(), 16, "100s blocks: 4x easier, the cap");
+        assert!(chain.is_valid());
+
+        let history = chain.work_history();
+        assert_eq!(history[..10], [16; 10]);
+        assert_eq!(history[10..15], [64; 5]);
+        let total: u128 = history[1..].iter().sum();
+        assert_eq!(chain.weight().value(), total, "weight is the work each block required");
+        let restored = Blockchain::restore(chain.blocks().to_vec(), ADJUSTING).unwrap();
+        assert_eq!(restored.next_work(), chain.next_work());
+    }
+
+    #[test]
+    fn the_adjustment_is_proportional_inside_the_cap() {
+        let mut chain = Blockchain::new(ADJUSTING);
+        mine_paced(&mut chain, 9, 5);
+        assert_eq!(chain.next_work(), 32, "twice as fast as the target: twice the work");
+        mine_paced(&mut chain, 5, 20);
+        assert_eq!(chain.next_work(), 16, "twice as slow: half the work");
+        assert_eq!(chain.next_retarget_height(), Some(15), "and the next block is adjusted again");
+    }
+
+    #[test]
+    fn a_block_below_the_required_work_is_rejected() {
+        let mut chain = Blockchain::new(ADJUSTING);
+        mine_paced(&mut chain, 10, 1);
+        assert_eq!(chain.next_work(), 64);
+
+        // Mine at the old, easier work until we get a hash that misses the new one.
+        let (index, txs) = chain.next_contents(&wallet().0);
+        let at = chain.tip().timestamp + chrono::TimeDelta::seconds(1);
+        let easy = (0..)
+            .map(|i| {
+                Block::mine(
+                    index,
+                    at + chrono::TimeDelta::nanoseconds(i),
+                    chain.tip().hash.clone(),
+                    txs.clone(),
+                    16,
+                )
+            })
+            .find(|b| !meets_work(&b.hash, 64))
+            .unwrap();
+        let mut blocks = chain.blocks().to_vec();
+        blocks.push(easy);
+        assert!(!validate_blocks(&blocks, &ADJUSTING));
+    }
+
+    #[test]
+    fn timestamps_cannot_be_backdated_or_far_in_the_future() {
+        let mut chain = Blockchain::new(ADJUSTING);
+        mine_paced(&mut chain, 12, 10);
+        let miner = wallet().0;
+        let median = chain.blocks()[chain.blocks().len() - 6].timestamp;
+        assert_eq!(chain.mine_at(&miner, median).err(), Some(ChainError::InvalidBlock));
+        let future = Utc::now() + chrono::TimeDelta::hours(3);
+        assert_eq!(chain.mine_at(&miner, future).err(), Some(ChainError::InvalidBlock));
+        chain.mine_at(&miner, median + chrono::TimeDelta::seconds(1)).unwrap();
+    }
+
+    #[test]
+    fn a_shorter_but_harder_fork_beats_a_longer_easier_one() {
+        // 10 blocks a second apart push the work to 64, so 5 more weigh 320.
+        let mut hard = Blockchain::new(ADJUSTING);
+        mine_paced(&mut hard, 15, 1);
+        // 17 slow blocks: every block after the first adjustment needs a quarter of the work.
+        let mut easy = Blockchain::new(ADJUSTING);
+        mine_paced(&mut easy, 17, 100);
+
+        assert!(hard.blocks().len() < easy.blocks().len());
+        assert!(hard.weight() > easy.weight());
+        assert_eq!(easy.adopt_if_heavier(hard.blocks().to_vec()), Ok(true));
     }
 }
