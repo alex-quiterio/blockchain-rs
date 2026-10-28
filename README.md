@@ -4,13 +4,13 @@
 
 **A small, readable cryptocurrency in Rust that you can run, break and watch heal.**
 
-Proof of work *or* proof of stake · signed transfers with optional fees · peers that gossip and sync · a web UI that explains every block
+Proof of work *or* proof of stake · keys that never leave your browser · fees · peers that gossip and sync · a web UI that explains every block
 
 [![Tests](https://github.com/alex-quiterio/blockchain-rs/actions/workflows/test.yml/badge.svg)](https://github.com/alex-quiterio/blockchain-rs/actions/workflows/test.yml)
 ![Rust](https://img.shields.io/badge/rust-2021-orange?logo=rust)
 ![No real money](https://img.shields.io/badge/real%20money-none-lightgrey)
 
-<img src="docs/screenshot-pos.png" alt="A proof-of-stake node: wallets with stake, whose turn it is to forge, stake odds, a peer in step, and the chain with a block's breakdown open" width="900" />
+<img src="docs/screenshot-pos.png" alt="A proof-of-stake node: unlocked passphrase vault, wallets with stake, whose turn it is to forge, stake odds, two peers in step, and the chain with a block's breakdown open" width="900" />
 
 </div>
 
@@ -33,10 +33,17 @@ Proof of work *or* proof of stake · signed transfers with optional fees · peer
 ## 🚀 Quick start
 
 ```sh
-cargo run          # http://127.0.0.1:3000
+docker compose up --build     # three linked nodes on :3000, :3001 and :3002
+# or, for a single node:
+cargo run                     # http://127.0.0.1:3000
 ```
 
-Open **http://127.0.0.1:3000**, create a couple of wallets, mine a block, send some coins, and open any block's **Breakdown** to see why it's valid.
+Open **http://127.0.0.1:3000** and:
+
+1. 🔒 **Choose a passphrase.** It encrypts your wallets' keys before they're saved in the browser.
+2. 👛 **Make a couple of wallets**, then **mine** a block to fund one.
+3. 💸 **Send some coins**, with a fee if you like. The page signs the transaction itself and only the signature goes to the node.
+4. 🔍 **Open any block's Breakdown** to see why it's valid. With Docker running, open `:3001` too and watch the block arrive.
 
 ### Proof of stake
 
@@ -52,7 +59,12 @@ While nothing is staked, anyone may forge. Forge a few blocks to earn coins, sen
 docker compose up --build
 ```
 
-That starts nodes on **:3000**, **:3001** and **:3002**, linked c → b → a. Mine on one node and the block reaches the others within seconds. Add `CONSENSUS=pos` in front for proof of stake, and `GIT_COMMIT=$(git rev-parse --short HEAD)` to show the real commit in the footer. Each node keeps its chain in its own volume, and `docker compose down -v` wipes them.
+```mermaid
+flowchart LR
+    C["node-c<br/>:3002"] <--> B["node-b<br/>:3001"] <--> A["node-a<br/>:3000"]
+```
+
+That starts nodes on **:3000**, **:3001** and **:3002**. C and A only know B, and gossip carries everything across. Mine on one node and the block reaches the others within seconds. Add `CONSENSUS=pos` in front for proof of stake, and `GIT_COMMIT=$(git rev-parse --short HEAD)` to show the real commit in the footer. Each node keeps its chain in its own volume, and `docker compose down -v` wipes them.
 
 <details>
 <summary><b>Without Docker</b></summary>
@@ -179,7 +191,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test
+cargo test        # 64 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.
