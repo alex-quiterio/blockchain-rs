@@ -62,9 +62,14 @@ impl Default for HttpPeerClient {
 }
 
 impl PeerClient for HttpPeerClient {
-    fn status<'a>(&'a self, peer: &'a str) -> PeerResult<'a, PeerTip> {
+    fn status<'a>(&'a self, peer: &'a str, me: Option<&'a str>) -> PeerResult<'a, PeerTip> {
         Box::pin(async move {
-            let status: Status = self.get(format!("{peer}/status")).await?;
+            let mut request = self.http.get(format!("{peer}/status"));
+            if let Some(me) = me {
+                request = request.header(PEER_HEADER, me);
+            }
+            let response = checked(request.send().await.map_err(describe)?).await?;
+            let status: Status = response.json().await.map_err(describe)?;
             Ok(PeerTip {
                 height: status.height,
                 tip: status.tip,

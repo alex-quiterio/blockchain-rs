@@ -1,3 +1,4 @@
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -17,7 +18,9 @@ pub const PEER_HEADER: &str = "x-peer";
 
 /// How this node talks to other nodes. The HTTP adapter lives in infrastructure.
 pub trait PeerClient: Send + Sync {
-    fn status<'a>(&'a self, peer: &'a str) -> PeerResult<'a, PeerTip>;
+    /// Where the peer's chain stands. `me` tells the peer who's asking, so it can add us back if
+    /// it forgot us.
+    fn status<'a>(&'a self, peer: &'a str, me: Option<&'a str>) -> PeerResult<'a, PeerTip>;
     /// The peer's blocks from `height` on.
     fn chain_from<'a>(&'a self, peer: &'a str, height: usize) -> PeerResult<'a, Vec<Block>>;
     fn pending<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<Transaction>>;
@@ -88,7 +91,12 @@ impl Network {
         self.peers.lock().unwrap().iter().map(|(url, s)| (url.clone(), s.clone())).collect()
     }
 
-    /// Adds a peer and introduces this node back to it. Returns whether it was new.
+    /// Adds a peer and introduces this node back to it. Returns whether it was new. A peer that's
+    /// already known keeps what we last heard from it.
+    ///
+    /// Nodes also call this for anyone who reaches out to them, so a link that only goes one way
+    /// heals the next time the two talk: say one side restarted and forgot the other, or started
+    /// before the other was up to hear its introduction.
     pub async fn add_peer(&self, url: &str) -> Result<bool, String> {
         let url = normalize(url);
         if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -97,7 +105,13 @@ impl Network {
         if Some(&url) == self.me.as_ref() {
             return Ok(false);
         }
-        let added = self.peers.lock().unwrap().insert(url.clone(), PeerStatus::default()).is_none();
+        let added = match self.peers.lock().unwrap().entry(url.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(PeerStatus::default());
+                true
+            }
+            Entry::Occupied(_) => false,
+        };
         if added {
             if let Some(me) = &self.me {
                 // Best effort: a peer that's down now will still be pulled from later.
@@ -137,7 +151,7 @@ impl Network {
 
     /// Catches up with one peer. Returns its status and whether its chain was adopted.
     async fn pull(&self, url: &str) -> Result<(PeerTip, bool), String> {
-        let theirs = self.client.status(url).await?;
+        let theirs = self.client.status(url, self.me.as_deref()).await?;
         let ours = self.node.tip();
         let mut adopted = false;
         if theirs.tip != ours.hash && theirs.weight >= ours.weight.value() {
@@ -261,9 +275,14 @@ mod tests {
     }
 
     impl PeerClient for Mesh {
-        fn status<'a>(&'a self, peer: &'a str) -> PeerResult<'a, PeerTip> {
+        fn status<'a>(&'a self, peer: &'a str, me: Option<&'a str>) -> PeerResult<'a, PeerTip> {
             Box::pin(async move {
-                let tip = self.reach(peer, "status".into()).await?.node().tip();
+                let network = self.reach(peer, "status".into()).await?;
+                // As the HTTP handler does: whoever asks is added back if they're new.
+                if let Some(me) = me {
+                    network.add_peer(me).await?;
+                }
+                let tip = network.node().tip();
                 Ok(PeerTip {
                     height: tip.height,
                     tip: tip.hash,
@@ -479,6 +498,43 @@ mod tests {
         a.node().mine(&miner()).unwrap();
         a.sync().await;
         assert_eq!(mesh.sent(), ["http://b status"], "a lighter peer has nothing for us");
+    }
+
+    #[tokio::test]
+    async fn a_link_that_went_one_way_heals_on_the_next_sync() {
+        let mesh = Mesh::default();
+        let a = mesh.join("http://a");
+        let c = mesh.join("http://c");
+        // c starts before b is up, so b never hears c's introduction.
+        c.add_peer("http://b").await.unwrap();
+        let b = mesh.join("http://b");
+        a.add_peer("http://b").await.unwrap();
+        assert_eq!(b.peers().len(), 1, "b only knows a");
+
+        c.sync().await;
+        let mut known: Vec<_> = b.peers().into_iter().map(|(url, _)| url).collect();
+        known.sort();
+        assert_eq!(known, ["http://a", "http://c"]);
+
+        // b restarts and forgets both; each comes back as soon as it syncs.
+        let b = mesh.join("http://b");
+        a.sync().await;
+        c.sync().await;
+        assert_eq!(b.peers().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn adding_a_known_peer_keeps_what_we_heard_from_it() {
+        let mesh = Mesh::default();
+        let a = mesh.join("http://a");
+        let b = mesh.join("http://b");
+        a.add_peer("http://b").await.unwrap();
+        b.node().mine(&miner()).unwrap();
+        a.sync().await;
+
+        assert_eq!(a.add_peer("http://b").await, Ok(false));
+        assert_eq!(a.peers()[0].1.height, Some(2));
+        assert!(a.peers()[0].1.last_seen.is_some());
     }
 
     #[tokio::test]

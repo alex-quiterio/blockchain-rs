@@ -163,7 +163,9 @@ pub async fn get_proof(
 }
 
 /// Height, tip, weight and mempool size, without replaying the chain.
-pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
+/// A peer polling it names itself, and is added back if this node had forgotten it.
+pub async fn get_status(State(state): State<AppState>, headers: HeaderMap) -> Json<StatusResponse> {
+    sender(&state, &headers);
     let tip = state.node.tip();
     Json(StatusResponse {
         height: tip.height,
@@ -184,9 +186,10 @@ pub async fn replace_chain(
     let (extension, length) = tokio::task::spawn_blocking(move || node.extend(blocks))
         .await
         .expect("replace task panicked")?;
+    let from = sender(&state, &headers);
     let replaced = extension == Extension::Adopted;
     if replaced {
-        gossip_chain(&state, sender(&headers));
+        gossip_chain(&state, from);
     }
     let missing_parent = extension == Extension::MissingParent;
     Ok(Json(ReplaceResponse { replaced, length, missing_parent }))
@@ -245,7 +248,7 @@ pub async fn submit_transaction(
     Json(tx): Json<Transaction>,
 ) -> Result<(StatusCode, Json<Transaction>), ApiError> {
     state.node.submit(tx.clone())?;
-    let (network, gossiped, from) = (state.network.clone(), tx.clone(), sender(&headers));
+    let (network, gossiped, from) = (state.network.clone(), tx.clone(), sender(&state, &headers));
     tokio::spawn(async move { network.broadcast_transaction(&gossiped, from.as_deref()).await });
     Ok((StatusCode::ACCEPTED, Json(tx)))
 }
@@ -396,8 +399,11 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// The peer that relayed a block or transaction, if it said.
-fn sender(headers: &HeaderMap) -> Option<String> {
-    let url = headers.get(PEER_HEADER)?.to_str().ok()?;
-    Some(url.trim_end_matches('/').to_string())
+/// The peer that sent this request, if it said. A peer this node doesn't know yet is added, which
+/// introduces this node back, without making the caller wait.
+fn sender(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let url = headers.get(PEER_HEADER)?.to_str().ok()?.trim_end_matches('/').to_string();
+    let (network, peer) = (state.network.clone(), url.clone());
+    tokio::spawn(async move { network.add_peer(&peer).await });
+    Some(url)
 }
