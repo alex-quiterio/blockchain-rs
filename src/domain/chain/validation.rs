@@ -7,7 +7,6 @@ use chrono::Utc;
 
 use super::tally::Tally;
 use crate::domain::block::{Block, Transaction};
-use crate::domain::crypto;
 use crate::domain::difficulty::{self, meets_work};
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::{select_validator, ChainRules, Consensus};
@@ -116,21 +115,23 @@ pub(super) fn apply_block(
     let Some((coinbase, transfers)) = block.transactions.split_first() else {
         return false;
     };
+    let Some(producer) = coinbase.to.account().map(|a| a.as_str()) else {
+        return false;
+    };
     if !coinbase.is_coinbase()
         || Some(coinbase.amount) != payout(rules.reward, transfers)
         || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index
-        || !crypto::is_valid_address(&coinbase.to)
-        || block.validator.as_ref().is_some_and(|v| *v != coinbase.to)
+        || block.validator.as_deref().is_some_and(|v| v != producer)
     {
         return false;
     }
     if !reveals_as_required(block, ledger, rules) {
         return false;
     }
-    tally.weight = tally.weight.with_block(rules, ledger.staked(&coinbase.to), work);
+    tally.weight = tally.weight.with_block(rules, ledger.staked(producer), work);
     tally.work = work;
-    ledger.credit(&coinbase.to, coinbase.amount);
+    ledger.credit(producer, coinbase.amount);
     transfers.iter().all(|tx| ledger.apply_transfer(tx).is_ok())
 }
 
@@ -184,6 +185,7 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
 mod tests {
     use super::*;
     use crate::domain::address::Address;
+    use crate::domain::crypto;
 
     #[test]
     fn fees_too_large_to_add_up_make_no_valid_payout() {

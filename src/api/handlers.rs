@@ -18,14 +18,13 @@ use super::AppState;
 use super::PEER_HEADER;
 use crate::application::{Located, NodeError};
 use crate::domain::address::Address;
-use crate::domain::block::STAKE;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Extension;
 use crate::domain::crypto;
 use crate::domain::error::ChainError;
 use crate::domain::randao;
 use crate::domain::rules::Consensus;
-use crate::domain::values::Coins;
+use crate::domain::values::{Coins, Destination};
 
 /// Maps domain and application errors onto HTTP status codes and JSON error bodies.
 pub struct ApiError {
@@ -235,8 +234,9 @@ pub async fn sign_transaction(
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
     let from = Address::of(&key);
     let nonce = req.nonce.unwrap_or_else(|| state.node.next_nonce(&from));
-    if req.to != STAKE {
-        return Ok(Json(Transaction::signed(&key, &req.to, req.amount, nonce, req.fee)));
+    let to = Destination::parse(&req.to)?;
+    if to != Destination::Stake {
+        return Ok(Json(Transaction::signed(&key, to, req.amount, nonce, req.fee)));
     }
     let due = state.node.account(&from).commitment_due;
     let commitment = req.commitment.or_else(|| due.map(|epoch| randao::commitment(&key, epoch)));

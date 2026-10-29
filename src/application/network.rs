@@ -397,7 +397,7 @@ mod tests {
         b.node().mine(&rich).unwrap();
         b.node().mine(&miner()).unwrap();
         b.node()
-            .submit(Transaction::signed(&key, miner().as_str(), Coins::new(5), 0, Coins::new(1)))
+            .submit(Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::new(1)))
             .unwrap();
 
         let report = a.sync().await;
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(b.node().blocks(), a.node().blocks());
         assert_eq!(c.node().blocks(), a.node().blocks());
 
-        let tx = Transaction::signed(&key, miner().as_str(), Coins::new(5), 0, Coins::new(0));
+        let tx = Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::new(0));
         a.node().submit(tx.clone()).unwrap();
         a.broadcast_transaction(&tx, None).await;
         assert_eq!(c.node().pending(), [tx]);
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(started.elapsed(), Duration::from_secs(1));
         let tx = Transaction::signed(
             &crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap(),
-            miner().as_str(),
+            miner(),
             Coins::new(1),
             0,
             Coins::ZERO,

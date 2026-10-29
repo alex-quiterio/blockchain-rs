@@ -72,7 +72,7 @@ mod tests {
     }
 
     fn pay(key: &ed25519_dalek::SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-        Transaction::signed(key, to.as_str(), Coins::new(amount), nonce, Coins::new(0))
+        Transaction::signed(key, to, Coins::new(amount), nonce, Coins::new(0))
     }
 
     #[test]

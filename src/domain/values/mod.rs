@@ -4,6 +4,8 @@
 pub mod address;
 mod coins;
 mod hash;
+mod party;
 
 pub use coins::Coins;
 pub use hash::{BlockHash, MerkleRoot};
+pub use party::{Destination, Source, COINBASE, STAKE, UNSTAKE};

@@ -8,17 +8,14 @@ use super::crypto;
 use super::difficulty::meets_work;
 use super::merkle;
 use super::rules::{ChainRules, Consensus};
-use super::values::{BlockHash, Coins, MerkleRoot};
+use super::values::{BlockHash, Coins, Destination, MerkleRoot, Source};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
 
-/// Sender used for the block reward, which has no signature.
-pub const COINBASE: &str = "coinbase";
-/// Recipient that locks coins up as stake, for proof of stake.
-pub const STAKE: &str = "stake";
-/// Recipient that unlocks staked coins back into the sender's balance.
-pub const UNSTAKE: &str = "unstake";
+// The names a transaction's sender and recipient take when they aren't accounts. They live with
+// `Source` and `Destination`; these keep their old paths working.
+pub use super::values::{COINBASE, STAKE, UNSTAKE};
 
 /// How many nonces a miner tries between asking whether to keep going.
 const CHECK_EVERY: u64 = 1 << 14;
@@ -32,11 +29,11 @@ pub enum TxKind {
 }
 
 /// A signed movement of coins. Addresses are hex-encoded ed25519 public keys. Staking is a
-/// transaction to `STAKE` or `UNSTAKE`, so the signature covers what kind it is.
+/// transaction to `Destination::Stake` or `Unstake`, so the signature covers what kind it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transaction {
-    pub from: String,
-    pub to: String,
+    pub from: Source,
+    pub to: Destination,
     pub amount: Coins,
     /// How many transactions the sender has made before this one. Stops replays.
     pub nonce: u64,
@@ -72,8 +69,14 @@ impl Transaction {
     }
 
     /// A transfer (or unstake, or later stake, by `to`) from `key`'s address, signed with it.
-    pub fn signed(key: &SigningKey, to: &str, amount: Coins, nonce: u64, fee: Coins) -> Self {
-        Self::signed_with(key, to, amount, nonce, fee, None)
+    pub fn signed(
+        key: &SigningKey,
+        to: impl Into<Destination>,
+        amount: Coins,
+        nonce: u64,
+        fee: Coins,
+    ) -> Self {
+        Self::signed_with(key, to.into(), amount, nonce, fee, None)
     }
 
     /// A stake from `key`'s address. `commitment` is required the first time, and refused
@@ -85,27 +88,29 @@ impl Transaction {
         fee: Coins,
         commitment: Option<String>,
     ) -> Self {
-        Self::signed_with(key, STAKE, amount, nonce, fee, commitment)
+        Self::signed_with(key, Destination::Stake, amount, nonce, fee, commitment)
     }
 
     fn signed_with(
         key: &SigningKey,
-        to: &str,
+        to: Destination,
         amount: Coins,
         nonce: u64,
         fee: Coins,
         commitment: Option<String>,
     ) -> Self {
-        let from = Address::of(key).to_string();
-        let payload = Self::signing_payload(&from, to, amount, nonce, fee, commitment.as_deref());
+        let from = Source::Account(Address::of(key));
+        let (sender, recipient) = (from.to_string(), to.to_string());
+        let payload =
+            Self::signing_payload(&sender, &recipient, amount, nonce, fee, commitment.as_deref());
         let signature = crypto::sign(key, &payload);
-        Self { from, to: to.to_string(), amount, nonce, signature, fee, commitment }
+        Self { from, to, amount, nonce, signature, fee, commitment }
     }
 
     pub fn payload(&self) -> Vec<u8> {
         Self::signing_payload(
-            &self.from,
-            &self.to,
+            &self.from.to_string(),
+            &self.to.to_string(),
             self.amount,
             self.nonce,
             self.fee,
@@ -114,20 +119,25 @@ impl Transaction {
     }
 
     pub fn is_coinbase(&self) -> bool {
-        self.from == COINBASE
+        self.from == Source::NewCoins
+    }
+
+    /// The account that sent it, unless it's a block reward.
+    pub fn sender(&self) -> Option<&Address> {
+        self.from.account()
     }
 
     /// Whether `address` sends or receives it.
     pub fn involves(&self, address: &Address) -> bool {
-        self.from == address.as_str() || self.to == address.as_str()
+        self.from.account() == Some(address) || self.to.account() == Some(address)
     }
 
     pub fn kind(&self) -> TxKind {
-        match (self.from.as_str(), self.to.as_str()) {
-            (COINBASE, _) => TxKind::Coinbase,
-            (_, STAKE) => TxKind::Stake,
-            (_, UNSTAKE) => TxKind::Unstake,
-            _ => TxKind::Transfer,
+        match (&self.from, &self.to) {
+            (Source::NewCoins, _) => TxKind::Coinbase,
+            (_, Destination::Stake) => TxKind::Stake,
+            (_, Destination::Unstake) => TxKind::Unstake,
+            (_, Destination::Account(_)) => TxKind::Transfer,
         }
     }
 
@@ -135,8 +145,8 @@ impl Transaction {
     /// height, so every one is unique.
     pub fn coinbase(producer: &Address, amount: Coins, height: u64) -> Self {
         Self {
-            from: COINBASE.to_string(),
-            to: producer.to_string(),
+            from: Source::NewCoins,
+            to: Destination::Account(producer.clone()),
             amount,
             nonce: height,
             signature: String::new(),

@@ -589,13 +589,7 @@ mod tests {
         node.mine(&alice).unwrap();
         let mut payments = Vec::new();
         for nonce in 0..5 {
-            let tx = Transaction::signed(
-                &key,
-                new_address().as_str(),
-                Coins::new(1),
-                nonce,
-                Coins::new(0),
-            );
+            let tx = Transaction::signed(&key, new_address(), Coins::new(1), nonce, Coins::new(0));
             node.submit(tx.clone()).unwrap();
             payments.push(tx);
         }
@@ -619,7 +613,7 @@ mod tests {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
         let (alice, bob) = (Address::of(&key), new_address());
         node.mine(&alice).unwrap();
-        let payment = Transaction::signed(&key, bob.as_str(), Coins::new(7), 0, Coins::new(1));
+        let payment = Transaction::signed(&key, &bob, Coins::new(7), 0, Coins::new(1));
         node.submit(payment.clone()).unwrap();
 
         let pending = node.locate(&payment.signature).unwrap();

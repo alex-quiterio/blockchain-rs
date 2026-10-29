@@ -222,6 +222,7 @@ flowchart TB
     - `address.rs`: an `Address` can only hold a valid public key
     - `hash.rs`: `BlockHash` and `MerkleRoot` can only hold 64 hex characters, and can't be passed for each other
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
+    - `party.rs`: where a transaction's coins come from (`Source`: an account, or new coins for a block reward) and go (`Destination`: an account, or into or out of a stake), instead of strings with magic values
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case on a copy of the chain and only swaps it in once it's saved.
@@ -269,7 +270,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 127 tests: unit, HTTP and property-based
+cargo test        # 129 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

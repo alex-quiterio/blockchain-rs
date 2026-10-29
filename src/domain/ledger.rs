@@ -113,26 +113,25 @@ impl Ledger {
     /// Checks a signed transfer, stake or unstake against this state and applies it.
     pub fn apply_transfer(&mut self, tx: &Transaction) -> Result<(), ChainError> {
         let kind = tx.kind();
-        if kind == TxKind::Coinbase {
+        // A recipient account is a valid address by its type; only the sender needs unpacking.
+        let Some(sender) = tx.sender() else {
             return Err(ChainError::UnexpectedCoinbase);
-        }
-        if kind == TxKind::Transfer && !crypto::is_valid_address(&tx.to) {
-            return Err(ChainError::InvalidAddress(tx.to.clone()));
-        }
+        };
+        let from = sender.as_str();
         if tx.amount.is_zero() {
             return Err(ChainError::ZeroAmount);
         }
         // The nonce is checked before the signature: stale and replayed transactions, the
         // common case when peers gossip, are turned away without the costly verification.
-        let expected = self.next_nonce(&tx.from);
+        let expected = self.next_nonce(from);
         if tx.nonce != expected {
             return Err(ChainError::BadNonce { expected, got: tx.nonce });
         }
-        if !crypto::verify(&tx.from, &tx.payload(), &tx.signature) {
+        if !crypto::verify(from, &tx.payload(), &tx.signature) {
             return Err(ChainError::BadSignature);
         }
         // A first stake must commit to a reveal chain; any other transaction must not.
-        let needs_commitment = kind == TxKind::Stake && self.active_commitment(&tx.from).is_none();
+        let needs_commitment = kind == TxKind::Stake && self.active_commitment(from).is_none();
         match (&tx.commitment, needs_commitment) {
             (None, true) => return Err(ChainError::MissingCommitment),
             (Some(_), false) => return Err(ChainError::UnexpectedCommitment),
@@ -144,39 +143,42 @@ impl Ledger {
             TxKind::Unstake => Some(tx.fee),
             _ => tx.amount.checked_add(tx.fee),
         };
-        let balance = self.balance(&tx.from);
+        let balance = self.balance(from);
         let Some(left) = spent.and_then(|spent| balance.checked_sub(spent)) else {
             let amount = spent.unwrap_or(Coins::new(u64::MAX));
             return Err(ChainError::InsufficientFunds { balance, amount });
         };
         if kind == TxKind::Unstake {
-            let staked = self.staked(&tx.from);
+            let staked = self.staked(from);
             if staked < tx.amount {
                 return Err(ChainError::InsufficientStake { staked, amount: tx.amount });
             }
             let left = staked.checked_sub(tx.amount).expect("checked just above");
-            self.stakes.insert(tx.from.clone(), left);
+            self.stakes.insert(from.to_string(), left);
             if staked == tx.amount {
                 // Fully unstaked: the reveal chain ends, and staking again needs a new one.
-                self.commitments.remove(&tx.from);
+                self.commitments.remove(from);
             }
         }
         if let Some(commitment) = &tx.commitment {
             let head = commitment.clone();
             self.commitments
-                .insert(tx.from.clone(), Commitment { head, remaining: randao::LENGTH });
-            *self.epochs.entry(tx.from.clone()).or_insert(0) += 1;
+                .insert(from.to_string(), Commitment { head, remaining: randao::LENGTH });
+            *self.epochs.entry(from.to_string()).or_insert(0) += 1;
         }
-        self.balances.insert(tx.from.clone(), left);
+        self.balances.insert(from.to_string(), left);
         match kind {
             TxKind::Stake => {
-                let stake = self.stakes.entry(tx.from.clone()).or_default();
+                let stake = self.stakes.entry(from.to_string()).or_default();
                 *stake = stake.saturating_add(tx.amount);
             }
-            TxKind::Unstake => self.credit(&tx.from, tx.amount),
-            _ => self.credit(&tx.to, tx.amount),
+            TxKind::Unstake => self.credit(from, tx.amount),
+            _ => {
+                let to = tx.to.account().expect("a transfer goes to an account");
+                self.credit(to.as_str(), tx.amount);
+            }
         }
-        self.nonces.insert(tx.from.clone(), expected + 1);
+        self.nonces.insert(from.to_string(), expected + 1);
         Ok(())
     }
 }

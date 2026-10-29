@@ -171,10 +171,10 @@ impl Load {
         } else {
             rand::random::<u64>() % (self.config.max_fee + 1)
         };
-        let to = wallets[to].address.to_string();
+        let to = wallets[to].address.clone();
         let wallet = &mut wallets[from];
         let (amount, fee) = (Coins::new(amount), Coins::new(fee));
-        let tx = Transaction::signed(&wallet.key, &to, amount, wallet.nonce, fee);
+        let tx = Transaction::signed(&wallet.key, to, amount, wallet.nonce, fee);
         wallet.nonce += 1;
         (tx, wallet.home)
     }
@@ -195,7 +195,7 @@ impl Load {
             }
             Err(reason) => {
                 *self.stats.lock().unwrap().rejected.entry(reason).or_default() += 1;
-                self.resync(&tx.from, home).await;
+                self.resync(&tx.from.to_string(), home).await;
             }
         }
     }

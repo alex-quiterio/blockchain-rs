@@ -8,12 +8,12 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 
 use blockchain::domain::address::Address;
-use blockchain::domain::block::{Block, Transaction, UNSTAKE};
+use blockchain::domain::block::{Block, Transaction};
 use blockchain::domain::chain::{validate_blocks, Blockchain};
 use blockchain::domain::error::ChainError;
 use blockchain::domain::randao;
 use blockchain::domain::rules::ChainRules;
-use blockchain::domain::values::{BlockHash, Coins};
+use blockchain::domain::values::{BlockHash, Coins, Destination};
 
 const WALLETS: usize = 4;
 const REWARD: u64 = 50;
@@ -40,13 +40,13 @@ fn assert_supply_conserved(chain: &Blockchain) {
 /// Each sender's next nonce is exactly how many of its transactions are confirmed or queued.
 fn assert_nonces_match_history(chain: &Blockchain) {
     for i in 0..WALLETS {
-        let from = address(i).to_string();
+        let from = address(i);
         let sent = chain
             .blocks()
             .iter()
             .flat_map(|b| &b.transactions)
             .chain(chain.pending())
-            .filter(|tx| tx.from == from)
+            .filter(|tx| tx.sender() == Some(&from))
             .count() as u64;
         assert_eq!(chain.next_nonce(&address(i)), sent);
     }
@@ -92,7 +92,7 @@ fn run(rules: ChainRules, ops: &[Op]) -> Blockchain {
                 let nonce = (chain.next_nonce(&address(from)) as i64 + skew).max(0) as u64;
                 Some(Transaction::signed(
                     &key(from),
-                    address(to).as_str(),
+                    address(to),
                     Coins::new(amount),
                     nonce,
                     Coins::new(fee),
@@ -114,7 +114,7 @@ fn run(rules: ChainRules, ops: &[Op]) -> Blockchain {
                 let nonce = chain.next_nonce(&address(from));
                 Some(Transaction::signed(
                     &key(from),
-                    UNSTAKE,
+                    Destination::Unstake,
                     Coins::new(amount),
                     nonce,
                     Coins::new(0),
@@ -200,7 +200,7 @@ proptest! {
             .iter()
             .map(|&(from, to, amount, fee)| {
                 nonces[from] += 1;
-                Transaction::signed(&key(from), address(to).as_str(), Coins::new(amount), nonces[from] - 1, Coins::new(fee))
+                Transaction::signed(&key(from), address(to), Coins::new(amount), nonces[from] - 1, Coins::new(fee))
             })
             .collect();
         let mut shuffled = batch.clone();
@@ -283,7 +283,7 @@ proptest! {
             let mut attempt = chain.clone();
             if amount > 0 {
                 let nonce = attempt.next_nonce(&selected);
-                let tx = Transaction::signed(&key(forger), address(to).as_str(), Coins::new(amount), nonce, Coins::new(fee));
+                let tx = Transaction::signed(&key(forger), address(to), Coins::new(amount), nonce, Coins::new(fee));
                 let _ = attempt.submit(tx);
             }
             attempt.forge(&key(forger)).unwrap();
@@ -332,7 +332,7 @@ proptest! {
         let target = &mut forged[block];
         match field {
             0 => target.transactions[0].amount = Coins::new(target.transactions[0].amount.value() + 1),
-            1 => target.transactions[0].to = address(WALLETS + 1).to_string(), // never mines
+            1 => target.transactions[0].to = address(WALLETS + 1).into(), // never mines
             2 => target.timestamp += chrono::TimeDelta::seconds(1),
             3 => target.nonce += 1,
             4 => target.prev_hash = BlockHash::of(b"a block that isn't there"),

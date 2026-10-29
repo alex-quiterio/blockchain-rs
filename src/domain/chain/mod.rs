@@ -563,9 +563,9 @@ impl Blockchain {
 mod tests {
     use super::validation::replay;
     use super::*;
-    use crate::domain::block::UNSTAKE;
     use crate::domain::crypto;
     use crate::domain::difficulty::meets_work;
+    use crate::domain::values::{Destination, Source};
 
     const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
 
@@ -575,7 +575,7 @@ mod tests {
     }
 
     fn transfer(key: &SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-        Transaction::signed(key, to.as_str(), Coins::new(amount), nonce, Coins::new(0))
+        Transaction::signed(key, to, Coins::new(amount), nonce, Coins::new(0))
     }
 
     fn chain() -> Blockchain {
@@ -618,7 +618,7 @@ mod tests {
         chain.mine(&alice).unwrap();
 
         let mut tx = transfer(&mallory_key, &Address::of(&mallory_key), 10, 0);
-        tx.from = alice.to_string();
+        tx.from = Source::Account(alice.clone());
         assert_eq!(chain.submit(tx), Err(ChainError::BadSignature));
     }
 
@@ -1174,7 +1174,7 @@ mod tests {
         assert_eq!(
             chain.submit(Transaction::signed(
                 &alice_key,
-                UNSTAKE,
+                Destination::Unstake,
                 Coins::new(31),
                 1,
                 Coins::new(0)
@@ -1182,7 +1182,13 @@ mod tests {
             Err(ChainError::InsufficientStake { staked: Coins::new(30), amount: Coins::new(31) })
         );
         chain
-            .submit(Transaction::signed(&alice_key, UNSTAKE, Coins::new(30), 1, Coins::new(0)))
+            .submit(Transaction::signed(
+                &alice_key,
+                Destination::Unstake,
+                Coins::new(30),
+                1,
+                Coins::new(0),
+            ))
             .unwrap();
         chain.forge(&alice_key).unwrap();
         assert_eq!(chain.staked(&alice), Coins::new(0));
@@ -1270,7 +1276,7 @@ mod tests {
         let (bob, bob_key) = wallet();
         chain.forge(&alice_key).unwrap();
         chain
-            .submit(Transaction::signed(&alice_key, bob.as_str(), Coins::new(5), 0, Coins::new(2)))
+            .submit(Transaction::signed(&alice_key, &bob, Coins::new(5), 0, Coins::new(2)))
             .unwrap();
 
         let before = chain.blocks().len();
@@ -1362,13 +1368,7 @@ mod tests {
                 // Small enough for either validator: each holds at least 20 unstaked.
                 let to = Address::of(&carol_key);
                 attempt
-                    .submit(Transaction::signed(
-                        &forger,
-                        to.as_str(),
-                        Coins::new(1),
-                        1,
-                        Coins::new(i / 2),
-                    ))
+                    .submit(Transaction::signed(&forger, &to, Coins::new(1), 1, Coins::new(i / 2)))
                     .unwrap();
             }
             attempt.forge(&forger).unwrap();
@@ -1446,7 +1446,13 @@ mod tests {
 
         // Unstaking everything ends the chain; staking again needs commitment number 1.
         chain
-            .submit(Transaction::signed(&alice_key, UNSTAKE, Coins::new(15), 2, Coins::new(0)))
+            .submit(Transaction::signed(
+                &alice_key,
+                Destination::Unstake,
+                Coins::new(15),
+                2,
+                Coins::new(0),
+            ))
             .unwrap();
         chain.forge(&alice_key).unwrap();
         assert_eq!(chain.validator_state(&alice).reveals_left, None);
@@ -1487,7 +1493,7 @@ mod tests {
         let (carol, _) = wallet();
         chain.mine(&alice).unwrap();
         chain
-            .submit(Transaction::signed(&alice_key, bob.as_str(), Coins::new(20), 0, Coins::new(3)))
+            .submit(Transaction::signed(&alice_key, &bob, Coins::new(20), 0, Coins::new(3)))
             .unwrap();
 
         let block = chain.mine(&carol).unwrap();
@@ -1505,13 +1511,7 @@ mod tests {
         let (bob, _) = wallet();
         chain.mine(&alice).unwrap();
         assert_eq!(
-            chain.submit(Transaction::signed(
-                &alice_key,
-                bob.as_str(),
-                Coins::new(50),
-                0,
-                Coins::new(1)
-            )),
+            chain.submit(Transaction::signed(&alice_key, &bob, Coins::new(50), 0, Coins::new(1))),
             Err(ChainError::InsufficientFunds { balance: Coins::new(50), amount: Coins::new(51) })
         );
     }
@@ -1523,7 +1523,7 @@ mod tests {
         let (bob, _) = wallet();
         chain.mine(&alice).unwrap();
         chain
-            .submit(Transaction::signed(&alice_key, bob.as_str(), Coins::new(5), 0, Coins::new(2)))
+            .submit(Transaction::signed(&alice_key, &bob, Coins::new(5), 0, Coins::new(2)))
             .unwrap();
         chain.mine(&alice).unwrap();
 
