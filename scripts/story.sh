@@ -74,7 +74,7 @@ open_wallet() {  # name home-node
   KEY+=("$(jq -r .secret_key <<< "$BODY")")
   NONCE+=(0)
   HOME_NODE+=("$node")
-  printf '  👛 %-6s opens a wallet on %s → %s%s%s\n' "$1" "$(node_label "$node")" "$YEL" "$(short "${ADDR[${#ADDR[@]}-1]}")" "$R"
+  printf '  👛 %-6s opens a wallet on %s → %s%s%s\n' "$1" "$(node_label "$node")" "$YEL" "${ADDR[${#ADDR[@]}-1]}" "$R"
 }
 
 balance() { curl -s -m 5 "${NODES[0]}/balances/${ADDR[$1]}" | jq -r .balance; }
@@ -378,12 +378,17 @@ else
   else
     echo "  ${RED}✗ the proof does not check out${R}"
   fi
+  printf '  🔎 the same check in the explorer: %s/explorer.html#/tx/%s\n' "${NODES[1]}" "$sig"
 fi
 
-act "Epilogue" "Where everyone stands, according to every node."
+act "Epilogue" "Where everyone stands, according to every node. Paste an address into the explorer's search, or open its link."
+explorer="${NODES[0]}/explorer.html"
 for i in "${!NAMES[@]}"; do
-  printf '  %-6s %s%5s coins%s  %s\n' "${NAMES[$i]}" "$B" "$(balance "$i")" "$R" "${D}$(short "${ADDR[$i]}") sent ${NONCE[$i]} transfer(s)${R}"
+  printf '  %-6s %s%5s coins%s  %s\n' "${NAMES[$i]}" "$B" "$(balance "$i")" "$R" "${D}sent ${NONCE[$i]} transfer(s)${R}"
+  printf '         %s%s%s\n         %s#/address/%s\n' "$YEL" "${ADDR[$i]}" "$R" "$explorer" "${ADDR[$i]}"
 done
+echo
+printf '  🔎 explorer: %s   latest block: %s#/block/%s\n' "$explorer" "$explorer" "$(status 0 | jq -r .height)"
 echo
 network
 valid=$(curl -s -m 30 "${NODES[0]}/chain/valid" | jq -r .valid)
