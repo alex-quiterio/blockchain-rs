@@ -8,7 +8,7 @@ use super::crypto;
 use super::difficulty::meets_work;
 use super::merkle;
 use super::rules::{ChainRules, Consensus};
-use super::values::{BlockHash, MerkleRoot};
+use super::values::{BlockHash, Coins, MerkleRoot};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
@@ -37,36 +37,32 @@ pub enum TxKind {
 pub struct Transaction {
     pub from: String,
     pub to: String,
-    pub amount: u64,
+    pub amount: Coins,
     /// How many transactions the sender has made before this one. Stops replays.
     pub nonce: u64,
     /// Hex-encoded ed25519 signature over `signing_payload()`. Empty for coinbase.
     pub signature: String,
     /// Optional tip for whoever adds the block, paid on top of `amount`. Left out when zero, so
     /// transactions without one keep their original JSON and signature.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub fee: u64,
+    #[serde(default, skip_serializing_if = "Coins::is_zero")]
+    pub fee: Coins,
     /// Stakes only: the end of the staker's reveal hash chain, needed the first time they stake
     /// (see `randao`). Left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commitment: Option<String>,
 }
 
-fn is_zero(n: &u64) -> bool {
-    *n == 0
-}
-
 impl Transaction {
     pub fn signing_payload(
         from: &str,
         to: &str,
-        amount: u64,
+        amount: Coins,
         nonce: u64,
-        fee: u64,
+        fee: Coins,
         commitment: Option<&str>,
     ) -> Vec<u8> {
         let mut payload = format!("{from}|{to}|{amount}|{nonce}");
-        if fee > 0 {
+        if !fee.is_zero() {
             payload.push_str(&format!("|fee={fee}"));
         }
         if let Some(commitment) = commitment {
@@ -76,7 +72,7 @@ impl Transaction {
     }
 
     /// A transfer (or unstake, or later stake, by `to`) from `key`'s address, signed with it.
-    pub fn signed(key: &SigningKey, to: &str, amount: u64, nonce: u64, fee: u64) -> Self {
+    pub fn signed(key: &SigningKey, to: &str, amount: Coins, nonce: u64, fee: Coins) -> Self {
         Self::signed_with(key, to, amount, nonce, fee, None)
     }
 
@@ -84,9 +80,9 @@ impl Transaction {
     /// while an earlier one is still in use.
     pub fn stake(
         key: &SigningKey,
-        amount: u64,
+        amount: Coins,
         nonce: u64,
-        fee: u64,
+        fee: Coins,
         commitment: Option<String>,
     ) -> Self {
         Self::signed_with(key, STAKE, amount, nonce, fee, commitment)
@@ -95,9 +91,9 @@ impl Transaction {
     fn signed_with(
         key: &SigningKey,
         to: &str,
-        amount: u64,
+        amount: Coins,
         nonce: u64,
-        fee: u64,
+        fee: Coins,
         commitment: Option<String>,
     ) -> Self {
         let from = Address::of(key).to_string();
@@ -137,14 +133,14 @@ impl Transaction {
 
     /// The payout for adding block `height`: the reward plus the block's fees. Its nonce is the
     /// height, so every one is unique.
-    pub fn coinbase(producer: &Address, amount: u64, height: u64) -> Self {
+    pub fn coinbase(producer: &Address, amount: Coins, height: u64) -> Self {
         Self {
             from: COINBASE.to_string(),
             to: producer.to_string(),
             amount,
             nonce: height,
             signature: String::new(),
-            fee: 0,
+            fee: Coins::ZERO,
             commitment: None,
         }
     }

@@ -2,6 +2,8 @@
 //! the domain never handles a malformed one or mixes one kind up with another.
 
 pub mod address;
+mod coins;
 mod hash;
 
+pub use coins::Coins;
 pub use hash::{BlockHash, MerkleRoot};

@@ -217,7 +217,10 @@ flowchart TB
   - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself
   - `merkle.rs`: Merkle roots and proofs over a block's transactions
   - `mempool.rs`, `ledger.rs`: pending transactions, kept as a running projection, and the balances, stakes and nonces
-  - `address.rs`: a value object that can only hold a valid public key
+  - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
+    - `address.rs`: an `Address` can only hold a valid public key
+    - `hash.rs`: `BlockHash` and `MerkleRoot` can only hold 64 hex characters, and can't be passed for each other
+    - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port
 - **`application/`**
   - `NodeService` runs each use case on a copy of the chain and only swaps it in once it's saved.
@@ -265,7 +268,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 121 tests: unit, HTTP and property-based
+cargo test        # 126 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

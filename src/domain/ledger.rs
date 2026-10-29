@@ -6,12 +6,13 @@ use super::block::{Transaction, TxKind};
 use super::crypto;
 use super::error::ChainError;
 use super::randao;
+use super::values::Coins;
 
 /// Balances, stakes, nonces and validator randomness that result from applying blocks in order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
-    balances: HashMap<String, u64>,
-    stakes: HashMap<String, u64>,
+    balances: HashMap<String, Coins>,
+    stakes: HashMap<String, Coins>,
     nonces: HashMap<String, u64>,
     /// Each validator's reveal chain: the link they showed last and how many are left.
     commitments: HashMap<String, Commitment>,
@@ -47,7 +48,7 @@ impl Ledger {
     }
 
     /// Stakes that can be picked to forge: those whose reveal chain isn't used up, by address.
-    pub fn validator_stakes(&self) -> Vec<(String, u64)> {
+    pub fn validator_stakes(&self) -> Vec<(String, Coins)> {
         self.stakes()
             .into_iter()
             .filter(|(address, _)| self.commitments.get(address).is_some_and(|c| c.remaining > 0))
@@ -80,18 +81,22 @@ impl Ledger {
         true
     }
 
-    pub fn balance(&self, address: &str) -> u64 {
-        self.balances.get(address).copied().unwrap_or(0)
+    pub fn balance(&self, address: &str) -> Coins {
+        self.balances.get(address).copied().unwrap_or_default()
     }
 
-    pub fn staked(&self, address: &str) -> u64 {
-        self.stakes.get(address).copied().unwrap_or(0)
+    pub fn staked(&self, address: &str) -> Coins {
+        self.stakes.get(address).copied().unwrap_or_default()
     }
 
     /// Every non-zero stake, sorted by address so validator selection is the same everywhere.
-    pub fn stakes(&self) -> Vec<(String, u64)> {
-        let mut stakes: Vec<_> =
-            self.stakes.iter().filter(|(_, &n)| n > 0).map(|(a, &n)| (a.clone(), n)).collect();
+    pub fn stakes(&self) -> Vec<(String, Coins)> {
+        let mut stakes: Vec<_> = self
+            .stakes
+            .iter()
+            .filter(|(_, n)| !n.is_zero())
+            .map(|(a, &n)| (a.clone(), n))
+            .collect();
         stakes.sort();
         stakes
     }
@@ -100,8 +105,9 @@ impl Ledger {
         self.nonces.get(address).copied().unwrap_or(0)
     }
 
-    pub(super) fn credit(&mut self, address: &str, amount: u64) {
-        *self.balances.entry(address.to_string()).or_insert(0) += amount;
+    pub(super) fn credit(&mut self, address: &str, amount: Coins) {
+        let balance = self.balances.entry(address.to_string()).or_default();
+        *balance = balance.saturating_add(amount);
     }
 
     /// Checks a signed transfer, stake or unstake against this state and applies it.
@@ -113,7 +119,7 @@ impl Ledger {
         if kind == TxKind::Transfer && !crypto::is_valid_address(&tx.to) {
             return Err(ChainError::InvalidAddress(tx.to.clone()));
         }
-        if tx.amount == 0 {
+        if tx.amount.is_zero() {
             return Err(ChainError::ZeroAmount);
         }
         // The nonce is checked before the signature: stale and replayed transactions, the
@@ -134,17 +140,22 @@ impl Ledger {
             _ => {}
         }
         // The fee always comes out of the balance. So does the amount, unless it is unstaked.
-        let spent = if kind == TxKind::Unstake { tx.fee } else { tx.amount.saturating_add(tx.fee) };
+        let spent = match kind {
+            TxKind::Unstake => Some(tx.fee),
+            _ => tx.amount.checked_add(tx.fee),
+        };
         let balance = self.balance(&tx.from);
-        if balance < spent {
-            return Err(ChainError::InsufficientFunds { balance, amount: spent });
-        }
+        let Some(left) = spent.and_then(|spent| balance.checked_sub(spent)) else {
+            let amount = spent.unwrap_or(Coins::new(u64::MAX));
+            return Err(ChainError::InsufficientFunds { balance, amount });
+        };
         if kind == TxKind::Unstake {
             let staked = self.staked(&tx.from);
             if staked < tx.amount {
                 return Err(ChainError::InsufficientStake { staked, amount: tx.amount });
             }
-            self.stakes.insert(tx.from.clone(), staked - tx.amount);
+            let left = staked.checked_sub(tx.amount).expect("checked just above");
+            self.stakes.insert(tx.from.clone(), left);
             if staked == tx.amount {
                 // Fully unstaked: the reveal chain ends, and staking again needs a new one.
                 self.commitments.remove(&tx.from);
@@ -156,9 +167,12 @@ impl Ledger {
                 .insert(tx.from.clone(), Commitment { head, remaining: randao::LENGTH });
             *self.epochs.entry(tx.from.clone()).or_insert(0) += 1;
         }
-        self.balances.insert(tx.from.clone(), balance - spent);
+        self.balances.insert(tx.from.clone(), left);
         match kind {
-            TxKind::Stake => *self.stakes.entry(tx.from.clone()).or_insert(0) += tx.amount,
+            TxKind::Stake => {
+                let stake = self.stakes.entry(tx.from.clone()).or_default();
+                *stake = stake.saturating_add(tx.amount);
+            }
             TxKind::Unstake => self.credit(&tx.from, tx.amount),
             _ => self.credit(&tx.to, tx.amount),
         }

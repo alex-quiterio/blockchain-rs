@@ -25,6 +25,7 @@ use crate::domain::crypto;
 use crate::domain::error::ChainError;
 use crate::domain::randao;
 use crate::domain::rules::Consensus;
+use crate::domain::values::Coins;
 
 /// Maps domain and application errors onto HTTP status codes and JSON error bodies.
 pub struct ApiError {
@@ -286,7 +287,8 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
         difficulty,
         reward: consensus.rules.reward,
         next_validator: consensus.next_validator.map(|a| a.to_string()),
-        total_stake: consensus.stakes.iter().map(|(_, n)| n).sum(),
+        // Stakes are coins people own, so together they're never more than all there are.
+        total_stake: Coins::total(consensus.stakes.iter().map(|(_, n)| *n)).unwrap_or_default(),
         stakes: consensus
             .stakes
             .into_iter()

@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::crypto;
+use crate::domain::values::Coins;
 
 /// How a chain decides who may add the next block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +32,7 @@ pub struct Retarget {
 pub struct ChainRules {
     pub consensus: Consensus,
     /// Coins paid to whoever adds a block.
-    pub reward: u64,
+    pub reward: Coins,
     /// The most of its own blocks a node will throw away to switch forks. Anything deeper is
     /// treated as an attack rewriting old history, however heavy the other fork is.
     pub max_reorg_depth: u64,
@@ -43,7 +44,7 @@ impl ChainRules {
     pub const fn proof_of_work(difficulty: usize, reward: u64) -> Self {
         Self {
             consensus: Consensus::ProofOfWork { difficulty, retarget: None },
-            reward,
+            reward: Coins::new(reward),
             max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
         }
     }
@@ -51,7 +52,7 @@ impl ChainRules {
     pub const fn proof_of_stake(reward: u64) -> Self {
         Self {
             consensus: Consensus::ProofOfStake,
-            reward,
+            reward: Coins::new(reward),
             max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
         }
     }
@@ -121,8 +122,8 @@ impl Default for ChainRules {
 /// Picks who forges the block after `prev_hash`: a stake-weighted draw seeded by that hash, so
 /// every node computes the same answer. `stakes` must be sorted by address. `None` while nothing
 /// is staked, when anyone may forge.
-pub fn select_validator(stakes: &[(String, u64)], prev_hash: &str) -> Option<String> {
-    let total: u64 = stakes.iter().map(|(_, amount)| amount).sum();
+pub fn select_validator(stakes: &[(String, Coins)], prev_hash: &str) -> Option<String> {
+    let total = Coins::total(stakes.iter().map(|(_, amount)| *amount))?.value();
     if total == 0 {
         return None;
     }
@@ -130,7 +131,7 @@ pub fn select_validator(stakes: &[(String, u64)], prev_hash: &str) -> Option<Str
     let seed = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) % total;
     let mut cumulative = 0;
     stakes.iter().find_map(|(address, amount)| {
-        cumulative += amount;
+        cumulative += amount.value();
         (seed < cumulative).then(|| address.clone())
     })
 }
@@ -142,12 +143,12 @@ mod tests {
     #[test]
     fn nobody_is_selected_without_stake() {
         assert_eq!(select_validator(&[], "abc"), None);
-        assert_eq!(select_validator(&[("a".into(), 0)], "abc"), None);
+        assert_eq!(select_validator(&[("a".into(), Coins::ZERO)], "abc"), None);
     }
 
     #[test]
     fn selection_is_deterministic_and_weighted_by_stake() {
-        let stakes = [("alice".to_string(), 90), ("bob".to_string(), 10)];
+        let stakes = [("alice".to_string(), Coins::new(90)), ("bob".to_string(), Coins::new(10))];
         assert_eq!(select_validator(&stakes, "seed"), select_validator(&stakes, "seed"));
 
         let alice = (0..1_000)

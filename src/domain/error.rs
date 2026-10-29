@@ -1,3 +1,4 @@
+use super::values::Coins;
 use std::fmt;
 
 /// Why the domain refused something. Every rule that can fail says so here.
@@ -13,12 +14,12 @@ pub enum ChainError {
         got: u64,
     },
     InsufficientFunds {
-        balance: u64,
-        amount: u64,
+        balance: Coins,
+        amount: Coins,
     },
     InsufficientStake {
-        staked: u64,
-        amount: u64,
+        staked: Coins,
+        amount: Coins,
     },
     UnexpectedCoinbase,
     InvalidChain,

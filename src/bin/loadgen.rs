@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 
 use blockchain::domain::address::Address;
 use blockchain::domain::block::{Block, Transaction};
+use blockchain::domain::values::Coins;
 
 struct Config {
     nodes: Vec<String>,
@@ -172,6 +173,7 @@ impl Load {
         };
         let to = wallets[to].address.to_string();
         let wallet = &mut wallets[from];
+        let (amount, fee) = (Coins::new(amount), Coins::new(fee));
         let tx = Transaction::signed(&wallet.key, &to, amount, wallet.nonce, fee);
         wallet.nonce += 1;
         (tx, wallet.home)
@@ -277,7 +279,7 @@ impl Load {
         for block in blocks {
             stats.blocks += 1;
             for tx in block.transactions.iter().skip(1) {
-                stats.fees += tx.fee;
+                stats.fees += tx.fee.value();
                 if let Some(sent) = stats.unconfirmed.remove(&tx.signature) {
                     stats.confirmed += 1;
                     stats.latencies.push(sent.elapsed().as_secs_f64());

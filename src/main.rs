@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let reward = env_or("REWARD", ChainRules::default().reward);
+    let reward = env_or("REWARD", ChainRules::default().reward.value());
     let rules = match std::env::var("CONSENSUS").as_deref() {
         Ok("pos") => ChainRules::proof_of_stake(reward),
         Ok("pow") | Err(_) => ChainRules::proof_of_work(env_or("DIFFICULTY", 4), reward)

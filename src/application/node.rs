@@ -14,7 +14,7 @@ use crate::domain::ledger::ValidatorState;
 use crate::domain::merkle;
 use crate::domain::repository::{ChainChange, ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
-use crate::domain::values::BlockHash;
+use crate::domain::values::{BlockHash, Coins};
 use crate::domain::weight::ChainWeight;
 
 #[derive(Debug)]
@@ -56,8 +56,8 @@ pub struct ChainStatus {
 }
 
 pub struct Account {
-    pub balance: u64,
-    pub staked: u64,
+    pub balance: Coins,
+    pub staked: Coins,
     pub next_nonce: u64,
     pub validator: ValidatorState,
     /// If the next stake must commit, the epoch to commit for.
@@ -97,7 +97,7 @@ pub struct ConsensusState {
     pub rules: ChainRules,
     /// Under proof of stake, who must forge next. `None` means anyone may.
     pub next_validator: Option<Address>,
-    pub stakes: Vec<(String, u64)>,
+    pub stakes: Vec<(String, Coins)>,
     /// The randomness the next validator is drawn from.
     pub beacon: String,
     /// Proof of work: the hashes the next block should take to find, on average.
@@ -486,7 +486,7 @@ mod tests {
 
         let second = node(repo);
         assert_eq!(second.blocks(), first.blocks());
-        assert_eq!(second.account(&miner).balance, 100);
+        assert_eq!(second.account(&miner).balance, Coins::new(100));
     }
 
     #[test]
@@ -505,7 +505,7 @@ mod tests {
         let second = NodeService::open(Box::new(repo.clone()), rules).unwrap();
         assert_eq!(second.restored_from(), Some(6));
         assert_eq!(second.blocks(), first.blocks());
-        assert_eq!(second.account(&miner).balance, 400);
+        assert_eq!(second.account(&miner).balance, Coins::new(400));
 
         let none =
             NodeService::open(Box::new(repo.clone()), rules).unwrap().with_snapshots_every(0);
@@ -520,7 +520,7 @@ mod tests {
         let repo = SharedRepository::default();
         node(repo.clone()).mine(&new_address()).unwrap();
         let mut blocks = repo.load().unwrap().unwrap();
-        blocks[1].transactions[0].amount = 1_000;
+        blocks[1].transactions[0].amount = Coins::new(1_000);
         repo.save(&blocks, ChainChange::Whole).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
@@ -534,7 +534,7 @@ mod tests {
 
         assert!(matches!(node.mine(&miner), Err(NodeError::Storage(_))));
         assert_eq!(node.blocks().len(), 1);
-        assert_eq!(node.account(&miner).balance, 0);
+        assert_eq!(node.account(&miner).balance, Coins::new(0));
     }
 
     #[test]
@@ -557,7 +557,7 @@ mod tests {
         match mining.join().unwrap() {
             Err(NodeError::Chain(ChainError::StaleBlock)) => {
                 assert_eq!(ours.blocks()[1], theirs_block);
-                assert_eq!(ours.account(&miner).balance, 0);
+                assert_eq!(ours.account(&miner).balance, Coins::new(0));
             }
             // Ours happened to finish first; their block then lost or won the tie.
             Ok(block) => assert_eq!(block.index, 1),
@@ -584,7 +584,13 @@ mod tests {
         node.mine(&alice).unwrap();
         let mut payments = Vec::new();
         for nonce in 0..5 {
-            let tx = Transaction::signed(&key, new_address().as_str(), 1, nonce, 0);
+            let tx = Transaction::signed(
+                &key,
+                new_address().as_str(),
+                Coins::new(1),
+                nonce,
+                Coins::new(0),
+            );
             node.submit(tx.clone()).unwrap();
             payments.push(tx);
         }
@@ -608,7 +614,7 @@ mod tests {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
         let (alice, bob) = (Address::of(&key), new_address());
         node.mine(&alice).unwrap();
-        let payment = Transaction::signed(&key, bob.as_str(), 7, 0, 1);
+        let payment = Transaction::signed(&key, bob.as_str(), Coins::new(7), 0, Coins::new(1));
         node.submit(payment.clone()).unwrap();
 
         let pending = node.locate(&payment.signature).unwrap();

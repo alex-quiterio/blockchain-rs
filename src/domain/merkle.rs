@@ -96,10 +96,11 @@ fn node(left: &str, right: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::address::Address;
+    use crate::domain::values::Coins;
 
     fn txs(n: u64) -> Vec<Transaction> {
         let to = Address::parse(&crypto::generate_keypair().0).unwrap();
-        (0..n).map(|i| Transaction::coinbase(&to, 50 + i, i)).collect()
+        (0..n).map(|i| Transaction::coinbase(&to, Coins::new(50 + i), i)).collect()
     }
 
     #[test]
@@ -132,7 +133,7 @@ mod tests {
         let txs = txs(3);
         let original = root(&txs);
         let mut changed = txs.clone();
-        changed[1].amount += 1;
+        changed[1].amount = changed[1].amount.checked_add(Coins::new(1)).unwrap();
         assert_ne!(root(&changed), original);
         assert_ne!(root(&[txs[1].clone(), txs[0].clone(), txs[2].clone()]), original);
         let mut padded = txs.clone();

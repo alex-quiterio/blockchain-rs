@@ -250,6 +250,7 @@ fn normalize(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::values::Coins;
     use std::collections::{HashMap, HashSet};
     use std::time::Duration;
 
@@ -395,7 +396,9 @@ mod tests {
         let rich = Address::of(&key);
         b.node().mine(&rich).unwrap();
         b.node().mine(&miner()).unwrap();
-        b.node().submit(Transaction::signed(&key, miner().as_str(), 5, 0, 1)).unwrap();
+        b.node()
+            .submit(Transaction::signed(&key, miner().as_str(), Coins::new(5), 0, Coins::new(1)))
+            .unwrap();
 
         let report = a.sync().await;
         assert_eq!(report.adopted_from.as_deref(), Some("http://b"));
@@ -421,7 +424,7 @@ mod tests {
         assert_eq!(b.node().blocks(), a.node().blocks());
         assert_eq!(c.node().blocks(), a.node().blocks());
 
-        let tx = Transaction::signed(&key, miner().as_str(), 5, 0, 0);
+        let tx = Transaction::signed(&key, miner().as_str(), Coins::new(5), 0, Coins::new(0));
         a.node().submit(tx.clone()).unwrap();
         a.broadcast_transaction(&tx, None).await;
         assert_eq!(c.node().pending(), [tx]);
@@ -533,9 +536,9 @@ mod tests {
         let tx = Transaction::signed(
             &crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap(),
             miner().as_str(),
-            1,
+            Coins::new(1),
             0,
-            0,
+            Coins::ZERO,
         );
         let started = tokio::time::Instant::now();
         a.broadcast_transaction(&tx, None).await;

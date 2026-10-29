@@ -13,7 +13,7 @@ use blockchain::domain::chain::{validate_blocks, Blockchain};
 use blockchain::domain::error::ChainError;
 use blockchain::domain::randao;
 use blockchain::domain::rules::ChainRules;
-use blockchain::domain::values::BlockHash;
+use blockchain::domain::values::{BlockHash, Coins};
 
 const WALLETS: usize = 4;
 const REWARD: u64 = 50;
@@ -31,8 +31,9 @@ fn address(i: usize) -> Address {
 
 /// Coins only enter the chain as block rewards, and fees only move them around.
 fn assert_supply_conserved(chain: &Blockchain) {
-    let held: u64 =
-        (0..WALLETS).map(|i| chain.balance(&address(i)) + chain.staked(&address(i))).sum();
+    let held: u64 = (0..WALLETS)
+        .map(|i| chain.balance(&address(i)).value() + chain.staked(&address(i)).value())
+        .sum();
     assert_eq!(held, REWARD * (chain.blocks().len() as u64 - 1), "coins appeared or vanished");
 }
 
@@ -89,17 +90,35 @@ fn run(rules: ChainRules, ops: &[Op]) -> Blockchain {
         let tx = match *op {
             Op::Pay { from, to, amount, fee, skew } => {
                 let nonce = (chain.next_nonce(&address(from)) as i64 + skew).max(0) as u64;
-                Some(Transaction::signed(&key(from), address(to).as_str(), amount, nonce, fee))
+                Some(Transaction::signed(
+                    &key(from),
+                    address(to).as_str(),
+                    Coins::new(amount),
+                    nonce,
+                    Coins::new(fee),
+                ))
             }
             Op::Stake { from, amount, fee } => {
                 let nonce = chain.next_nonce(&address(from));
                 let commitment =
                     chain.commitment_due(&address(from)).map(|e| randao::commitment(&key(from), e));
-                Some(Transaction::stake(&key(from), amount, nonce, fee, commitment))
+                Some(Transaction::stake(
+                    &key(from),
+                    Coins::new(amount),
+                    nonce,
+                    Coins::new(fee),
+                    commitment,
+                ))
             }
             Op::Unstake { from, amount } => {
                 let nonce = chain.next_nonce(&address(from));
-                Some(Transaction::signed(&key(from), UNSTAKE, amount, nonce, 0))
+                Some(Transaction::signed(
+                    &key(from),
+                    UNSTAKE,
+                    Coins::new(amount),
+                    nonce,
+                    Coins::new(0),
+                ))
             }
             Op::Block { by } => {
                 add_block(&mut chain, by);
@@ -181,7 +200,7 @@ proptest! {
             .iter()
             .map(|&(from, to, amount, fee)| {
                 nonces[from] += 1;
-                Transaction::signed(&key(from), address(to).as_str(), amount, nonces[from] - 1, fee)
+                Transaction::signed(&key(from), address(to).as_str(), Coins::new(amount), nonces[from] - 1, Coins::new(fee))
             })
             .collect();
         let mut shuffled = batch.clone();
@@ -252,7 +271,7 @@ proptest! {
         }
         for (i, &amount) in stakes.iter().enumerate() {
             let commitment = chain.commitment_due(&address(i)).map(|e| randao::commitment(&key(i), e));
-            chain.submit(Transaction::stake(&key(i), amount, 0, 0, commitment)).unwrap();
+            chain.submit(Transaction::stake(&key(i), Coins::new(amount), 0, Coins::new(0), commitment)).unwrap();
         }
         add_block(&mut chain, 0);
         let selected = chain.next_validator().expect("validators are being drawn");
@@ -264,7 +283,7 @@ proptest! {
             let mut attempt = chain.clone();
             if amount > 0 {
                 let nonce = attempt.next_nonce(&selected);
-                let tx = Transaction::signed(&key(forger), address(to).as_str(), amount, nonce, fee);
+                let tx = Transaction::signed(&key(forger), address(to).as_str(), Coins::new(amount), nonce, Coins::new(fee));
                 let _ = attempt.submit(tx);
             }
             attempt.forge(&key(forger)).unwrap();
@@ -284,7 +303,7 @@ proptest! {
             at += chrono::TimeDelta::seconds(*gap) + chrono::TimeDelta::milliseconds(1);
             let work = chain.next_work();
             let (index, prev) = (chain.blocks().len() as u64, chain.tip().hash.clone());
-            let payout = vec![Transaction::coinbase(&address(i % WALLETS), REWARD, index)];
+            let payout = vec![Transaction::coinbase(&address(i % WALLETS), Coins::new(REWARD), index)];
             let mut blocks = chain.blocks().to_vec();
             blocks.push(Block::mine(index, at, prev, payout, work));
             chain = Blockchain::restore(blocks, rules).expect("every honestly mined block is valid");
@@ -312,7 +331,7 @@ proptest! {
         let mut forged = theirs.blocks().to_vec();
         let target = &mut forged[block];
         match field {
-            0 => target.transactions[0].amount += 1,
+            0 => target.transactions[0].amount = Coins::new(target.transactions[0].amount.value() + 1),
             1 => target.transactions[0].to = address(WALLETS + 1).to_string(), // never mines
             2 => target.timestamp += chrono::TimeDelta::seconds(1),
             3 => target.nonce += 1,

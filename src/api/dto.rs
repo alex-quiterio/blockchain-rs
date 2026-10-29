@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::block::{BlockHeader, Transaction};
 use crate::domain::merkle::Step;
-use crate::domain::values::BlockHash;
+use crate::domain::values::{BlockHash, Coins};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
@@ -18,12 +18,12 @@ pub struct WalletResponse {
 pub struct SignRequest {
     pub secret_key: String,
     pub to: String,
-    pub amount: u64,
+    pub amount: Coins,
     /// Defaults to the sender's next nonce.
     pub nonce: Option<u64>,
     /// Optional tip for whoever adds the block.
     #[serde(default)]
-    pub fee: u64,
+    pub fee: Coins,
     /// For a first stake. Worked out from `secret_key` when left out.
     pub commitment: Option<String>,
 }
@@ -45,7 +45,7 @@ pub struct ProposalRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StakeEntry {
     pub address: String,
-    pub amount: u64,
+    pub amount: Coins,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,11 +54,11 @@ pub struct ConsensusResponse {
     pub kind: String,
     /// Proof of work only.
     pub difficulty: Option<usize>,
-    pub reward: u64,
+    pub reward: Coins,
     /// Proof of stake only: who must forge the next block. `null` means anyone may.
     pub next_validator: Option<String>,
     pub stakes: Vec<StakeEntry>,
-    pub total_stake: u64,
+    pub total_stake: Coins,
     /// Proof of stake only: the randomness the next validator is drawn from.
     pub beacon: Option<String>,
     /// Proof of work only: the hashes the next block should take to find, on average. A string,
@@ -80,8 +80,8 @@ pub struct MineRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BalanceResponse {
     pub address: String,
-    pub balance: u64,
-    pub staked: u64,
+    pub balance: Coins,
+    pub staked: Coins,
     pub next_nonce: u64,
     /// The epoch this address's next commitment would be, and so the one after its active one.
     pub next_epoch: u64,

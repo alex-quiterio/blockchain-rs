@@ -6,12 +6,12 @@ use std::collections::VecDeque;
 use chrono::Utc;
 
 use super::tally::Tally;
-use crate::domain::block::Block;
+use crate::domain::block::{Block, Transaction};
 use crate::domain::crypto;
 use crate::domain::difficulty::{self, meets_work};
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::{select_validator, ChainRules, Consensus};
-use crate::domain::values::BlockHash;
+use crate::domain::values::{BlockHash, Coins};
 
 pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
     replay(blocks, rules).is_some()
@@ -59,6 +59,12 @@ pub(super) fn replay_from(
 }
 
 /// How many blocks' tallies to keep: enough to check any fork we may adopt from its split.
+/// The reward plus every fee in `transfers`, or `None` if that's too large to hold, which no
+/// valid block can be.
+pub(super) fn payout(reward: Coins, transfers: &[Transaction]) -> Option<Coins> {
+    Coins::total(transfers.iter().map(|tx| tx.fee))?.checked_add(reward)
+}
+
 pub(super) fn keep(rules: &ChainRules) -> usize {
     rules.max_reorg_depth as usize + 1
 }
@@ -111,8 +117,8 @@ pub(super) fn apply_block(
         return false;
     };
     if !coinbase.is_coinbase()
-        || coinbase.amount != rules.reward + transfers.iter().map(|tx| tx.fee).sum::<u64>()
-        || coinbase.fee != 0
+        || Some(coinbase.amount) != payout(rules.reward, transfers)
+        || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index
         || !crypto::is_valid_address(&coinbase.to)
         || block.validator.as_ref().is_some_and(|v| *v != coinbase.to)
@@ -171,5 +177,23 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
                 && select_validator(&ledger.validator_stakes(), ledger.beacon())
                     .is_none_or(|expected| block.validator.as_deref() == Some(&expected))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::address::Address;
+
+    #[test]
+    fn fees_too_large_to_add_up_make_no_valid_payout() {
+        let to = Address::parse(&crypto::generate_keypair().0).unwrap();
+        let fee =
+            |n| Transaction { fee: Coins::new(n), ..Transaction::coinbase(&to, Coins::ZERO, 1) };
+        let reward = Coins::new(50);
+        assert_eq!(payout(reward, &[fee(2), fee(3)]), Some(Coins::new(55)));
+        // In plain u64 this wrapped to 48 in a release build, a payout a block could claim.
+        assert_eq!(payout(reward, &[fee(u64::MAX), fee(u64::MAX)]), None);
+        assert_eq!(payout(Coins::new(u64::MAX), &[fee(1)]), None);
     }
 }

@@ -61,17 +61,18 @@ mod tests {
     use super::*;
     use crate::domain::address::Address;
     use crate::domain::crypto;
+    use crate::domain::values::Coins;
 
     fn funded() -> (Ledger, ed25519_dalek::SigningKey, Address) {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
         let mut ledger = Ledger::default();
-        ledger.credit(Address::of(&key).as_str(), 50);
+        ledger.credit(Address::of(&key).as_str(), Coins::new(50));
         let to = Address::parse(&crypto::generate_keypair().0).unwrap();
         (ledger, key, to)
     }
 
     fn pay(key: &ed25519_dalek::SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-        Transaction::signed(key, to.as_str(), amount, nonce, 0)
+        Transaction::signed(key, to.as_str(), Coins::new(amount), nonce, Coins::new(0))
     }
 
     #[test]
@@ -82,7 +83,7 @@ mod tests {
         pool.admit(pay(&key, &to, 20, 1)).unwrap();
         assert_eq!(
             pool.admit(pay(&key, &to, 1, 2)),
-            Err(ChainError::InsufficientFunds { balance: 0, amount: 1 })
+            Err(ChainError::InsufficientFunds { balance: Coins::new(0), amount: Coins::new(1) })
         );
         assert_eq!(pool.projected().next_nonce(Address::of(&key).as_str()), 2);
         assert_eq!(
@@ -107,10 +108,10 @@ mod tests {
         let (ledger, key, to) = funded();
         let mut pool = Mempool::on(&ledger);
         let mut forged = pay(&key, &to, 5, 0);
-        forged.amount = 50;
+        forged.amount = Coins::new(50);
         assert_eq!(pool.admit(forged), Err(ChainError::BadSignature));
         pool.admit(pay(&key, &to, 50, 0)).unwrap();
-        assert_eq!(pool.projected().balance(Address::of(&key).as_str()), 0);
+        assert_eq!(pool.projected().balance(Address::of(&key).as_str()), Coins::new(0));
     }
 
     #[test]

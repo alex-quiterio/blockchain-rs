@@ -15,14 +15,14 @@ use crate::domain::ledger::ValidatorState;
 use crate::domain::mempool::Mempool;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
-use crate::domain::values::BlockHash;
+use crate::domain::values::{BlockHash, Coins};
 use crate::domain::weight::ChainWeight;
 
 mod tally;
 mod validation;
 
 use tally::{Tally, TallyLog};
-use validation::{apply_block, keep, links_up, replay_from, replay_kept};
+use validation::{apply_block, keep, links_up, payout, replay_from, replay_kept};
 
 pub use tally::Snapshot;
 pub use validation::validate_blocks;
@@ -172,16 +172,16 @@ impl Blockchain {
         self.mempool.transactions()
     }
 
-    pub fn balance(&self, address: &Address) -> u64 {
+    pub fn balance(&self, address: &Address) -> Coins {
         self.tally().ledger.balance(address.as_str())
     }
 
-    pub fn staked(&self, address: &Address) -> u64 {
+    pub fn staked(&self, address: &Address) -> Coins {
         self.tally().ledger.staked(address.as_str())
     }
 
     /// Every confirmed stake, sorted by address.
-    pub fn stakes(&self) -> Vec<(String, u64)> {
+    pub fn stakes(&self) -> Vec<(String, Coins)> {
         self.tally().ledger.stakes()
     }
 
@@ -354,7 +354,8 @@ impl Blockchain {
     fn next_contents(&self, producer: &Address) -> (u64, Vec<Transaction>) {
         let index = self.blocks.len() as u64;
         let pending = self.mempool.transactions();
-        let payout = self.rules.reward + pending.iter().map(|tx| tx.fee).sum::<u64>();
+        // The mempool only takes fees their senders can afford, so they always add up.
+        let payout = payout(self.rules.reward, pending).expect("affordable fees add up");
         let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
         transactions.extend(pending.iter().cloned());
         (index, transactions)
@@ -543,7 +544,7 @@ mod tests {
     }
 
     fn transfer(key: &SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-        Transaction::signed(key, to.as_str(), amount, nonce, 0)
+        Transaction::signed(key, to.as_str(), Coins::new(amount), nonce, Coins::new(0))
     }
 
     fn chain() -> Blockchain {
@@ -556,7 +557,7 @@ mod tests {
         let (miner, _) = wallet();
         let block = chain.mine(&miner).unwrap();
         assert!(block.hash.as_str().starts_with("00"));
-        assert_eq!(chain.balance(&miner), 50);
+        assert_eq!(chain.balance(&miner), Coins::new(50));
         assert!(chain.is_valid());
     }
 
@@ -568,12 +569,12 @@ mod tests {
         chain.mine(&alice).unwrap();
 
         chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
-        assert_eq!(chain.balance(&bob), 0);
+        assert_eq!(chain.balance(&bob), Coins::new(0));
         assert_eq!(chain.next_nonce(&alice), 1);
 
         chain.mine(&bob).unwrap();
-        assert_eq!(chain.balance(&alice), 30);
-        assert_eq!(chain.balance(&bob), 70);
+        assert_eq!(chain.balance(&alice), Coins::new(30));
+        assert_eq!(chain.balance(&bob), Coins::new(70));
         assert!(chain.pending().is_empty());
         assert!(chain.is_valid());
     }
@@ -600,7 +601,7 @@ mod tests {
         chain.submit(transfer(&alice_key, &bob, 40, 0)).unwrap();
         assert_eq!(
             chain.submit(transfer(&alice_key, &bob, 20, 1)),
-            Err(ChainError::InsufficientFunds { balance: 10, amount: 20 })
+            Err(ChainError::InsufficientFunds { balance: Coins::new(10), amount: Coins::new(20) })
         );
     }
 
@@ -627,11 +628,11 @@ mod tests {
         chain.mine(&alice).unwrap();
 
         let mut blocks = chain.blocks().to_vec();
-        blocks[2].transactions[1].amount = 50;
+        blocks[2].transactions[1].amount = Coins::new(50);
         assert!(!validate_blocks(&blocks, &RULES));
 
         let mut blocks = chain.blocks().to_vec();
-        blocks[1].transactions[0].amount = 1_000;
+        blocks[1].transactions[0].amount = Coins::new(1_000);
         blocks[1].hash = blocks[1].computed_hash();
         assert!(!validate_blocks(&blocks, &RULES));
     }
@@ -648,7 +649,7 @@ mod tests {
         // The header, and so the hash and its proof of work, stays valid; the contents don't.
         let mut blocks = chain.blocks().to_vec();
         blocks[2].transactions.pop();
-        blocks[2].transactions[0].amount = 50;
+        blocks[2].transactions[0].amount = Coins::new(50);
         assert_eq!(blocks[2].hash, blocks[2].computed_hash());
         assert!(!validate_blocks(&blocks, &RULES));
 
@@ -666,8 +667,8 @@ mod tests {
         chain.mine(&alice).unwrap();
 
         let restored = Blockchain::restore(chain.blocks().to_vec(), RULES).unwrap();
-        assert_eq!(restored.balance(&alice), 80);
-        assert_eq!(restored.balance(&bob), 20);
+        assert_eq!(restored.balance(&alice), Coins::new(80));
+        assert_eq!(restored.balance(&bob), Coins::new(20));
         assert_eq!(restored.next_nonce(&alice), 1);
     }
 
@@ -676,7 +677,7 @@ mod tests {
         let mut chain = chain();
         chain.mine(&wallet().0).unwrap();
         let mut blocks = chain.blocks().to_vec();
-        blocks[1].transactions[0].amount = 1_000;
+        blocks[1].transactions[0].amount = Coins::new(1_000);
         assert_eq!(Blockchain::restore(blocks, RULES).err(), Some(ChainError::InvalidChain));
         assert_eq!(Blockchain::restore(Vec::new(), RULES).err(), Some(ChainError::InvalidChain));
     }
@@ -705,8 +706,8 @@ mod tests {
 
         assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.blocks(), theirs.blocks());
-        assert_eq!(ours.balance(&alice), 0);
-        assert_eq!(ours.balance(&bob), 100);
+        assert_eq!(ours.balance(&alice), Coins::new(0));
+        assert_eq!(ours.balance(&bob), Coins::new(100));
         assert!(ours.is_valid());
     }
 
@@ -732,7 +733,7 @@ mod tests {
         let block = stale.mine_while(|| true).unwrap();
         assert_eq!(chain.append_mined(block), Err(ChainError::StaleBlock));
         assert_eq!(chain.blocks().len(), 2);
-        assert_eq!(chain.balance(&miner), 0);
+        assert_eq!(chain.balance(&miner), Coins::new(0));
     }
 
     #[test]
@@ -781,7 +782,7 @@ mod tests {
         // Overlapping blocks we already have are skipped.
         assert_eq!(ours.extend(theirs.blocks()[1..].to_vec()), Ok(Extension::Adopted));
         assert_eq!(ours.blocks(), theirs.blocks());
-        assert_eq!(ours.balance(&bob), 120);
+        assert_eq!(ours.balance(&bob), Coins::new(120));
         assert!(ours.pending().is_empty(), "the confirmed payment left the mempool");
         assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::Ignored));
         assert!(ours.is_valid());
@@ -812,7 +813,7 @@ mod tests {
 
         assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::Adopted));
         assert_eq!(ours.blocks(), theirs.blocks());
-        assert_eq!(ours.balance(&alice), 50);
+        assert_eq!(ours.balance(&alice), Coins::new(50));
     }
 
     #[test]
@@ -821,7 +822,7 @@ mod tests {
         let mut theirs = chain();
         theirs.mine(&wallet().0).unwrap();
         let mut block = theirs.blocks()[1].clone();
-        block.transactions[0].amount = 1_000;
+        block.transactions[0].amount = Coins::new(1_000);
         block.hash = block.computed_hash();
 
         assert_eq!(ours.extend(vec![block]), Err(ChainError::InvalidBlock));
@@ -865,7 +866,7 @@ mod tests {
         }
         assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.blocks(), theirs.blocks());
-        assert_eq!((ours.balance(&alice), ours.balance(&bob)), (170, 180));
+        assert_eq!((ours.balance(&alice), ours.balance(&bob)), (Coins::new(170), Coins::new(180)));
         assert_remembers_correctly(&ours, &[alice.clone(), bob.clone()]);
 
         // Blocks that arrive one by one after the fork are remembered too.
@@ -894,20 +895,23 @@ mod tests {
             Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(snapshot.clone()))
                 .unwrap();
         assert_eq!(from, Some(snapshot.height));
-        assert_eq!((restored.balance(&alice), restored.balance(&bob)), (230, 20));
+        assert_eq!(
+            (restored.balance(&alice), restored.balance(&bob)),
+            (Coins::new(230), Coins::new(20))
+        );
         assert_eq!((restored.weight(), restored.next_work()), (chain.weight(), chain.next_work()));
         assert_remembers_correctly(&restored, &[alice.clone(), bob.clone()]);
 
         // It's trusted for the blocks it covers: that's what it saves. Hence the checks below.
         let mut generous = snapshot.clone();
-        generous.tally.ledger.credit(bob.as_str(), 1_000);
+        generous.tally.ledger.credit(bob.as_str(), Coins::new(1_000));
         let (trusting, _) =
             Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(generous)).unwrap();
-        assert_eq!(trusting.balance(&bob), 1_020);
+        assert_eq!(trusting.balance(&bob), Coins::new(1_020));
 
         // Blocks it covers that were changed don't lead to its block, so it isn't used.
         let mut tampered = chain.blocks().to_vec();
-        tampered[2].transactions[1].amount = 25;
+        tampered[2].transactions[1].amount = Coins::new(25);
         assert!(Blockchain::restore_from(tampered, rules, Some(snapshot.clone())).is_err());
 
         // Nor under other rules, or for a chain where its block was replaced.
@@ -919,7 +923,7 @@ mod tests {
         let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot };
         let (full, from) =
             Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(replaced)).unwrap();
-        assert_eq!((from, full.balance(&bob)), (None, 20));
+        assert_eq!((from, full.balance(&bob)), (None, Coins::new(20)));
     }
 
     #[test]
@@ -989,10 +993,10 @@ mod tests {
         theirs.mine(&wallet().0).unwrap();
         theirs.mine(&wallet().0).unwrap();
         let mut forged = theirs.blocks().to_vec();
-        forged[2].transactions[0].amount = 1_000;
+        forged[2].transactions[0].amount = Coins::new(1_000);
 
         assert_eq!(ours.adopt_if_heavier(forged), Err(ChainError::InvalidChain));
-        assert_eq!(ours.balance(&alice), 50);
+        assert_eq!(ours.balance(&alice), Coins::new(50));
     }
 
     #[test]
@@ -1012,7 +1016,7 @@ mod tests {
 
         assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert_eq!(ours.pending(), [payment]);
-        assert_eq!(ours.balance(&alice), 50);
+        assert_eq!(ours.balance(&alice), Coins::new(50));
         assert_eq!(ours.next_nonce(&alice), 1);
     }
 
@@ -1032,7 +1036,7 @@ mod tests {
 
         assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
         assert!(ours.pending().is_empty());
-        assert_eq!(ours.balance(&bob), 120);
+        assert_eq!(ours.balance(&bob), Coins::new(120));
     }
 
     // ---- Proof of stake --------------------------------------------------------------------
@@ -1041,7 +1045,13 @@ mod tests {
 
     /// A first stake, committing to the key's reveal chain for epoch 0.
     fn stake(key: &SigningKey, amount: u64, nonce: u64) -> Transaction {
-        Transaction::stake(key, amount, nonce, 0, Some(randao::commitment(key, 0)))
+        Transaction::stake(
+            key,
+            Coins::new(amount),
+            nonce,
+            Coins::new(0),
+            Some(randao::commitment(key, 0)),
+        )
     }
 
     /// The reveal `key`'s next block must carry, as a wallet would work it out.
@@ -1061,7 +1071,7 @@ mod tests {
         assert_eq!(block.nonce, 0);
         assert_eq!(block.validator.as_deref(), Some(alice.as_str()));
         assert!(block.is_signed_by_validator());
-        assert_eq!(chain.balance(&alice), 50);
+        assert_eq!(chain.balance(&alice), Coins::new(50));
         assert!(chain.is_valid());
     }
 
@@ -1074,8 +1084,8 @@ mod tests {
         chain.submit(stake(&alice_key, 30, 0)).unwrap();
         chain.forge(&bob_key).unwrap();
 
-        assert_eq!(chain.balance(&alice), 20);
-        assert_eq!(chain.staked(&alice), 30);
+        assert_eq!(chain.balance(&alice), Coins::new(20));
+        assert_eq!(chain.staked(&alice), Coins::new(30));
         assert_eq!(chain.next_validator(), Some(alice.clone()));
         assert_eq!(
             chain.forge(&bob_key).err(),
@@ -1094,13 +1104,21 @@ mod tests {
         chain.forge(&alice_key).unwrap();
 
         assert_eq!(
-            chain.submit(Transaction::signed(&alice_key, UNSTAKE, 31, 1, 0)),
-            Err(ChainError::InsufficientStake { staked: 30, amount: 31 })
+            chain.submit(Transaction::signed(
+                &alice_key,
+                UNSTAKE,
+                Coins::new(31),
+                1,
+                Coins::new(0)
+            )),
+            Err(ChainError::InsufficientStake { staked: Coins::new(30), amount: Coins::new(31) })
         );
-        chain.submit(Transaction::signed(&alice_key, UNSTAKE, 30, 1, 0)).unwrap();
+        chain
+            .submit(Transaction::signed(&alice_key, UNSTAKE, Coins::new(30), 1, Coins::new(0)))
+            .unwrap();
         chain.forge(&alice_key).unwrap();
-        assert_eq!(chain.staked(&alice), 0);
-        assert_eq!(chain.balance(&alice), 150);
+        assert_eq!(chain.staked(&alice), Coins::new(0));
+        assert_eq!(chain.balance(&alice), Coins::new(150));
     }
 
     #[test]
@@ -1146,7 +1164,7 @@ mod tests {
 
         // Bob forges a block out of turn by going around `forge`.
         let mut blocks = chain.blocks().to_vec();
-        let reward = Transaction::coinbase(&Address::of(&bob_key), 50, 3);
+        let reward = Transaction::coinbase(&Address::of(&bob_key), Coins::new(50), 3);
         let bob_block =
             Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key, None);
         blocks.push(bob_block);
@@ -1183,7 +1201,9 @@ mod tests {
         let (_, alice_key) = wallet();
         let (bob, bob_key) = wallet();
         chain.forge(&alice_key).unwrap();
-        chain.submit(Transaction::signed(&alice_key, bob.as_str(), 5, 0, 2)).unwrap();
+        chain
+            .submit(Transaction::signed(&alice_key, bob.as_str(), Coins::new(5), 0, Coins::new(2)))
+            .unwrap();
 
         let before = chain.blocks().len();
         let mut block = chain.propose(&bob, None).unwrap();
@@ -1193,7 +1213,7 @@ mod tests {
 
         chain.append_forged(block).unwrap();
         assert!(chain.pending().is_empty(), "the confirmed transfer left the mempool");
-        assert_eq!(chain.balance(&bob), 5 + 52);
+        assert_eq!(chain.balance(&bob), Coins::new(5 + 52));
         assert!(chain.is_valid());
     }
 
@@ -1214,7 +1234,8 @@ mod tests {
         assert_eq!(chain.append_forged(unsigned).err(), Some(ChainError::InvalidBlock));
 
         let mut padded = proposal.clone();
-        padded.transactions[0].amount += 1;
+        padded.transactions[0].amount =
+            padded.transactions[0].amount.checked_add(Coins::new(1)).unwrap();
         padded.hash = padded.computed_hash();
         padded.sign(&alice_key);
         assert_eq!(chain.append_forged(padded).err(), Some(ChainError::InvalidBlock));
@@ -1272,7 +1293,15 @@ mod tests {
             if i % 2 == 1 {
                 // Small enough for either validator: each holds at least 20 unstaked.
                 let to = Address::of(&carol_key);
-                attempt.submit(Transaction::signed(&forger, to.as_str(), 1, 1, i / 2)).unwrap();
+                attempt
+                    .submit(Transaction::signed(
+                        &forger,
+                        to.as_str(),
+                        Coins::new(1),
+                        1,
+                        Coins::new(i / 2),
+                    ))
+                    .unwrap();
             }
             attempt.forge(&forger).unwrap();
             tips.insert(attempt.tip().hash.clone());
@@ -1325,7 +1354,7 @@ mod tests {
         chain.forge(&alice_key).unwrap();
 
         assert_eq!(
-            chain.submit(Transaction::stake(&alice_key, 10, 0, 0, None)),
+            chain.submit(Transaction::stake(&alice_key, Coins::new(10), 0, Coins::new(0), None)),
             Err(ChainError::MissingCommitment)
         );
         assert_eq!(chain.commitment_due(&alice), Some(0));
@@ -1334,24 +1363,33 @@ mod tests {
         assert_eq!(
             chain.submit(Transaction::stake(
                 &alice_key,
-                5,
+                Coins::new(5),
                 1,
-                0,
+                Coins::ZERO,
                 Some(randao::commitment(&alice_key, 1))
             )),
             Err(ChainError::UnexpectedCommitment)
         );
-        chain.submit(Transaction::stake(&alice_key, 5, 1, 0, None)).unwrap();
+        chain
+            .submit(Transaction::stake(&alice_key, Coins::new(5), 1, Coins::new(0), None))
+            .unwrap();
         chain.forge(&alice_key).unwrap();
-        assert_eq!(chain.staked(&alice), 15);
+        assert_eq!(chain.staked(&alice), Coins::new(15));
 
         // Unstaking everything ends the chain; staking again needs commitment number 1.
-        chain.submit(Transaction::signed(&alice_key, UNSTAKE, 15, 2, 0)).unwrap();
+        chain
+            .submit(Transaction::signed(&alice_key, UNSTAKE, Coins::new(15), 2, Coins::new(0)))
+            .unwrap();
         chain.forge(&alice_key).unwrap();
         assert_eq!(chain.validator_state(&alice).reveals_left, None);
         assert_eq!(chain.commitment_due(&alice), Some(1));
-        let again =
-            Transaction::stake(&alice_key, 10, 3, 0, Some(randao::commitment(&alice_key, 1)));
+        let again = Transaction::stake(
+            &alice_key,
+            Coins::new(10),
+            3,
+            Coins::new(0),
+            Some(randao::commitment(&alice_key, 1)),
+        );
         chain.submit(again).unwrap();
         chain.forge(&alice_key).unwrap();
         chain.forge(&alice_key).unwrap();
@@ -1380,13 +1418,15 @@ mod tests {
         let (bob, _) = wallet();
         let (carol, _) = wallet();
         chain.mine(&alice).unwrap();
-        chain.submit(Transaction::signed(&alice_key, bob.as_str(), 20, 0, 3)).unwrap();
+        chain
+            .submit(Transaction::signed(&alice_key, bob.as_str(), Coins::new(20), 0, Coins::new(3)))
+            .unwrap();
 
         let block = chain.mine(&carol).unwrap();
-        assert_eq!(block.transactions[0].amount, 53);
-        assert_eq!(chain.balance(&alice), 27);
-        assert_eq!(chain.balance(&bob), 20);
-        assert_eq!(chain.balance(&carol), 53);
+        assert_eq!(block.transactions[0].amount, Coins::new(53));
+        assert_eq!(chain.balance(&alice), Coins::new(27));
+        assert_eq!(chain.balance(&bob), Coins::new(20));
+        assert_eq!(chain.balance(&carol), Coins::new(53));
         assert!(chain.is_valid());
     }
 
@@ -1397,8 +1437,14 @@ mod tests {
         let (bob, _) = wallet();
         chain.mine(&alice).unwrap();
         assert_eq!(
-            chain.submit(Transaction::signed(&alice_key, bob.as_str(), 50, 0, 1)),
-            Err(ChainError::InsufficientFunds { balance: 50, amount: 51 })
+            chain.submit(Transaction::signed(
+                &alice_key,
+                bob.as_str(),
+                Coins::new(50),
+                0,
+                Coins::new(1)
+            )),
+            Err(ChainError::InsufficientFunds { balance: Coins::new(50), amount: Coins::new(51) })
         );
     }
 
@@ -1408,16 +1454,18 @@ mod tests {
         let (alice, alice_key) = wallet();
         let (bob, _) = wallet();
         chain.mine(&alice).unwrap();
-        chain.submit(Transaction::signed(&alice_key, bob.as_str(), 5, 0, 2)).unwrap();
+        chain
+            .submit(Transaction::signed(&alice_key, bob.as_str(), Coins::new(5), 0, Coins::new(2)))
+            .unwrap();
         chain.mine(&alice).unwrap();
 
         let mut blocks = chain.blocks().to_vec();
-        blocks[2].transactions[1].fee = 0;
+        blocks[2].transactions[1].fee = Coins::new(0);
         blocks[2].hash = blocks[2].computed_hash();
         assert!(!validate_blocks(&blocks, &RULES), "the signature covers the fee");
 
         let mut blocks = chain.blocks().to_vec();
-        blocks[2].transactions[0].amount = 60;
+        blocks[2].transactions[0].amount = Coins::new(60);
         assert!(!validate_blocks(&blocks, &RULES), "the payout must be reward plus fees");
     }
 
