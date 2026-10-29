@@ -14,6 +14,7 @@ use crate::domain::ledger::ValidatorState;
 use crate::domain::merkle;
 use crate::domain::repository::{ChainChange, ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
+use crate::domain::values::BlockHash;
 use crate::domain::weight::ChainWeight;
 
 #[derive(Debug)]
@@ -43,7 +44,7 @@ impl From<ChainError> for NodeError {
 
 pub struct TipStatus {
     pub height: u64,
-    pub hash: String,
+    pub hash: BlockHash,
     pub weight: ChainWeight,
     pub pending: usize,
 }
@@ -84,7 +85,7 @@ pub struct Located {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub height: u64,
-    pub hash: String,
+    pub hash: BlockHash,
     pub position: usize,
     pub timestamp: DateTime<Utc>,
     /// Blocks on top of it, counting its own.
@@ -186,7 +187,7 @@ impl NodeService {
         let blocks = chain.blocks();
         match id.parse::<usize>() {
             Ok(height) => blocks.get(height).cloned(),
-            Err(_) => blocks.iter().rev().find(|block| block.hash == id).cloned(),
+            Err(_) => blocks.iter().rev().find(|block| block.hash.as_str() == id).cloned(),
         }
     }
 
@@ -618,7 +619,7 @@ mod tests {
         let placement = node.locate(&payment.signature).unwrap().block.unwrap();
         assert_eq!((placement.height, placement.position, placement.confirmations), (2, 1, 1));
         assert_eq!(node.block("2"), Some(block.clone()));
-        assert_eq!(node.block(&block.hash), Some(block));
+        assert_eq!(node.block(block.hash.as_str()), Some(block));
         assert_eq!(node.block("9"), None);
         assert!(node.locate("nope").is_none());
 

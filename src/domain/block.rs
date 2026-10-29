@@ -8,6 +8,7 @@ use super::crypto;
 use super::difficulty::meets_work;
 use super::merkle;
 use super::rules::{ChainRules, Consensus};
+use super::values::{BlockHash, MerkleRoot};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
@@ -153,14 +154,14 @@ impl Transaction {
 pub struct Block {
     pub index: u64,
     pub timestamp: DateTime<Utc>,
-    pub prev_hash: String,
+    pub prev_hash: BlockHash,
     pub transactions: Vec<Transaction>,
     /// The root of the Merkle tree over `transactions`. The hash covers it instead of the
     /// transactions, so a transaction can be proven to be in the block from its header alone.
-    pub merkle_root: String,
+    pub merkle_root: MerkleRoot,
     /// Proof-of-work counter. Always 0 under proof of stake.
     pub nonce: u64,
-    pub hash: String,
+    pub hash: BlockHash,
     /// Proof of stake only: who forged the block. Left out of proof-of-work blocks entirely, so
     /// their JSON and hashes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,10 +181,10 @@ impl Block {
         let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is a valid time");
         match rules.consensus {
             Consensus::ProofOfWork { .. } => {
-                Self::mine(0, epoch, "0".repeat(64), Vec::new(), rules.initial_work())
+                Self::mine(0, epoch, BlockHash::zero(), Vec::new(), rules.initial_work())
             }
             Consensus::ProofOfStake => {
-                let mut block = Self::unsealed(0, epoch, "0".repeat(64), Vec::new());
+                let mut block = Self::unsealed(0, epoch, BlockHash::zero(), Vec::new());
                 block.hash = block.computed_hash();
                 block
             }
@@ -195,7 +196,7 @@ impl Block {
     pub fn mine(
         index: u64,
         timestamp: DateTime<Utc>,
-        prev_hash: String,
+        prev_hash: BlockHash,
         transactions: Vec<Transaction>,
         work: u128,
     ) -> Self {
@@ -208,7 +209,7 @@ impl Block {
     pub fn mine_while(
         index: u64,
         timestamp: DateTime<Utc>,
-        prev_hash: String,
+        prev_hash: BlockHash,
         transactions: Vec<Transaction>,
         work: u128,
         mut keep_going: impl FnMut() -> bool,
@@ -219,7 +220,7 @@ impl Block {
                 return None;
             }
             block.hash = block.computed_hash();
-            if meets_work(&block.hash, work) {
+            if meets_work(block.hash.as_str(), work) {
                 return Some(block);
             }
             block.nonce += 1;
@@ -230,7 +231,7 @@ impl Block {
     pub fn forge(
         index: u64,
         timestamp: DateTime<Utc>,
-        prev_hash: String,
+        prev_hash: BlockHash,
         transactions: Vec<Transaction>,
         key: &SigningKey,
         reveal: Option<String>,
@@ -247,7 +248,7 @@ impl Block {
     pub fn propose(
         index: u64,
         timestamp: DateTime<Utc>,
-        prev_hash: String,
+        prev_hash: BlockHash,
         transactions: Vec<Transaction>,
         validator: &Address,
         reveal: Option<String>,
@@ -261,13 +262,13 @@ impl Block {
 
     /// Proof of stake, step two: the validator signs the hash.
     pub fn sign(&mut self, key: &SigningKey) {
-        self.signature = Some(crypto::sign(key, self.hash.as_bytes()));
+        self.signature = Some(crypto::sign(key, self.hash.as_str().as_bytes()));
     }
 
     fn unsealed(
         index: u64,
         timestamp: DateTime<Utc>,
-        prev_hash: String,
+        prev_hash: BlockHash,
         transactions: Vec<Transaction>,
     ) -> Self {
         Self {
@@ -277,7 +278,7 @@ impl Block {
             merkle_root: merkle::root(&transactions),
             transactions,
             nonce: 0,
-            hash: String::new(),
+            hash: BlockHash::zero(),
             validator: None,
             reveal: None,
             signature: None,
@@ -286,7 +287,7 @@ impl Block {
 
     /// The hash of the header: every field except `transactions`, which `merkle_root` stands
     /// for, `hash` and `signature`.
-    pub fn computed_hash(&self) -> String {
+    pub fn computed_hash(&self) -> BlockHash {
         header_hash(
             self.index,
             &self.timestamp,
@@ -321,7 +322,7 @@ impl Block {
     pub fn is_signed_by_validator(&self) -> bool {
         match (&self.validator, &self.signature) {
             (Some(validator), Some(signature)) => {
-                crypto::verify(validator, self.hash.as_bytes(), signature)
+                crypto::verify(validator, self.hash.as_str().as_bytes(), signature)
             }
             _ => false,
         }
@@ -334,10 +335,10 @@ impl Block {
 pub struct BlockHeader {
     pub index: u64,
     pub timestamp: DateTime<Utc>,
-    pub prev_hash: String,
-    pub merkle_root: String,
+    pub prev_hash: BlockHash,
+    pub merkle_root: MerkleRoot,
     pub nonce: u64,
-    pub hash: String,
+    pub hash: BlockHash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validator: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -347,7 +348,7 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
-    pub fn computed_hash(&self) -> String {
+    pub fn computed_hash(&self) -> BlockHash {
         header_hash(
             self.index,
             &self.timestamp,
@@ -363,16 +364,16 @@ impl BlockHeader {
 fn header_hash(
     index: u64,
     timestamp: &DateTime<Utc>,
-    prev_hash: &str,
-    merkle_root: &str,
+    prev_hash: &BlockHash,
+    merkle_root: &MerkleRoot,
     nonce: u64,
     extras: [&Option<String>; 2],
-) -> String {
+) -> BlockHash {
     let ts = timestamp.to_rfc3339_opts(SecondsFormat::Nanos, true);
     let mut fields = format!("{index}|{ts}|{prev_hash}|{merkle_root}|{nonce}");
     for extra in extras.into_iter().flatten() {
         fields.push('|');
         fields.push_str(extra);
     }
-    crypto::sha256_hex(fields.as_bytes())
+    BlockHash::of(fields.as_bytes())
 }

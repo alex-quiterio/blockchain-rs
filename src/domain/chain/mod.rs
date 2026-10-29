@@ -15,6 +15,7 @@ use crate::domain::ledger::ValidatorState;
 use crate::domain::mempool::Mempool;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
+use crate::domain::values::BlockHash;
 use crate::domain::weight::ChainWeight;
 
 mod tally;
@@ -42,7 +43,7 @@ pub struct Blockchain {
 pub struct MiningTemplate {
     pub index: u64,
     pub timestamp: DateTime<Utc>,
-    pub prev_hash: String,
+    pub prev_hash: BlockHash,
     pub transactions: Vec<Transaction>,
     pub work: u128,
 }
@@ -364,7 +365,7 @@ impl Blockchain {
     fn append(
         &mut self,
         producer: &Address,
-        seal: impl FnOnce(u64, DateTime<Utc>, String, Vec<Transaction>) -> Block,
+        seal: impl FnOnce(u64, DateTime<Utc>, BlockHash, Vec<Transaction>) -> Block,
     ) -> Result<&Block, ChainError> {
         let (index, transactions) = self.next_contents(producer);
         let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
@@ -554,7 +555,7 @@ mod tests {
         let mut chain = chain();
         let (miner, _) = wallet();
         let block = chain.mine(&miner).unwrap();
-        assert!(block.hash.starts_with("00"));
+        assert!(block.hash.as_str().starts_with("00"));
         assert_eq!(chain.balance(&miner), 50);
         assert!(chain.is_valid());
     }
@@ -915,7 +916,7 @@ mod tests {
             Blockchain::restore_from(chain.blocks().to_vec(), other, Some(snapshot.clone()))
                 .unwrap();
         assert_eq!(from, None);
-        let replaced = Snapshot { hash: "f".repeat(64), ..snapshot };
+        let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot };
         let (full, from) =
             Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(replaced)).unwrap();
         assert_eq!((from, full.balance(&bob)), (None, 20));
@@ -1495,7 +1496,7 @@ mod tests {
                     16,
                 )
             })
-            .find(|b| !meets_work(&b.hash, 64))
+            .find(|b| !meets_work(b.hash.as_str(), 64))
             .unwrap();
         let mut blocks = chain.blocks().to_vec();
         blocks.push(easy);

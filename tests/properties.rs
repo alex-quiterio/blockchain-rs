@@ -13,6 +13,7 @@ use blockchain::domain::chain::{validate_blocks, Blockchain};
 use blockchain::domain::error::ChainError;
 use blockchain::domain::randao;
 use blockchain::domain::rules::ChainRules;
+use blockchain::domain::values::BlockHash;
 
 const WALLETS: usize = 4;
 const REWARD: u64 = 50;
@@ -315,7 +316,7 @@ proptest! {
             1 => target.transactions[0].to = address(WALLETS + 1).to_string(), // never mines
             2 => target.timestamp += chrono::TimeDelta::seconds(1),
             3 => target.nonce += 1,
-            4 => target.prev_hash = "f".repeat(64),
+            4 => target.prev_hash = BlockHash::of(b"a block that isn't there"),
             _ => target.index += 1,
         }
         // Re-hashing the altered block isn't enough either: it breaks the work or the next link.

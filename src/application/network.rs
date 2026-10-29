@@ -10,6 +10,7 @@ use futures_util::future::join_all;
 use super::NodeService;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::Extension;
+use crate::domain::values::BlockHash;
 
 pub type PeerResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
@@ -47,7 +48,7 @@ pub trait PeerClient: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerTip {
     pub height: u64,
-    pub tip: String,
+    pub tip: BlockHash,
     pub weight: u128,
     pub pending: usize,
 }

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::block::Block;
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::ChainRules;
+use crate::domain::values::BlockHash;
 use crate::domain::weight::ChainWeight;
 
 /// What replaying blocks in order adds up to.
@@ -26,7 +27,7 @@ pub(super) struct Tally {
 impl Tally {
     pub(super) fn at_genesis(genesis: &Block, rules: &ChainRules) -> Self {
         Self {
-            ledger: Ledger::starting_at(&genesis.hash),
+            ledger: Ledger::starting_at(genesis.hash.as_str()),
             weight: ChainWeight::ZERO,
             work: rules.initial_work(),
         }
@@ -123,7 +124,7 @@ impl TallyLog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub height: usize,
-    pub hash: String,
+    pub hash: BlockHash,
     /// The rules it was made under; a snapshot is only used under the same ones.
     pub(super) rules: ChainRules,
     pub(super) tally: Tally,

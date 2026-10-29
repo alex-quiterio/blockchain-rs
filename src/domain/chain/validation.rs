@@ -11,6 +11,7 @@ use crate::domain::crypto;
 use crate::domain::difficulty::{self, meets_work};
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::{select_validator, ChainRules, Consensus};
+use crate::domain::values::BlockHash;
 
 pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
     replay(blocks, rules).is_some()
@@ -64,7 +65,7 @@ pub(super) fn keep(rules: &ChainRules) -> usize {
 
 fn is_genesis(genesis: &Block, rules: &ChainRules) -> bool {
     genesis.index == 0
-        && genesis.prev_hash == "0".repeat(64)
+        && genesis.prev_hash == BlockHash::zero()
         && genesis.timestamp.timestamp() == 0
         && genesis.transactions.is_empty()
         && genesis.has_matching_root()
@@ -148,7 +149,7 @@ fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
         genesis.validator.is_none() && genesis.signature.is_none() && genesis.reveal.is_none();
     match rules.consensus {
         Consensus::ProofOfWork { .. } => {
-            unsigned && meets_work(&genesis.hash, rules.initial_work())
+            unsigned && meets_work(genesis.hash.as_str(), rules.initial_work())
         }
         Consensus::ProofOfStake => unsigned && genesis.nonce == 0,
     }
@@ -162,7 +163,7 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
             block.validator.is_none()
                 && block.signature.is_none()
                 && block.reveal.is_none()
-                && meets_work(&block.hash, work)
+                && meets_work(block.hash.as_str(), work)
         }
         Consensus::ProofOfStake => {
             block.nonce == 0

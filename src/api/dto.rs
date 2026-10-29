@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::block::{BlockHeader, Transaction};
 use crate::domain::merkle::Step;
+use crate::domain::values::BlockHash;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
@@ -156,7 +157,7 @@ pub struct ChainQuery {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub height: u64,
-    pub tip: String,
+    pub tip: BlockHash,
     /// A string, since it can outgrow a JSON number.
     pub weight: String,
     /// Transactions waiting in the mempool.
@@ -189,7 +190,7 @@ pub struct TransactionResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlacementResponse {
     pub height: u64,
-    pub hash: String,
+    pub hash: BlockHash,
     /// Its place among the block's transactions. 0 is the block reward.
     pub position: usize,
     pub timestamp: DateTime<Utc>,

@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::block::Transaction;
 use super::crypto;
-
-/// The root of a block with no transactions. Only genesis has none.
-pub const EMPTY_ROOT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+use super::values::MerkleRoot;
 
 /// Which side of the hash so far a proof's sibling sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,15 +37,16 @@ pub fn leaf(tx: &Transaction) -> String {
     crypto::sha256_hex(format!("leaf|{json}").as_bytes())
 }
 
-pub fn root(transactions: &[Transaction]) -> String {
+pub fn root(transactions: &[Transaction]) -> MerkleRoot {
     let mut level: Vec<String> = transactions.iter().map(leaf).collect();
     if level.is_empty() {
-        return EMPTY_ROOT.to_string();
+        // Only genesis has no transactions.
+        return MerkleRoot::zero();
     }
     while level.len() > 1 {
         level = parent_level(&level);
     }
-    level.remove(0)
+    MerkleRoot::parse(&level[0]).expect("SHA-256 is 64 hex characters")
 }
 
 /// The sibling hashes that lead from the transaction at `index` up to the root.
@@ -70,12 +69,12 @@ pub fn proof(transactions: &[Transaction], mut index: usize) -> Option<Vec<Step>
 }
 
 /// Whether `steps` lead from `leaf` to `root`.
-pub fn verify(leaf: &str, steps: &[Step], root: &str) -> bool {
+pub fn verify(leaf: &str, steps: &[Step], root: &MerkleRoot) -> bool {
     let top = steps.iter().fold(leaf.to_string(), |hash, step| match step.side {
         Side::Left => node(&step.hash, &hash),
         Side::Right => node(&hash, &step.hash),
     });
-    top == root
+    top == root.as_str()
 }
 
 fn parent_level(level: &[String]) -> Vec<String> {
@@ -139,13 +138,13 @@ mod tests {
         let mut padded = txs.clone();
         padded.push(txs[2].clone());
         assert_ne!(root(&padded), original, "repeating the odd one out is not free");
-        assert_eq!(root(&[]), EMPTY_ROOT);
+        assert_eq!(root(&[]), MerkleRoot::zero());
     }
 
     #[test]
     fn a_single_transaction_is_its_own_root() {
         let txs = txs(1);
-        assert_eq!(root(&txs), leaf(&txs[0]));
+        assert_eq!(root(&txs).as_str(), leaf(&txs[0]));
         assert_eq!(proof(&txs, 0), Some(vec![]));
     }
 }

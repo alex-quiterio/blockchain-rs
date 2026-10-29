@@ -4,6 +4,8 @@ use std::fmt;
 #[derive(Debug, PartialEq, Eq)]
 pub enum ChainError {
     InvalidAddress(String),
+    /// Not 64 lowercase hex characters.
+    InvalidHash(String),
     ZeroAmount,
     BadSignature,
     BadNonce {
@@ -51,6 +53,7 @@ impl fmt::Display for ChainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidAddress(a) => write!(f, "invalid address: {a}"),
+            Self::InvalidHash(h) => write!(f, "not a hash: {h}"),
             Self::ZeroAmount => write!(f, "amount must be greater than zero"),
             Self::BadSignature => write!(f, "signature does not match sender"),
             Self::BadNonce { expected, got } => write!(f, "nonce must be {expected}, got {got}"),
