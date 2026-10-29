@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use futures_util::future::join_all;
+use tokio::runtime::Handle;
 
-use super::{ChainQueries, NodeService};
+use super::{ChainQueries, NodeEvent, NodeService};
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::Extension;
+use crate::domain::mempool::MempoolEvent;
 use crate::domain::values::BlockHash;
 
 pub type PeerResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
@@ -196,7 +198,7 @@ impl Network {
         }
         if theirs.pending > 0 {
             for tx in self.client.pending(url).await.unwrap_or_default() {
-                let _ = self.node.submit(tx);
+                let _ = self.node.submit_from(tx, Some(url));
             }
         }
         Ok((theirs, adopted))
@@ -220,6 +222,24 @@ impl Network {
             }
         }))
         .await;
+    }
+
+    /// Passes on every transaction the node accepts, to every peer but the one it came from, by
+    /// listening to its mempool. A transaction travels on however it arrived: from a client,
+    /// pushed by a peer, or pulled in a sync. A peer that already has it refuses it at once, so
+    /// gossip never loops.
+    pub fn gossip_accepted(self: &Arc<Self>) {
+        let network = Arc::downgrade(self);
+        self.node.subscribe(move |event| {
+            let NodeEvent::Mempool { event: MempoolEvent::Accepted(tx), from } = event else {
+                return;
+            };
+            let (Some(network), Ok(runtime)) = (network.upgrade(), Handle::try_current()) else {
+                return;
+            };
+            let (tx, from) = (tx.clone(), from.clone());
+            runtime.spawn(async move { network.broadcast_transaction(&tx, from.as_deref()).await });
+        });
     }
 
     /// Passes a transaction this node accepted on to every peer but the one it came from, all
@@ -414,6 +434,36 @@ mod tests {
         assert_eq!(a.queries().blocks(), b.queries().blocks());
         assert_eq!(a.queries().pending(), b.queries().pending());
         assert_eq!(a.peers()[0].1.height, Some(3));
+    }
+
+    #[tokio::test]
+    async fn an_accepted_transaction_travels_on_but_not_back() {
+        let mesh = Mesh::default();
+        let a = mesh.join("http://a");
+        let b = mesh.join("http://b");
+        let c = mesh.join("http://c");
+        a.add_peer("http://b").await.unwrap();
+        a.add_peer("http://c").await.unwrap();
+        a.gossip_accepted();
+        let (_, secret) = crypto::generate_keypair();
+        let key = crypto::parse_secret_key(&secret).unwrap();
+        for network in [&a, &b, &c] {
+            network.node().mine(&Address::of(&key)).unwrap();
+        }
+        mesh.sent();
+
+        // It came from b, so only c hears of it from a.
+        let tx = Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::ZERO);
+        a.node().submit_from(tx.clone(), Some("http://b")).unwrap();
+        for _ in 0..100 {
+            if !c.queries().pending().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(c.queries().pending(), [tx]);
+        assert_eq!(mesh.sent(), ["http://c offered a transaction"]);
+        assert!(b.queries().pending().is_empty());
     }
 
     #[tokio::test]

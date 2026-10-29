@@ -264,9 +264,8 @@ pub async fn submit_transaction(
     headers: HeaderMap,
     Json(tx): Json<Transaction>,
 ) -> Result<(StatusCode, Json<Transaction>), ApiError> {
-    state.node.submit(tx.clone())?;
-    let (network, gossiped, from) = (state.network.clone(), tx.clone(), sender(&state, &headers));
-    tokio::spawn(async move { network.broadcast_transaction(&gossiped, from.as_deref()).await });
+    // Gossip follows from the mempool accepting it; see `Network::gossip_accepted`.
+    state.node.submit_from(tx.clone(), sender(&state, &headers).as_deref())?;
     Ok((StatusCode::ACCEPTED, Json(tx)))
 }
 

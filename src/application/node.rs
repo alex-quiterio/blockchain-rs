@@ -9,7 +9,7 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::{Blockchain, ChainEvent, Extension};
 use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError};
-use crate::domain::mempool::Mempool;
+use crate::domain::mempool::{Mempool, MempoolEvent};
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 
@@ -58,7 +58,18 @@ pub struct NodeService {
     listeners: Mutex<Vec<Listener>>,
 }
 
-type Listener = Box<dyn Fn(&ChainEvent) + Send + Sync>;
+type Listener = Box<dyn Fn(&NodeEvent) + Send + Sync>;
+
+/// What happened in a node, for its listeners: to its chain, or to its mempool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeEvent {
+    Chain(ChainEvent),
+    /// `from` is the peer a transaction arrived from, when one did, so it isn't sent back.
+    Mempool {
+        event: MempoolEvent,
+        from: Option<String>,
+    },
+}
 
 /// Blocks between snapshots, by default.
 pub const SNAPSHOT_BLOCKS: usize = 100;
@@ -100,7 +111,7 @@ impl NodeService {
     }
 
     /// Calls `listener` with everything that happens to the chain from now on, after it's saved.
-    pub fn subscribe(&self, listener: impl Fn(&ChainEvent) + Send + Sync + 'static) {
+    pub fn subscribe(&self, listener: impl Fn(&NodeEvent) + Send + Sync + 'static) {
         self.listeners.lock().unwrap().push(Box::new(listener));
     }
 
@@ -117,7 +128,21 @@ impl NodeService {
     /// Queues a transaction, checked against the confirmed ledger and everything already
     /// waiting. The mempool isn't saved, so nothing is written.
     pub fn submit(&self, tx: Transaction) -> Result<(), TransactionError> {
-        self.mempool.lock().unwrap().admit(tx)
+        self.submit_from(tx, None)
+    }
+
+    /// Like `submit`, for a transaction that arrived from the peer at `from`.
+    pub fn submit_from(&self, tx: Transaction, from: Option<&str>) -> Result<(), TransactionError> {
+        let events = {
+            let mut mempool = self.mempool.lock().unwrap();
+            mempool.admit(tx)?;
+            mempool.take_events()
+        };
+        let from = from.map(str::to_string);
+        self.publish(
+            events.into_iter().map(|event| NodeEvent::Mempool { event, from: from.clone() }),
+        );
+        Ok(())
     }
 
     /// What's waiting, as the candidates for a new block.
@@ -185,19 +210,28 @@ impl NodeService {
         let mut next = chain.clone();
         let result = change(&mut next).map_err(|e| NodeError::Domain(e.into()))?;
         let events = next.take_events();
+        let mut rebased = Vec::new();
         if !events.is_empty() {
             self.repository.save(next.blocks(), &events).map_err(NodeError::Storage)?;
             self.maybe_snapshot(&next);
-            self.mempool.lock().unwrap().rebase(next.ledger(), returned_by(&events));
+            let mut mempool = self.mempool.lock().unwrap();
+            mempool.rebase(next.ledger(), returned_by(&events));
+            rebased = mempool.take_events();
         }
         *chain = next;
         drop(chain);
-        for event in &events {
+        let rebased = rebased.into_iter().map(|event| NodeEvent::Mempool { event, from: None });
+        self.publish(events.into_iter().map(NodeEvent::Chain).chain(rebased));
+        Ok(result)
+    }
+
+    /// Tells every listener, in order. Called with no lock held, so a listener may call back in.
+    fn publish(&self, events: impl IntoIterator<Item = NodeEvent>) {
+        for event in events {
             for listener in self.listeners.lock().unwrap().iter() {
-                listener(event);
+                listener(&event);
             }
         }
-        Ok(result)
     }
 }
 
@@ -519,8 +553,18 @@ mod tests {
                 vec![replaced.clone()],
             ]
         );
-        let told = heard.lock().unwrap().clone();
-        assert_eq!(told, saved[1..].concat(), "listeners hear what happens after they subscribe");
+        // Listeners hear what happens after they subscribe: each change to the chain, then the
+        // mempool following it, with nothing waiting here.
+        let rebased = NodeEvent::Mempool {
+            event: MempoolEvent::Rebased { kept: 0, dropped: 0, returned: 0 },
+            from: None,
+        };
+        let expected: Vec<_> = saved[1..]
+            .concat()
+            .into_iter()
+            .flat_map(|e| [NodeEvent::Chain(e), rebased.clone()])
+            .collect();
+        assert_eq!(*heard.lock().unwrap(), expected);
 
         // Blocks we already have change nothing, so nothing is saved or told.
         assert!(ours.extend(theirs.queries().blocks()[2..].to_vec()).is_ok());

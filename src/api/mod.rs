@@ -33,7 +33,9 @@ impl AppState {
     pub fn new(network: Network) -> Self {
         let node = network.node().clone();
         let queries = node.queries();
-        Self { node, queries, network: Arc::new(network), started_at: Utc::now() }
+        let network = Arc::new(network);
+        network.gossip_accepted();
+        Self { node, queries, network, started_at: Utc::now() }
     }
 }
 

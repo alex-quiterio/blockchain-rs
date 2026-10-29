@@ -24,6 +24,18 @@ pub struct Mempool {
     projected: Ledger,
     /// The signatures of everything waiting, to drop gossiped duplicates at once.
     signatures: HashSet<Signature>,
+    /// What happened since they were last taken.
+    events: Vec<MempoolEvent>,
+}
+
+/// Something that happened to the mempool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MempoolEvent {
+    /// A transfer was submitted and now waits for a block.
+    Accepted(Transaction),
+    /// The chain moved on: `kept` still wait, `dropped` left because a block confirmed them or
+    /// they no longer apply, and `returned` came back from blocks a fork dropped.
+    Rebased { kept: usize, dropped: usize, returned: usize },
 }
 
 impl Mempool {
@@ -36,9 +48,14 @@ impl Mempool {
     pub fn rebuilt(candidates: impl IntoIterator<Item = Transaction>, confirmed: &Ledger) -> Self {
         let mut pool = Self::on(confirmed);
         for tx in candidates {
-            let _ = pool.admit(tx);
+            let _ = pool.take_in(tx);
         }
         pool
+    }
+
+    /// What happened since this was last called, oldest first.
+    pub fn take_events(&mut self) -> Vec<MempoolEvent> {
+        std::mem::take(&mut self.events)
     }
 
     /// The ledger as it will be once everything waiting is confirmed.
@@ -54,8 +71,13 @@ impl Mempool {
     /// with `returned`, the transfers of blocks a fork dropped, ahead of what was waiting. What a
     /// new block confirmed no longer applies, so it leaves.
     pub fn rebase(&mut self, confirmed: &Ledger, returned: Vec<Transaction>) {
-        let waiting = std::mem::take(&mut self.waiting);
+        let (waiting, mut events) = (std::mem::take(&mut self.waiting), self.take_events());
+        let (before, had) = (waiting.len(), std::mem::take(&mut self.signatures));
         *self = Self::rebuilt(returned.into_iter().chain(waiting), confirmed);
+        let kept = self.signatures.intersection(&had).count();
+        let returned = self.waiting.len() - kept;
+        events.push(MempoolEvent::Rebased { kept, dropped: before - kept, returned });
+        self.events = events;
     }
 
     /// The waiting transfer signed `signature`.
@@ -83,6 +105,13 @@ impl Mempool {
 
     /// Queues `tx` if it applies after everything already waiting.
     pub fn admit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
+        self.take_in(tx.clone())?;
+        self.events.push(MempoolEvent::Accepted(tx));
+        Ok(())
+    }
+
+    /// Queues `tx` like `admit`, but quietly: rebuilding takes back what was already there.
+    fn take_in(&mut self, tx: Transaction) -> Result<(), TransactionError> {
         if tx.signature.as_ref().is_some_and(|s| self.signatures.contains(s)) {
             return Err(TransactionError::AlreadyPending);
         }
@@ -128,6 +157,28 @@ mod tests {
         );
         assert_eq!(pool.projected().next_nonce(&Address::of(&key)), 2);
         assert_eq!(ledger.next_nonce(&Address::of(&key)), 0, "the confirmed ledger is untouched");
+    }
+
+    #[test]
+    fn it_says_what_it_accepted_and_how_a_rebase_went() {
+        let (ledger, key, to) = funded();
+        let mut pool = Mempool::on(&ledger);
+        let (first, second) = (pay(&key, &to, 5, 0), pay(&key, &to, 5, 1));
+        pool.admit(first.clone()).unwrap();
+        pool.admit(second.clone()).unwrap();
+        let _ = pool.admit(first.clone());
+        let accepted = [MempoolEvent::Accepted(first.clone()), MempoolEvent::Accepted(second)];
+        assert_eq!(pool.take_events(), accepted, "a refused one says nothing");
+
+        // A block confirmed the first; a fork gave back a payment from someone else.
+        let mut confirmed = ledger.clone();
+        confirmed.apply_transfer(&first).unwrap();
+        let (_, other, _) = funded();
+        confirmed.credit(&Address::of(&other), Coins::new(50));
+        pool.rebase(&confirmed, vec![pay(&other, &to, 3, 0)]);
+        let rebased = MempoolEvent::Rebased { kept: 1, dropped: 1, returned: 1 };
+        assert_eq!(pool.take_events(), [rebased], "taking back what was there is quiet");
+        assert_eq!(pool.transactions().len(), 2);
     }
 
     #[test]
