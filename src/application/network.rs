@@ -13,9 +13,6 @@ use crate::domain::chain::Extension;
 
 pub type PeerResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
-/// The header gossip carries the sender's URL in, so the receiver doesn't relay it straight back.
-pub const PEER_HEADER: &str = "x-peer";
-
 /// How this node talks to other nodes. The HTTP adapter lives in infrastructure.
 pub trait PeerClient: Send + Sync {
     /// Where the peer's chain stands. `me` tells the peer who's asking, so it can add us back if

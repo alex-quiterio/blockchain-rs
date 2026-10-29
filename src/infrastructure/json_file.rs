@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use crate::domain::block::Block;
 use crate::domain::chain::Snapshot;
-use crate::domain::repository::{ChainRepository, RepositoryError};
+use crate::domain::repository::{ChainChange, ChainRepository, RepositoryError};
 
 /// Keeps the chain in one file, one block of JSON per line. A new block is appended, so saving
 /// costs the same however long the chain gets; the file is only rewritten after a fork, or when
@@ -61,10 +61,12 @@ impl ChainRepository for JsonFileRepository {
         Ok(Some(blocks))
     }
 
-    fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
+    /// Appends the new blocks when the chain grew from what the file holds; otherwise, after a
+    /// fork or when what's on disk isn't known, rewrites the file.
+    fn save(&self, blocks: &[Block], change: ChainChange) -> Result<(), RepositoryError> {
         let mut lines = self.lines.lock().unwrap();
-        match *lines {
-            Some(saved) if saved <= unchanged && saved <= blocks.len() => {
+        match (change, *lines) {
+            (ChainChange::Grew { added }, Some(saved)) if saved + added == blocks.len() => {
                 let mut file = OpenOptions::new().append(true).open(&self.path)?;
                 file.write_all(&lines_of(&blocks[saved..])?)?;
             }
@@ -144,7 +146,7 @@ mod tests {
         let mut chain = Blockchain::new(rules);
         chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
 
-        repo.save(chain.blocks(), 0).unwrap();
+        repo.save(chain.blocks(), ChainChange::Whole).unwrap();
         let loaded = repo.load().unwrap().unwrap();
         assert_eq!(loaded, chain.blocks());
         // Timestamps must survive to the nanosecond, or the block hashes stop matching.
@@ -171,9 +173,9 @@ mod tests {
         let path = TempPath::new("append");
         let repo = JsonFileRepository::new(&path.0);
         let blocks = chain_of(4);
-        repo.save(&blocks[..2], 0).unwrap();
-        repo.save(&blocks[..3], 2).unwrap();
-        repo.save(&blocks, 3).unwrap();
+        repo.save(&blocks[..2], ChainChange::Whole).unwrap();
+        repo.save(&blocks[..3], ChainChange::Grew { added: 1 }).unwrap();
+        repo.save(&blocks, ChainChange::Grew { added: 1 }).unwrap();
         let text = fs::read_to_string(&path.0).unwrap();
         assert_eq!(text.lines().count(), 4, "one block per line");
         assert_eq!(repo.load().unwrap().unwrap(), blocks);
@@ -181,7 +183,7 @@ mod tests {
         // A fork replaces the last two blocks.
         let mut forked = blocks[..2].to_vec();
         forked.extend(chain_of(4)[2..].iter().cloned());
-        repo.save(&forked, 2).unwrap();
+        repo.save(&forked, ChainChange::Reorganized { from: 2 }).unwrap();
         assert_eq!(JsonFileRepository::new(&path.0).load().unwrap().unwrap(), forked);
     }
 
@@ -190,7 +192,7 @@ mod tests {
         let path = TempPath::new("torn");
         let repo = JsonFileRepository::new(&path.0);
         let blocks = chain_of(3);
-        repo.save(&blocks[..2], 0).unwrap();
+        repo.save(&blocks[..2], ChainChange::Whole).unwrap();
         let line = serde_json::to_string(&blocks[2]).unwrap();
         OpenOptions::new()
             .append(true)
@@ -201,7 +203,7 @@ mod tests {
 
         let repo = JsonFileRepository::new(&path.0);
         assert_eq!(repo.load().unwrap().unwrap(), blocks[..2]);
-        repo.save(&blocks, 2).unwrap();
+        repo.save(&blocks, ChainChange::Grew { added: 1 }).unwrap();
         assert_eq!(JsonFileRepository::new(&path.0).load().unwrap().unwrap(), blocks);
     }
 
@@ -229,14 +231,14 @@ mod tests {
     #[test]
     fn an_older_file_with_a_json_array_still_loads() {
         let path = TempPath::new("legacy");
-        let blocks = chain_of(3);
-        fs::write(&path.0, serde_json::to_vec_pretty(&blocks).unwrap()).unwrap();
+        let blocks = chain_of(4);
+        fs::write(&path.0, serde_json::to_vec_pretty(&blocks[..3]).unwrap()).unwrap();
         let repo = JsonFileRepository::new(&path.0);
-        assert_eq!(repo.load().unwrap().unwrap(), blocks);
+        assert_eq!(repo.load().unwrap().unwrap(), blocks[..3]);
 
         // What's on disk isn't in lines yet, so the next save rewrites it whole.
-        repo.save(&blocks, 3).unwrap();
-        assert_eq!(fs::read_to_string(&path.0).unwrap().lines().count(), 3);
+        repo.save(&blocks, ChainChange::Grew { added: 1 }).unwrap();
+        assert_eq!(fs::read_to_string(&path.0).unwrap().lines().count(), 4);
         assert_eq!(repo.load().unwrap().unwrap(), blocks);
     }
 }

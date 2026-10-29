@@ -16,6 +16,11 @@ use chrono::{DateTime, Utc};
 
 use crate::application::{Network, NodeService};
 
+/// The header a node names itself in when it talks to a peer: when it gossips, so the peer
+/// doesn't relay the message straight back, and when it polls, so a peer that forgot it adds it
+/// back.
+pub const PEER_HEADER: &str = "x-peer";
+
 #[derive(Clone)]
 pub struct AppState {
     pub node: Arc<NodeService>,

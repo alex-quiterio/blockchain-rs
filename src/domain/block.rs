@@ -120,6 +120,11 @@ impl Transaction {
         self.from == COINBASE
     }
 
+    /// Whether `address` sends or receives it.
+    pub fn involves(&self, address: &Address) -> bool {
+        self.from == address.as_str() || self.to == address.as_str()
+    }
+
     pub fn kind(&self) -> TxKind {
         match (self.from.as_str(), self.to.as_str()) {
             (COINBASE, _) => TxKind::Coinbase,

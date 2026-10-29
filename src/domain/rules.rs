@@ -1,9 +1,11 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use super::crypto;
 
 /// How a chain decides who may add the next block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Consensus {
     /// Anyone may add a block whose hash is small enough. The chain starts out needing
     /// `difficulty` leading hex zeros, 16^difficulty hashes on average, and with `retarget` the
@@ -15,7 +17,7 @@ pub enum Consensus {
 }
 
 /// How proof-of-work difficulty keeps blocks coming at a steady pace as miners join or leave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retarget {
     /// The time the chain aims to take per block.
     pub target_block_secs: u64,
@@ -25,7 +27,7 @@ pub struct Retarget {
 
 /// The consensus rules. Every node on a network has to share them, or their chains won't validate
 /// on each other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChainRules {
     pub consensus: Consensus,
     /// Coins paid to whoever adds a block.

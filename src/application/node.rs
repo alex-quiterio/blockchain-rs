@@ -12,7 +12,7 @@ use crate::domain::chain::{Blockchain, Extension};
 use crate::domain::error::ChainError;
 use crate::domain::ledger::ValidatorState;
 use crate::domain::merkle;
-use crate::domain::repository::{ChainRepository, RepositoryError};
+use crate::domain::repository::{ChainChange, ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 use crate::domain::weight::ChainWeight;
 
@@ -134,7 +134,7 @@ impl NodeService {
             }
             None => {
                 let chain = Blockchain::new(rules);
-                repository.save(chain.blocks(), 0).map_err(NodeError::Storage)?;
+                repository.save(chain.blocks(), ChainChange::Whole).map_err(NodeError::Storage)?;
                 (chain, None)
             }
         };
@@ -199,7 +199,7 @@ impl NodeService {
                 block: Some(placement(&chain, block, position)),
             });
         }
-        let pending = chain.pending().iter().find(|tx| tx.signature == signature)?;
+        let pending = chain.pending_transaction(signature)?;
         Some(Located { transaction: pending.clone(), block: None })
     }
 
@@ -207,19 +207,11 @@ impl NodeService {
     /// confirmed ones, newest first.
     pub fn history(&self, address: &Address) -> Vec<Located> {
         let chain = self.chain.lock().unwrap();
-        let involves = |tx: &Transaction| tx.from == address.as_str() || tx.to == address.as_str();
-        let pending = chain
-            .pending()
-            .iter()
-            .filter(|tx| involves(tx))
-            .map(|tx| Located { transaction: tx.clone(), block: None });
-        let confirmed = chain.blocks().iter().rev().flat_map(|block| {
-            block.transactions.iter().enumerate().filter(|(_, tx)| involves(tx)).map(
-                |(position, tx)| Located {
-                    transaction: tx.clone(),
-                    block: Some(placement(&chain, block, position)),
-                },
-            )
+        let pending =
+            chain.pending_of(address).map(|tx| Located { transaction: tx.clone(), block: None });
+        let confirmed = chain.history_of(address).map(|(block, position)| Located {
+            transaction: block.transactions[position].clone(),
+            block: Some(placement(&chain, block, position)),
         });
         pending.chain(confirmed).collect()
     }
@@ -369,8 +361,8 @@ impl NodeService {
         let mut next = chain.clone();
         let result = change(&mut next)?;
         if next.tip().hash != chain.tip().hash {
-            let unchanged = shared_prefix(chain.blocks(), next.blocks());
-            self.repository.save(next.blocks(), unchanged).map_err(NodeError::Storage)?;
+            let change = change_between(chain.blocks(), next.blocks());
+            self.repository.save(next.blocks(), change).map_err(NodeError::Storage)?;
             self.maybe_snapshot(&next);
         }
         *chain = next;
@@ -398,14 +390,18 @@ impl NodeService {
     }
 }
 
-/// How many leading blocks two versions of a chain share. Found from the end, since a new block
-/// or a fork only ever changes the last few.
-fn shared_prefix(old: &[Block], new: &[Block]) -> usize {
+/// What happened between two versions of a chain: blocks added on top, or a fork from where they
+/// stop sharing blocks. Found from the end, since either only ever changes the last few.
+fn change_between(old: &[Block], new: &[Block]) -> ChainChange {
     let mut shared = old.len().min(new.len());
     while shared > 0 && old[shared - 1].hash != new[shared - 1].hash {
         shared -= 1;
     }
-    shared
+    if shared == old.len() {
+        ChainChange::Grew { added: new.len() - shared }
+    } else {
+        ChainChange::Reorganized { from: shared }
+    }
 }
 
 fn placement(chain: &Blockchain, block: &Block, position: usize) -> Placement {
@@ -441,8 +437,8 @@ mod tests {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             self.0.load()
         }
-        fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
-            self.0.save(blocks, unchanged)
+        fn save(&self, blocks: &[Block], change: ChainChange) -> Result<(), RepositoryError> {
+            self.0.save(blocks, change)
         }
         fn load_snapshot(&self) -> Result<Option<Snapshot>, RepositoryError> {
             self.0.load_snapshot()
@@ -458,7 +454,7 @@ mod tests {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             Ok(None)
         }
-        fn save(&self, blocks: &[Block], _unchanged: usize) -> Result<(), RepositoryError> {
+        fn save(&self, blocks: &[Block], _change: ChainChange) -> Result<(), RepositoryError> {
             // Let the genesis block through so the node can start.
             if blocks.len() == 1 {
                 Ok(())
@@ -524,7 +520,7 @@ mod tests {
         node(repo.clone()).mine(&new_address()).unwrap();
         let mut blocks = repo.load().unwrap().unwrap();
         blocks[1].transactions[0].amount = 1_000;
-        repo.save(&blocks, 0).unwrap();
+        repo.save(&blocks, ChainChange::Whole).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
         assert!(matches!(err, NodeError::Chain(ChainError::InvalidChain)));
@@ -632,22 +628,22 @@ mod tests {
         assert_eq!(heights, [2, 2, 1]);
     }
 
-    /// Records how many blocks each save said were unchanged.
+    /// Records what each save said happened to the chain.
     #[derive(Clone, Default)]
-    struct RecordingRepository(Arc<Mutex<Vec<(usize, usize)>>>);
+    struct RecordingRepository(Arc<Mutex<Vec<ChainChange>>>);
 
     impl ChainRepository for RecordingRepository {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             Ok(None)
         }
-        fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
-            self.0.lock().unwrap().push((blocks.len(), unchanged));
+        fn save(&self, _blocks: &[Block], change: ChainChange) -> Result<(), RepositoryError> {
+            self.0.lock().unwrap().push(change);
             Ok(())
         }
     }
 
     #[test]
-    fn saves_say_how_much_of_the_chain_is_unchanged() {
+    fn saves_say_what_happened_to_the_chain() {
         let repo = RecordingRepository::default();
         let ours = node(repo.clone());
         ours.mine(&new_address()).unwrap();
@@ -658,8 +654,12 @@ mod tests {
         theirs.mine(&new_address()).unwrap();
         ours.extend(theirs.blocks()[2..].to_vec()).unwrap();
 
-        // Genesis, two new blocks, then a fork that keeps the first two and replaces the third.
-        assert_eq!(*repo.0.lock().unwrap(), [(1, 0), (2, 1), (3, 2), (4, 2)]);
+        // Genesis, two new blocks, then a fork that replaces the third.
+        let grew = ChainChange::Grew { added: 1 };
+        assert_eq!(
+            *repo.0.lock().unwrap(),
+            [ChainChange::Whole, grew, grew, ChainChange::Reorganized { from: 2 }]
+        );
     }
 
     #[test]

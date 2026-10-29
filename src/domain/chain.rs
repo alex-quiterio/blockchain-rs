@@ -78,7 +78,7 @@ pub struct Snapshot {
     pub height: usize,
     pub hash: String,
     /// The rules it was made under; a snapshot is only used under the same ones.
-    rules: String,
+    rules: ChainRules,
     tally: Tally,
 }
 
@@ -127,7 +127,7 @@ impl Blockchain {
     ) -> Result<(Self, Option<usize>), ChainError> {
         let keep = keep(&rules);
         let fits = snapshot.filter(|s| {
-            s.rules == format!("{rules:?}")
+            s.rules == rules
                 && blocks.get(s.height).is_some_and(|block| block.hash == s.hash)
                 && links_up(&blocks[..=s.height], &rules)
         });
@@ -155,7 +155,7 @@ impl Blockchain {
         Some(Snapshot {
             height,
             hash: self.blocks[height].hash.clone(),
-            rules: format!("{:?}", self.rules),
+            rules: self.rules,
             tally: self.recent[0].as_ref().clone(),
         })
     }
@@ -537,6 +537,33 @@ impl Blockchain {
             self.settle(tally);
         }
         Ok(Extension::Adopted)
+    }
+
+    /// The transfer signed `signature`, if it's waiting in the mempool.
+    pub fn pending_transaction(&self, signature: &str) -> Option<&Transaction> {
+        self.mempool
+            .transactions()
+            .iter()
+            .find(|tx| !signature.is_empty() && tx.signature == signature)
+    }
+
+    /// Transactions to or from `address` waiting in the mempool.
+    pub fn pending_of<'a>(&'a self, address: &'a Address) -> impl Iterator<Item = &'a Transaction> {
+        self.mempool.transactions().iter().filter(move |tx| tx.involves(address))
+    }
+
+    /// Confirmed transactions to or from `address`, block rewards included, newest first: each
+    /// with its block and its place there.
+    pub fn history_of<'a>(
+        &'a self,
+        address: &'a Address,
+    ) -> impl Iterator<Item = (&'a Block, usize)> {
+        self.blocks.iter().rev().flat_map(move |block| {
+            let positions = block.transactions.iter().enumerate();
+            positions
+                .filter(|(_, tx)| tx.involves(address))
+                .map(move |(position, _)| (block, position))
+        })
     }
 
     /// The confirmed block holding the transfer signed `signature`, and its place in the block.

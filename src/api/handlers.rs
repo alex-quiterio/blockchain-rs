@@ -15,7 +15,8 @@ use super::dto::{
     TransactionResponse, ValidityResponse, WalletResponse,
 };
 use super::AppState;
-use crate::application::{Located, NodeError, PEER_HEADER};
+use super::PEER_HEADER;
+use crate::application::{Located, NodeError};
 use crate::domain::address::Address;
 use crate::domain::block::STAKE;
 use crate::domain::block::{Block, BlockHeader, Transaction};

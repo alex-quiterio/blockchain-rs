@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use crate::domain::block::Block;
 use crate::domain::chain::Snapshot;
-use crate::domain::repository::{ChainRepository, RepositoryError};
+use crate::domain::repository::{ChainChange, ChainRepository, RepositoryError};
 
 /// Keeps the chain in memory only, for tests and throwaway nodes.
 #[derive(Default)]
@@ -16,7 +16,7 @@ impl ChainRepository for InMemoryRepository {
         Ok(self.blocks.lock().unwrap().clone())
     }
 
-    fn save(&self, blocks: &[Block], _unchanged: usize) -> Result<(), RepositoryError> {
+    fn save(&self, blocks: &[Block], _change: ChainChange) -> Result<(), RepositoryError> {
         *self.blocks.lock().unwrap() = Some(blocks.to_vec());
         Ok(())
     }

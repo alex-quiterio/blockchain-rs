@@ -4,7 +4,8 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::application::network::{PeerClient, PeerResult, PeerTip, PEER_HEADER};
+use crate::api::PEER_HEADER;
+use crate::application::network::{PeerClient, PeerResult, PeerTip};
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::Extension;
 
