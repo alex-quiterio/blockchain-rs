@@ -207,6 +207,7 @@ flowchart TB
 - **`domain/`** has the rules and no I/O.
   - `chain/`: the chain itself.
     - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`
+    - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
     - `validation.rs`: the rules each block is checked by, and replaying a chain by them
     - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
   - `consensus/`: how the network agrees on one chain.
@@ -221,7 +222,7 @@ flowchart TB
     - `address.rs`: an `Address` can only hold a valid public key
     - `hash.rs`: `BlockHash` and `MerkleRoot` can only hold 64 hex characters, and can't be passed for each other
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
-  - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port
+  - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case on a copy of the chain and only swaps it in once it's saved.
   - `Network` keeps the peers in step through the `PeerClient` port.
@@ -268,7 +269,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 126 tests: unit, HTTP and property-based
+cargo test        # 127 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

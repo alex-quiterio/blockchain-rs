@@ -8,11 +8,11 @@ use ed25519_dalek::SigningKey;
 
 use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
-use crate::domain::chain::{Blockchain, Extension};
+use crate::domain::chain::{Blockchain, ChainEvent, Extension};
 use crate::domain::error::ChainError;
 use crate::domain::ledger::ValidatorState;
 use crate::domain::merkle;
-use crate::domain::repository::{ChainChange, ChainRepository, RepositoryError};
+use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 use crate::domain::values::{BlockHash, Coins};
 use crate::domain::weight::ChainWeight;
@@ -115,7 +115,11 @@ pub struct NodeService {
     last_snapshot: Mutex<usize>,
     /// The snapshot the chain was restored from on opening, if one was used.
     restored_from: Option<usize>,
+    /// Told what happened after every change.
+    listeners: Mutex<Vec<Listener>>,
 }
+
+type Listener = Box<dyn Fn(&ChainEvent) + Send + Sync>;
 
 /// Blocks between snapshots, by default.
 pub const SNAPSHOT_BLOCKS: usize = 100;
@@ -134,8 +138,9 @@ impl NodeService {
                 Blockchain::restore_from(blocks, rules, snapshot)?
             }
             None => {
-                let chain = Blockchain::new(rules);
-                repository.save(chain.blocks(), ChainChange::Whole).map_err(NodeError::Storage)?;
+                let mut chain = Blockchain::new(rules);
+                let events = chain.take_events();
+                repository.save(chain.blocks(), &events).map_err(NodeError::Storage)?;
                 (chain, None)
             }
         };
@@ -145,12 +150,18 @@ impl NodeService {
             snapshot_every: SNAPSHOT_BLOCKS,
             last_snapshot: Mutex::new(restored_from.unwrap_or(0)),
             restored_from,
+            listeners: Mutex::default(),
         })
     }
 
     /// Saves a snapshot every `blocks` blocks instead of every `SNAPSHOT_BLOCKS`. 0 saves none.
     pub fn with_snapshots_every(self, blocks: usize) -> Self {
         Self { snapshot_every: blocks, ..self }
+    }
+
+    /// Calls `listener` with everything that happens to the chain from now on, after it's saved.
+    pub fn subscribe(&self, listener: impl Fn(&ChainEvent) + Send + Sync + 'static) {
+        self.listeners.lock().unwrap().push(Box::new(listener));
     }
 
     /// The height of the snapshot the chain was restored from on opening, if one was used.
@@ -354,6 +365,8 @@ impl NodeService {
 
     /// Applies `change` to a copy of the chain and swaps it in only once the new blocks are
     /// saved, so memory and storage never disagree.
+    /// The chain's events are what's saved and, once the chain is free again, what listeners
+    /// hear.
     fn commit<T>(
         &self,
         change: impl FnOnce(&mut Blockchain) -> Result<T, ChainError>,
@@ -361,12 +374,18 @@ impl NodeService {
         let mut chain = self.chain.lock().unwrap();
         let mut next = chain.clone();
         let result = change(&mut next)?;
-        if next.tip().hash != chain.tip().hash {
-            let change = change_between(chain.blocks(), next.blocks());
-            self.repository.save(next.blocks(), change).map_err(NodeError::Storage)?;
+        let events = next.take_events();
+        if !events.is_empty() {
+            self.repository.save(next.blocks(), &events).map_err(NodeError::Storage)?;
             self.maybe_snapshot(&next);
         }
         *chain = next;
+        drop(chain);
+        for event in &events {
+            for listener in self.listeners.lock().unwrap().iter() {
+                listener(event);
+            }
+        }
         Ok(result)
     }
 }
@@ -388,20 +407,6 @@ impl NodeService {
                 tracing::warn!("Could not save a snapshot at height {}: {e}", snapshot.height)
             }
         }
-    }
-}
-
-/// What happened between two versions of a chain: blocks added on top, or a fork from where they
-/// stop sharing blocks. Found from the end, since either only ever changes the last few.
-fn change_between(old: &[Block], new: &[Block]) -> ChainChange {
-    let mut shared = old.len().min(new.len());
-    while shared > 0 && old[shared - 1].hash != new[shared - 1].hash {
-        shared -= 1;
-    }
-    if shared == old.len() {
-        ChainChange::Grew { added: new.len() - shared }
-    } else {
-        ChainChange::Reorganized { from: shared }
     }
 }
 
@@ -438,8 +443,8 @@ mod tests {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             self.0.load()
         }
-        fn save(&self, blocks: &[Block], change: ChainChange) -> Result<(), RepositoryError> {
-            self.0.save(blocks, change)
+        fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), RepositoryError> {
+            self.0.save(blocks, events)
         }
         fn load_snapshot(&self) -> Result<Option<Snapshot>, RepositoryError> {
             self.0.load_snapshot()
@@ -455,7 +460,7 @@ mod tests {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             Ok(None)
         }
-        fn save(&self, blocks: &[Block], _change: ChainChange) -> Result<(), RepositoryError> {
+        fn save(&self, blocks: &[Block], _events: &[ChainEvent]) -> Result<(), RepositoryError> {
             // Let the genesis block through so the node can start.
             if blocks.len() == 1 {
                 Ok(())
@@ -521,7 +526,7 @@ mod tests {
         node(repo.clone()).mine(&new_address()).unwrap();
         let mut blocks = repo.load().unwrap().unwrap();
         blocks[1].transactions[0].amount = Coins::new(1_000);
-        repo.save(&blocks, ChainChange::Whole).unwrap();
+        repo.save(&blocks, &[ChainEvent::Started]).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
         assert!(matches!(err, NodeError::Chain(ChainError::InvalidChain)));
@@ -635,24 +640,27 @@ mod tests {
         assert_eq!(heights, [2, 2, 1]);
     }
 
-    /// Records what each save said happened to the chain.
+    /// Records the events each save was given.
     #[derive(Clone, Default)]
-    struct RecordingRepository(Arc<Mutex<Vec<ChainChange>>>);
+    struct RecordingRepository(Arc<Mutex<Vec<Vec<ChainEvent>>>>);
 
     impl ChainRepository for RecordingRepository {
         fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
             Ok(None)
         }
-        fn save(&self, _blocks: &[Block], change: ChainChange) -> Result<(), RepositoryError> {
-            self.0.lock().unwrap().push(change);
+        fn save(&self, _blocks: &[Block], events: &[ChainEvent]) -> Result<(), RepositoryError> {
+            self.0.lock().unwrap().push(events.to_vec());
             Ok(())
         }
     }
 
     #[test]
-    fn saves_say_what_happened_to_the_chain() {
+    fn what_happened_is_saved_and_then_told_to_listeners() {
         let repo = RecordingRepository::default();
         let ours = node(repo.clone());
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let log = heard.clone();
+        ours.subscribe(move |event| log.lock().unwrap().push(event.clone()));
         ours.mine(&new_address()).unwrap();
         ours.mine(&new_address()).unwrap();
         let theirs = node(InMemoryRepository::default());
@@ -661,12 +669,24 @@ mod tests {
         theirs.mine(&new_address()).unwrap();
         ours.extend(theirs.blocks()[2..].to_vec()).unwrap();
 
-        // Genesis, two new blocks, then a fork that replaces the third.
-        let grew = ChainChange::Grew { added: 1 };
+        // Genesis, two new blocks, then a fork that replaces the second with two of theirs.
+        let replaced = ChainEvent::Reorganized { from: 2, dropped: 1, added: 2 };
+        let saved = repo.0.lock().unwrap().clone();
         assert_eq!(
-            *repo.0.lock().unwrap(),
-            [ChainChange::Whole, grew, grew, ChainChange::Reorganized { from: 2 }]
+            saved,
+            [
+                vec![ChainEvent::Started],
+                vec![ChainEvent::Extended { from: 1, to: 1 }],
+                vec![ChainEvent::Extended { from: 2, to: 2 }],
+                vec![replaced.clone()],
+            ]
         );
+        let told = heard.lock().unwrap().clone();
+        assert_eq!(told, saved[1..].concat(), "listeners hear what happens after they subscribe");
+
+        // Blocks we already have change nothing, so nothing is saved or told.
+        assert!(ours.extend(theirs.blocks()[2..].to_vec()).is_ok());
+        assert_eq!(repo.0.lock().unwrap().len(), 4);
     }
 
     #[test]

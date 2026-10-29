@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::{Network, NodeService, SNAPSHOT_BLOCKS};
+use blockchain::domain::chain::ChainEvent;
 use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_REORG_DEPTH};
 use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
 
@@ -44,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         None => tracing::info!("Loaded {length} blocks from {chain_file} in {:.0?}", started.elapsed()),
     }
+    node.subscribe(log_event);
     let public_url = std::env::var("PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}"));
     let network = Network::new(Arc::new(node), Box::new(HttpPeerClient::new()), Some(public_url));
     let state = AppState::new(network);
@@ -76,6 +78,18 @@ async fn keep_in_sync(network: Arc<Network>, peers: String, every: Duration) {
             tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
             network.broadcast_tip(Some(&peer)).await;
         }
+    }
+}
+
+/// Says in the log what happened to the chain.
+fn log_event(event: &ChainEvent) {
+    match *event {
+        ChainEvent::Started => tracing::info!("Started a new chain"),
+        ChainEvent::Extended { from, to } if from == to => tracing::info!("Added block {to}"),
+        ChainEvent::Extended { from, to } => tracing::info!("Added blocks {from} to {to}"),
+        ChainEvent::Reorganized { from, dropped, added } => tracing::info!(
+            "Switched to a heavier fork: {dropped} block(s) from height {from} replaced by {added}"
+        ),
     }
 }
 

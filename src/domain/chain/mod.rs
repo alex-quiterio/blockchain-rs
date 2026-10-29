@@ -18,12 +18,14 @@ use crate::domain::rules::{select_validator, ChainRules};
 use crate::domain::values::{BlockHash, Coins};
 use crate::domain::weight::ChainWeight;
 
+mod events;
 mod tally;
 mod validation;
 
 use tally::{Tally, TallyLog};
 use validation::{apply_block, keep, links_up, payout, replay_from, replay_kept};
 
+pub use events::ChainEvent;
 pub use tally::Snapshot;
 pub use validation::validate_blocks;
 
@@ -37,6 +39,8 @@ pub struct Blockchain {
     /// is what the whole chain adds up to.
     tallies: TallyLog,
     rules: ChainRules,
+    /// What happened since they were last taken.
+    events: Vec<ChainEvent>,
 }
 
 /// Proof of work: the contents of the next block, waiting for a nonce.
@@ -81,7 +85,9 @@ impl Blockchain {
     pub fn new(rules: ChainRules) -> Self {
         let genesis = Block::genesis(&rules);
         let tally = Tally::at_genesis(&genesis, &rules);
-        Self::from_parts(vec![genesis], VecDeque::from([tally]), rules)
+        let mut chain = Self::from_parts(vec![genesis], VecDeque::from([tally]), rules);
+        chain.events.push(ChainEvent::Started);
+        chain
     }
 
     /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
@@ -115,13 +121,27 @@ impl Blockchain {
 
     fn from_parts(blocks: Vec<Block>, kept: VecDeque<Tally>, rules: ChainRules) -> Self {
         let tallies = TallyLog::new(blocks.len() - kept.len(), kept, keep(&rules));
-        Self { mempool: Mempool::on(&tallies.latest().ledger), blocks, tallies, rules }
+        let mempool = Mempool::on(&tallies.latest().ledger);
+        Self { mempool, blocks, tallies, rules, events: Vec::new() }
     }
 
     /// A snapshot after the oldest block no fork may undo any more, once the chain is long
     /// enough to have one.
     pub fn snapshot(&self) -> Option<Snapshot> {
         self.tallies.snapshot(&self.blocks, self.rules)
+    }
+
+    /// What happened to the chain since this was last called, oldest first.
+    pub fn take_events(&mut self) -> Vec<ChainEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Records blocks added on top, merged with blocks added just before.
+    fn extended(&mut self, from: usize, to: usize) {
+        match self.events.last_mut() {
+            Some(ChainEvent::Extended { to: last, .. }) if *last + 1 == from => *last = to,
+            _ => self.events.push(ChainEvent::Extended { from, to }),
+        }
     }
 
     /// What the whole chain adds up to.
@@ -333,6 +353,7 @@ impl Blockchain {
         self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
         self.blocks.push(block);
         self.tallies.push(tally);
+        self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
         Ok(self.tip())
     }
 
@@ -377,6 +398,7 @@ impl Blockchain {
         self.blocks.push(block);
         self.mempool = Mempool::on(&tally.ledger);
         self.tallies.push(tally);
+        self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
         Ok(self.tip())
     }
 
@@ -433,7 +455,15 @@ impl Blockchain {
 
         self.mempool = Mempool::rebuilt(orphaned, &tally.ledger);
         self.tallies.replace_from(shared, chain.len() - kept.len(), kept);
+        let ours = self.blocks.len();
         self.blocks = chain;
+        if shared == ours {
+            // Theirs is ours with more on top.
+            self.extended(shared, self.blocks.len() - 1);
+        } else {
+            let (dropped, added) = (ours - shared, self.blocks.len() - shared);
+            self.events.push(ChainEvent::Reorganized { from: shared, dropped, added });
+        }
         Ok(true)
     }
 
@@ -481,6 +511,7 @@ impl Blockchain {
         for tally in tallies {
             self.tallies.push(tally);
         }
+        self.extended(height, self.blocks.len() - 1);
         Ok(Extension::Adopted)
     }
 
@@ -764,6 +795,43 @@ mod tests {
             None
         );
         assert_eq!(asked, 3);
+    }
+
+    #[test]
+    fn every_change_says_what_happened() {
+        let rules = RULES.with_max_reorg_depth(5);
+        let mut ours = Blockchain::new(rules);
+        assert_eq!(ours.take_events(), [ChainEvent::Started]);
+        assert_eq!(ours.take_events(), [], "taken once");
+        ours.mine(&wallet().0).unwrap();
+        ours.mine(&wallet().0).unwrap();
+        assert_eq!(ours.take_events(), [ChainEvent::Extended { from: 1, to: 2 }], "merged");
+
+        // A restored chain starts with nothing to tell.
+        let mut theirs = Blockchain::restore(ours.blocks().to_vec(), rules).unwrap();
+        assert_eq!(theirs.take_events(), []);
+        theirs.mine(&wallet().0).unwrap();
+        theirs.mine(&wallet().0).unwrap();
+
+        // Theirs is ours with more on top: an extension, however it arrives.
+        let mut whole = ours.clone();
+        assert_eq!(whole.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(whole.take_events(), [ChainEvent::Extended { from: 3, to: 4 }]);
+        assert_eq!(ours.extend(theirs.blocks()[3..].to_vec()), Ok(Extension::Adopted));
+        assert_eq!(ours.take_events(), [ChainEvent::Extended { from: 3, to: 4 }]);
+
+        // A heavier fork from block 2 replaces three of ours with four of theirs.
+        let mut fork = Blockchain::restore(ours.blocks()[..2].to_vec(), rules).unwrap();
+        for _ in 0..4 {
+            fork.mine(&wallet().0).unwrap();
+        }
+        assert_eq!(ours.adopt_if_heavier(fork.blocks().to_vec()), Ok(true));
+        let replaced = ChainEvent::Reorganized { from: 2, dropped: 3, added: 4 };
+        assert_eq!(ours.take_events(), [replaced]);
+
+        // Nothing adopted, nothing happened.
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(false));
+        assert_eq!(ours.take_events(), []);
     }
 
     #[test]
