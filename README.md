@@ -27,7 +27,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
 | 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own to every peer at once, sending the last few blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing, 500 blocks at a time, which is how a node far behind catches up. A node that hears from a peer it doesn't know adds it back, so links heal after a restart. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
-| 💾 **Storage** | The chain is saved as JSON, one block per line. A new block is appended, so saving costs the same however long the chain gets; only a fork rewrites the file, atomically. It's fully replayed on startup, so a tampered file is refused. |
+| 💾 **Storage** | The chain is saved as JSON, one block per line. A new block is appended, so saving costs the same however long the chain gets; only a fork rewrites the file, atomically. Every `SNAPSHOT_BLOCKS` blocks a snapshot of the balances is saved beside it, so a restart replays only the blocks since; the blocks before it must hash and link up to the snapshot's block, so changed ones are refused. `GET /chain/valid` still replays everything. |
 | 🌳 **Merkle roots** | A block's hash covers the Merkle root of its transactions, not the transactions themselves. A light client keeps only headers and checks that a payment is in a block from a proof of a few hashes. |
 | 🔍 **Validation** | Replays everything: links, hashes, Merkle roots, work or signatures, rewards, fees, nonces, balances and stakes. |
 
@@ -128,7 +128,8 @@ The first run of it found a real bottleneck: every new transaction re-checked th
 | `PEERS` | none | Comma-separated peer URLs to join on startup. |
 | `PUBLIC_URL` | `http://$BIND_ADDR` | How peers should reach this node. |
 | `SYNC_SECS` | `5` | How often to pull from peers. |
-| `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. |
+| `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. A fork is checked from where it splits off, not from genesis. |
+| `SNAPSHOT_BLOCKS` | `100` | Blocks between snapshots of the balances, which spare a restart replaying the whole chain. `0` takes none. |
 
 A saved chain only loads under the rules it was made with. Delete the file to start over.
 
@@ -259,7 +260,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 112 tests: unit, HTTP and property-based
+cargo test        # 117 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

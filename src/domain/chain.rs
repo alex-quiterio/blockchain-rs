@@ -1,7 +1,10 @@
 use std::cmp::Reverse;
+use std::collections::VecDeque;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
 
 use super::address::Address;
 use super::block::{Block, Transaction};
@@ -23,6 +26,10 @@ pub struct Blockchain {
     mempool: Mempool,
     /// What the confirmed blocks add up to.
     tally: Tally,
+    /// What the chain added up to after each of its last `max_reorg_depth + 1` blocks, oldest
+    /// first, so a fork is checked from where it splits off instead of from genesis. Shared, so
+    /// copying the chain doesn't copy them.
+    recent: VecDeque<Arc<Tally>>,
     rules: ChainRules,
 }
 
@@ -64,8 +71,19 @@ impl From<bool> for Extension {
     }
 }
 
+/// What the chain adds up to after a block no fork may undo any more, with that block's height
+/// and hash. Saved now and then, so a restart replays only the blocks after it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub height: usize,
+    pub hash: String,
+    /// The rules it was made under; a snapshot is only used under the same ones.
+    rules: String,
+    tally: Tally,
+}
+
 /// What replaying blocks in order adds up to.
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Tally {
     /// Balances, stakes, nonces and the randomness beacon.
     ledger: Ledger,
@@ -89,13 +107,72 @@ impl Blockchain {
     pub fn new(rules: ChainRules) -> Self {
         let genesis = Block::genesis(&rules);
         let tally = Tally::at_genesis(&genesis, &rules);
-        Self { mempool: Mempool::on(&tally.ledger), blocks: vec![genesis], tally, rules }
+        Self::from_parts(vec![genesis], VecDeque::from([tally]), rules)
     }
 
     /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
     pub fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
-        let tally = replay(&blocks, &rules).ok_or(ChainError::InvalidChain)?;
-        Ok(Self { blocks, mempool: Mempool::on(&tally.ledger), tally, rules })
+        Ok(Self::restore_from(blocks, rules, None)?.0)
+    }
+
+    /// Rebuilds a chain from saved blocks, replaying only those after `snapshot` when it fits
+    /// them. Blocks up to the snapshot are checked only for being the ones it was taken after:
+    /// their hashes, links and Merkle roots lead to its block. Everything after is replayed in
+    /// full. Without a snapshot that fits, the whole chain is replayed. Returns the chain and
+    /// the snapshot's height, if one was used.
+    pub fn restore_from(
+        blocks: Vec<Block>,
+        rules: ChainRules,
+        snapshot: Option<Snapshot>,
+    ) -> Result<(Self, Option<usize>), ChainError> {
+        let keep = keep(&rules);
+        let fits = snapshot.filter(|s| {
+            s.rules == format!("{rules:?}")
+                && blocks.get(s.height).is_some_and(|block| block.hash == s.hash)
+                && links_up(&blocks[..=s.height], &rules)
+        });
+        let (kept, from) = match fits {
+            Some(s) => (replay_from(&blocks, s.height + 1, s.tally, &rules, keep), Some(s.height)),
+            None => (replay_kept(&blocks, &rules, keep), None),
+        };
+        let kept = kept.ok_or(ChainError::InvalidChain)?;
+        Ok((Self::from_parts(blocks, kept, rules), from))
+    }
+
+    fn from_parts(blocks: Vec<Block>, kept: VecDeque<Tally>, rules: ChainRules) -> Self {
+        let tally = kept.back().expect("a chain has at least genesis").clone();
+        let recent = kept.into_iter().map(Arc::new).collect();
+        Self { mempool: Mempool::on(&tally.ledger), blocks, tally, recent, rules }
+    }
+
+    /// A snapshot after the oldest block no fork may undo any more, once the chain is long
+    /// enough to have one.
+    pub fn snapshot(&self) -> Option<Snapshot> {
+        if self.recent.len() < keep(&self.rules) {
+            return None;
+        }
+        let height = self.blocks.len() - self.recent.len();
+        Some(Snapshot {
+            height,
+            hash: self.blocks[height].hash.clone(),
+            rules: format!("{:?}", self.rules),
+            tally: self.recent[0].as_ref().clone(),
+        })
+    }
+
+    /// Makes `tally` the chain's, after the block just pushed, and remembers it.
+    fn settle(&mut self, tally: Tally) {
+        self.recent.push_back(Arc::new(tally.clone()));
+        while self.recent.len() > keep(&self.rules) {
+            self.recent.pop_front();
+        }
+        self.tally = tally;
+    }
+
+    /// What the chain added up to after the block at `height`, if that's recent enough to know.
+    fn tally_after(&self, height: usize) -> Option<&Tally> {
+        let first = self.blocks.len() - self.recent.len();
+        height.checked_sub(first).and_then(|i| self.recent.get(i)).map(Arc::as_ref)
     }
 
     pub fn rules(&self) -> ChainRules {
@@ -299,7 +376,7 @@ impl Blockchain {
         let waiting = self.mempool.transactions().to_vec();
         self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
         self.blocks.push(block);
-        self.tally = tally;
+        self.settle(tally);
         Ok(self.tip())
     }
 
@@ -342,7 +419,7 @@ impl Blockchain {
         }
         self.blocks.push(block);
         self.mempool = Mempool::on(&tally.ledger);
-        self.tally = tally;
+        self.settle(tally);
         Ok(self.tip())
     }
 
@@ -350,23 +427,42 @@ impl Blockchain {
     /// ties go to the lower tip hash, so every node settles on the same fork. Never undoes more
     /// than `max_reorg_depth` of our blocks. Transfers from our blocks that `blocks` drops go back
     /// to the mempool if they still apply.
+    ///
+    /// Only their blocks after the split are checked, starting from what our chain added up to
+    /// there; before it, their blocks are ours hash for hash, and our copies are kept. A split
+    /// deeper than any fork we may take is replayed in full, then refused below.
     pub fn adopt_if_heavier(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
         if blocks.last().is_some_and(|tip| tip.hash == self.tip().hash) {
             return Ok(false);
         }
-        let tally = replay(&blocks, &self.rules).ok_or(ChainError::InvalidChain)?;
-        let theirs =
-            (tally.weight, Reverse(&blocks.last().expect("replay refuses empty chains").hash));
-        if theirs <= (self.tally.weight, Reverse(&self.tip().hash)) {
-            return Ok(false);
-        }
-
         let shared = self
             .blocks
             .iter()
             .zip(&blocks)
             .take_while(|(ours, theirs)| ours.hash == theirs.hash)
             .count();
+        let keep = keep(&self.rules);
+        let (chain, kept) = match shared.checked_sub(1).and_then(|h| self.tally_after(h)) {
+            Some(base) => {
+                let base = base.clone();
+                let mut chain = self.blocks[..shared].to_vec();
+                chain.extend(blocks.into_iter().skip(shared));
+                let kept = replay_from(&chain, shared, base, &self.rules, keep);
+                (chain, kept)
+            }
+            None => {
+                let kept = replay_kept(&blocks, &self.rules, keep);
+                (blocks, kept)
+            }
+        };
+        let kept = kept.ok_or(ChainError::InvalidChain)?;
+        let tally = kept.back().expect("replays keep at least the last").clone();
+        let theirs =
+            (tally.weight, Reverse(&chain.last().expect("replay refuses empty chains").hash));
+        if theirs <= (self.tally.weight, Reverse(&self.tip().hash)) {
+            return Ok(false);
+        }
+
         let depth = self.blocks.len() - shared;
         if depth as u64 > self.rules.max_reorg_depth {
             return Err(ChainError::ReorgTooDeep { depth, max: self.rules.max_reorg_depth });
@@ -379,7 +475,19 @@ impl Blockchain {
             .collect();
 
         self.mempool = Mempool::rebuilt(orphaned, &tally.ledger);
-        self.blocks = blocks;
+        // Ours up to the split, then theirs, unless theirs alone fill the window.
+        let first_ours = self.blocks.len() - self.recent.len();
+        let first_theirs = chain.len() - kept.len();
+        if first_theirs > shared || first_ours > shared {
+            self.recent = kept.into_iter().map(Arc::new).collect();
+        } else {
+            self.recent.truncate(shared - first_ours);
+            self.recent.extend(kept.into_iter().skip(shared - first_theirs).map(Arc::new));
+        }
+        while self.recent.len() > keep {
+            self.recent.pop_front();
+        }
+        self.blocks = chain;
         self.tally = tally;
         Ok(true)
     }
@@ -414,16 +522,20 @@ impl Blockchain {
 
         let mut tally = self.tally.clone();
         let height = self.blocks.len();
+        let mut tallies = Vec::with_capacity(new.len());
         for block in new {
             if !apply_block(&self.blocks, block, &mut tally, &self.rules) {
                 self.blocks.truncate(height);
                 return Err(ChainError::InvalidBlock);
             }
             self.blocks.push(block.clone());
+            tallies.push(tally.clone());
         }
         let waiting = self.mempool.transactions().to_vec();
         self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
-        self.tally = tally;
+        for tally in tallies {
+            self.settle(tally);
+        }
         Ok(Extension::Adopted)
     }
 
@@ -450,24 +562,68 @@ pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
 
 /// Checks every block in order and returns what they add up to, or `None` if any check fails.
 fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Tally> {
-    let genesis = blocks.first()?;
-    if genesis.index != 0
-        || genesis.prev_hash != "0".repeat(64)
-        || genesis.timestamp.timestamp() != 0
-        || !genesis.transactions.is_empty()
-        || !genesis.has_matching_root()
-        || genesis.hash != genesis.computed_hash()
-        || !is_sealed_genesis(genesis, rules)
-    {
-        return None;
+    replay_kept(blocks, rules, 1)?.pop_back()
+}
+
+/// Replays the whole chain, keeping what it added up to after each of its last `keep` blocks.
+fn replay_kept(blocks: &[Block], rules: &ChainRules, keep: usize) -> Option<VecDeque<Tally>> {
+    let genesis = blocks.first().filter(|genesis| is_genesis(genesis, rules))?;
+    replay_from(blocks, 1, Tally::at_genesis(genesis, rules), rules, keep)
+}
+
+/// Checks `blocks[from..]` in order, starting from `tally`, what `blocks[..from]` add up to.
+/// Returns what the chain added up to after each of its last `keep` blocks, the last one at
+/// least, or `None` if a check fails. `from` is at least 1: genesis is never replayed.
+fn replay_from(
+    blocks: &[Block],
+    from: usize,
+    mut tally: Tally,
+    rules: &ChainRules,
+    keep: usize,
+) -> Option<VecDeque<Tally>> {
+    let first_kept = blocks.len().saturating_sub(keep.max(1));
+    let mut kept = VecDeque::new();
+    if from > first_kept {
+        kept.push_back(tally.clone());
     }
-    let mut tally = Tally::at_genesis(genesis, rules);
-    for height in 1..blocks.len() {
+    for height in from..blocks.len() {
         if !apply_block(&blocks[..height], &blocks[height], &mut tally, rules) {
             return None;
         }
+        if height >= first_kept {
+            kept.push_back(tally.clone());
+        }
     }
-    Some(tally)
+    Some(kept)
+}
+
+/// How many blocks' tallies to keep: enough to check any fork we may adopt from its split.
+fn keep(rules: &ChainRules) -> usize {
+    rules.max_reorg_depth as usize + 1
+}
+
+fn is_genesis(genesis: &Block, rules: &ChainRules) -> bool {
+    genesis.index == 0
+        && genesis.prev_hash == "0".repeat(64)
+        && genesis.timestamp.timestamp() == 0
+        && genesis.transactions.is_empty()
+        && genesis.has_matching_root()
+        && genesis.hash == genesis.computed_hash()
+        && is_sealed_genesis(genesis, rules)
+}
+
+/// Whether `blocks` are a chain of hashes from our genesis: each block's hash covers its header,
+/// its header covers its transactions through the Merkle root, and it names the block before it.
+/// No signatures, work or balances are checked: that's for a snapshot taken after these very
+/// blocks, which already did.
+fn links_up(blocks: &[Block], rules: &ChainRules) -> bool {
+    blocks.first().is_some_and(|genesis| is_genesis(genesis, rules))
+        && blocks
+            .windows(2)
+            .all(|pair| pair[1].index == pair[0].index + 1 && pair[1].prev_hash == pair[0].hash)
+        && blocks
+            .iter()
+            .all(|block| block.has_matching_root() && block.hash == block.computed_hash())
 }
 
 /// Checks that `block` validly follows the blocks `before` it and adds it to `tally`. On `false`
@@ -849,6 +1005,105 @@ mod tests {
         assert_eq!(ours.extend(vec![block]), Err(ChainError::InvalidBlock));
         assert_eq!(ours.blocks().len(), 1);
         assert_eq!(ours.extend(vec![]), Err(ChainError::InvalidChain));
+    }
+
+    /// The remembered tallies say what a full replay of the chain up to each of them would.
+    fn assert_remembers_correctly(chain: &Blockchain, watched: &[Address]) {
+        assert_eq!(chain.recent.len(), keep(&chain.rules).min(chain.blocks.len()));
+        for height in chain.blocks.len() - chain.recent.len()..chain.blocks.len() {
+            let replayed = replay(&chain.blocks[..=height], &chain.rules).unwrap();
+            let kept = chain.tally_after(height).unwrap();
+            assert_eq!((kept.weight, kept.work), (replayed.weight, replayed.work), "at {height}");
+            for who in watched {
+                let (k, r) =
+                    (kept.ledger.balance(who.as_str()), replayed.ledger.balance(who.as_str()));
+                assert_eq!(k, r, "{who} at {height}");
+            }
+        }
+        assert_eq!(chain.tally.weight, chain.recent.back().unwrap().weight);
+    }
+
+    #[test]
+    fn forks_are_checked_from_where_they_split() {
+        let rules = RULES.with_max_reorg_depth(3);
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut ours = Blockchain::new(rules);
+        for _ in 0..6 {
+            ours.mine(&alice).unwrap();
+        }
+        assert_remembers_correctly(&ours, &[alice.clone(), bob.clone()]);
+
+        // Their fork splits two blocks back and carries a payment ours never saw.
+        let mut theirs = Blockchain::restore(ours.blocks()[..5].to_vec(), rules).unwrap();
+        theirs.submit(transfer(&alice_key, &bob, 30, 0)).unwrap();
+        for _ in 0..3 {
+            theirs.mine(&bob).unwrap();
+        }
+        assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+        assert_eq!(ours.blocks(), theirs.blocks());
+        assert_eq!((ours.balance(&alice), ours.balance(&bob)), (170, 180));
+        assert_remembers_correctly(&ours, &[alice.clone(), bob.clone()]);
+
+        // Blocks that arrive one by one after the fork are remembered too.
+        let mut longer = theirs.clone();
+        longer.mine(&alice).unwrap();
+        longer.mine(&alice).unwrap();
+        assert_eq!(ours.extend(longer.blocks()[8..].to_vec()), Ok(Extension::Adopted));
+        assert_remembers_correctly(&ours, &[alice, bob]);
+    }
+
+    #[test]
+    fn a_restart_from_a_snapshot_replays_only_what_came_after() {
+        let rules = RULES.with_max_reorg_depth(2);
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut chain = Blockchain::new(rules);
+        chain.mine(&alice).unwrap();
+        chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
+        for _ in 0..4 {
+            chain.mine(&alice).unwrap();
+        }
+        let snapshot = chain.snapshot().unwrap();
+        assert_eq!(snapshot.height, chain.blocks().len() - 3, "the oldest block no fork may undo");
+
+        let (restored, from) =
+            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(snapshot.clone()))
+                .unwrap();
+        assert_eq!(from, Some(snapshot.height));
+        assert_eq!((restored.balance(&alice), restored.balance(&bob)), (230, 20));
+        assert_eq!((restored.weight(), restored.next_work()), (chain.weight(), chain.next_work()));
+        assert_remembers_correctly(&restored, &[alice.clone(), bob.clone()]);
+
+        // It's trusted for the blocks it covers: that's what it saves. Hence the checks below.
+        let mut generous = snapshot.clone();
+        generous.tally.ledger.credit(bob.as_str(), 1_000);
+        let (trusting, _) =
+            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(generous)).unwrap();
+        assert_eq!(trusting.balance(&bob), 1_020);
+
+        // Blocks it covers that were changed don't lead to its block, so it isn't used.
+        let mut tampered = chain.blocks().to_vec();
+        tampered[2].transactions[1].amount = 25;
+        assert!(Blockchain::restore_from(tampered, rules, Some(snapshot.clone())).is_err());
+
+        // Nor under other rules, or for a chain where its block was replaced.
+        let other = rules.with_max_reorg_depth(9);
+        let (_, from) =
+            Blockchain::restore_from(chain.blocks().to_vec(), other, Some(snapshot.clone()))
+                .unwrap();
+        assert_eq!(from, None);
+        let replaced = Snapshot { hash: "f".repeat(64), ..snapshot };
+        let (full, from) =
+            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(replaced)).unwrap();
+        assert_eq!((from, full.balance(&bob)), (None, 20));
+    }
+
+    #[test]
+    fn a_short_chain_has_no_snapshot_yet() {
+        let mut chain = Blockchain::new(RULES.with_max_reorg_depth(3));
+        chain.mine(&wallet().0).unwrap();
+        assert!(chain.snapshot().is_none());
     }
 
     #[test]

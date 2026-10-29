@@ -108,23 +108,53 @@ pub struct ConsensusState {
 pub struct NodeService {
     chain: Mutex<Blockchain>,
     repository: Box<dyn ChainRepository>,
+    /// Blocks between snapshots. 0 takes none.
+    snapshot_every: usize,
+    /// The height of the last snapshot saved or loaded.
+    last_snapshot: Mutex<usize>,
+    /// The snapshot the chain was restored from on opening, if one was used.
+    restored_from: Option<usize>,
 }
 
+/// Blocks between snapshots, by default.
+pub const SNAPSHOT_BLOCKS: usize = 100;
+
 impl NodeService {
-    /// Restores the saved chain, or starts and saves a new one if nothing is saved yet.
+    /// Restores the saved chain, or starts and saves a new one if nothing is saved yet. A saved
+    /// snapshot that fits the chain spares replaying the blocks before it.
     pub fn open(
         repository: Box<dyn ChainRepository>,
         rules: ChainRules,
     ) -> Result<Self, NodeError> {
-        let chain = match repository.load().map_err(NodeError::Storage)? {
-            Some(blocks) => Blockchain::restore(blocks, rules)?,
+        let (chain, restored_from) = match repository.load().map_err(NodeError::Storage)? {
+            Some(blocks) => {
+                // A snapshot that can't be read is no worse than none: the chain is replayed.
+                let snapshot = repository.load_snapshot().unwrap_or(None);
+                Blockchain::restore_from(blocks, rules, snapshot)?
+            }
             None => {
                 let chain = Blockchain::new(rules);
                 repository.save(chain.blocks(), 0).map_err(NodeError::Storage)?;
-                chain
+                (chain, None)
             }
         };
-        Ok(Self { chain: Mutex::new(chain), repository })
+        Ok(Self {
+            chain: Mutex::new(chain),
+            repository,
+            snapshot_every: SNAPSHOT_BLOCKS,
+            last_snapshot: Mutex::new(restored_from.unwrap_or(0)),
+            restored_from,
+        })
+    }
+
+    /// Saves a snapshot every `blocks` blocks instead of every `SNAPSHOT_BLOCKS`. 0 saves none.
+    pub fn with_snapshots_every(self, blocks: usize) -> Self {
+        Self { snapshot_every: blocks, ..self }
+    }
+
+    /// The height of the snapshot the chain was restored from on opening, if one was used.
+    pub fn restored_from(&self) -> Option<usize> {
+        self.restored_from
     }
 
     pub fn blocks(&self) -> Vec<Block> {
@@ -341,9 +371,30 @@ impl NodeService {
         if next.tip().hash != chain.tip().hash {
             let unchanged = shared_prefix(chain.blocks(), next.blocks());
             self.repository.save(next.blocks(), unchanged).map_err(NodeError::Storage)?;
+            self.maybe_snapshot(&next);
         }
         *chain = next;
         Ok(result)
+    }
+}
+
+impl NodeService {
+    /// Saves a snapshot once the chain has moved `snapshot_every` blocks past the last one. It
+    /// only saves time on the next start, so a failure is reported and otherwise ignored.
+    fn maybe_snapshot(&self, chain: &Blockchain) {
+        let Some(snapshot) = chain.snapshot().filter(|_| self.snapshot_every > 0) else {
+            return;
+        };
+        let mut last = self.last_snapshot.lock().unwrap();
+        if snapshot.height < *last + self.snapshot_every {
+            return;
+        }
+        match self.repository.save_snapshot(&snapshot) {
+            Ok(()) => *last = snapshot.height,
+            Err(e) => {
+                tracing::warn!("Could not save a snapshot at height {}: {e}", snapshot.height)
+            }
+        }
     }
 }
 
@@ -372,6 +423,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::domain::chain::Snapshot;
     use crate::domain::crypto;
     use crate::infrastructure::InMemoryRepository;
 
@@ -391,6 +443,12 @@ mod tests {
         }
         fn save(&self, blocks: &[Block], unchanged: usize) -> Result<(), RepositoryError> {
             self.0.save(blocks, unchanged)
+        }
+        fn load_snapshot(&self) -> Result<Option<Snapshot>, RepositoryError> {
+            self.0.load_snapshot()
+        }
+        fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), RepositoryError> {
+            self.0.save_snapshot(snapshot)
         }
     }
 
@@ -432,6 +490,32 @@ mod tests {
         let second = node(repo);
         assert_eq!(second.blocks(), first.blocks());
         assert_eq!(second.account(&miner).balance, 100);
+    }
+
+    #[test]
+    fn a_restart_picks_up_from_the_last_snapshot() {
+        let rules = RULES.with_max_reorg_depth(2);
+        let repo = SharedRepository::default();
+        let miner = new_address();
+        let first =
+            NodeService::open(Box::new(repo.clone()), rules).unwrap().with_snapshots_every(3);
+        assert_eq!(first.restored_from(), None);
+        for _ in 0..8 {
+            first.mine(&miner).unwrap();
+        }
+
+        // Nine blocks; the last two may still be undone, so the snapshot is after block 6.
+        let second = NodeService::open(Box::new(repo.clone()), rules).unwrap();
+        assert_eq!(second.restored_from(), Some(6));
+        assert_eq!(second.blocks(), first.blocks());
+        assert_eq!(second.account(&miner).balance, 400);
+
+        let none =
+            NodeService::open(Box::new(repo.clone()), rules).unwrap().with_snapshots_every(0);
+        for _ in 0..4 {
+            none.mine(&miner).unwrap();
+        }
+        assert_eq!(repo.load_snapshot().unwrap().unwrap().height, 6, "0 saves no more of them");
     }
 
     #[test]

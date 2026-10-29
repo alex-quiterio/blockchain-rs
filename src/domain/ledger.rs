@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use super::block::{Transaction, TxKind};
 use super::crypto;
 use super::error::ChainError;
 use super::randao;
 
 /// Balances, stakes, nonces and validator randomness that result from applying blocks in order.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
     balances: HashMap<String, u64>,
     stakes: HashMap<String, u64>,
@@ -19,7 +21,7 @@ pub struct Ledger {
     beacon: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Commitment {
     head: String,
     remaining: u32,

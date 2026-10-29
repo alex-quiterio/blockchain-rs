@@ -4,12 +4,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::domain::block::Block;
+use crate::domain::chain::Snapshot;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 
 /// Keeps the chain in one file, one block of JSON per line. A new block is appended, so saving
 /// costs the same however long the chain gets; the file is only rewritten after a fork, or when
 /// what's on disk isn't known. Files from older versions, one JSON array, still load, and are
-/// rewritten line by line on the next save.
+/// rewritten line by line on the next save. Snapshots go in a file beside it, `<path>.snapshot`.
 pub struct JsonFileRepository {
     path: PathBuf,
     /// How many blocks the file holds, one per line, when that's known for sure.
@@ -24,11 +25,13 @@ impl JsonFileRepository {
     /// Writes every block to a temporary file and renames it over the real one, so a crash
     /// never leaves half a chain.
     fn rewrite(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
-        let mut tmp = self.path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        fs::write(&tmp, lines_of(blocks)?)?;
-        fs::rename(&tmp, &self.path)?;
-        Ok(())
+        write_atomically(&self.path, &lines_of(blocks)?)
+    }
+
+    fn snapshot_path(&self) -> PathBuf {
+        let mut path = self.path.as_os_str().to_owned();
+        path.push(".snapshot");
+        path.into()
     }
 }
 
@@ -70,6 +73,26 @@ impl ChainRepository for JsonFileRepository {
         *lines = Some(blocks.len());
         Ok(())
     }
+
+    fn load_snapshot(&self) -> Result<Option<Snapshot>, RepositoryError> {
+        match fs::read(self.snapshot_path()) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), RepositoryError> {
+        write_atomically(&self.snapshot_path(), &serde_json::to_vec(snapshot)?)
+    }
+}
+
+fn write_atomically(path: &PathBuf, bytes: &[u8]) -> Result<(), RepositoryError> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, RepositoryError> {
@@ -180,6 +203,27 @@ mod tests {
         assert_eq!(repo.load().unwrap().unwrap(), blocks[..2]);
         repo.save(&blocks, 2).unwrap();
         assert_eq!(JsonFileRepository::new(&path.0).load().unwrap().unwrap(), blocks);
+    }
+
+    #[test]
+    fn snapshots_are_kept_beside_the_chain() {
+        let path = TempPath::new("snapshot");
+        let snapshot_path = TempPath(PathBuf::from(format!("{}.snapshot", path.0.display())));
+        let repo = JsonFileRepository::new(&path.0);
+        assert!(repo.load_snapshot().unwrap().is_none());
+
+        let rules = ChainRules::proof_of_work(2, 50).with_max_reorg_depth(1);
+        let mut chain = Blockchain::new(rules);
+        for _ in 0..3 {
+            chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
+        }
+        let snapshot = chain.snapshot().unwrap();
+        repo.save_snapshot(&snapshot).unwrap();
+        assert!(snapshot_path.0.exists());
+        let loaded = JsonFileRepository::new(&path.0).load_snapshot().unwrap().unwrap();
+        let (restored, from) =
+            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(loaded)).unwrap();
+        assert_eq!((from, restored.weight()), (Some(snapshot.height), chain.weight()));
     }
 
     #[test]

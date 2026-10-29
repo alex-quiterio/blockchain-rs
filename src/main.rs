@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use blockchain::api::{router, AppState};
-use blockchain::application::{Network, NodeService};
+use blockchain::application::{Network, NodeService, SNAPSHOT_BLOCKS};
 use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_REORG_DEPTH};
 use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
 
@@ -32,8 +32,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chain_file = std::env::var("CHAIN_FILE").unwrap_or_else(|_| DEFAULT_CHAIN_FILE.to_string());
 
     let repository = Box::new(JsonFileRepository::new(&chain_file));
-    let node = NodeService::open(repository, rules).map_err(|e| format!("{chain_file}: {e}"))?;
-    tracing::info!("Loaded {} blocks from {chain_file}", node.status().length);
+    let started = std::time::Instant::now();
+    let node = NodeService::open(repository, rules)
+        .map_err(|e| format!("{chain_file}: {e}"))?
+        .with_snapshots_every(env_or("SNAPSHOT_BLOCKS", SNAPSHOT_BLOCKS));
+    let length = node.tip().height + 1;
+    match node.restored_from() {
+        Some(height) => tracing::info!(
+            "Loaded {length} blocks from {chain_file} in {:.0?}, replaying only those after the snapshot at {height}",
+            started.elapsed()
+        ),
+        None => tracing::info!("Loaded {length} blocks from {chain_file} in {:.0?}", started.elapsed()),
+    }
     let public_url = std::env::var("PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}"));
     let network = Network::new(Arc::new(node), Box::new(HttpPeerClient::new()), Some(public_url));
     let state = AppState::new(network);
