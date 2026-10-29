@@ -8,7 +8,7 @@
 
 use ed25519_dalek::SigningKey;
 
-use super::crypto;
+use crate::domain::crypto;
 
 /// Reveals one commitment covers. Staking again after they run out makes a new one.
 pub const LENGTH: u32 = 1_000;

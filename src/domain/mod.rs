@@ -3,13 +3,13 @@
 pub mod address;
 pub mod block;
 pub mod chain;
+pub mod consensus;
 pub mod crypto;
-pub mod difficulty;
 pub mod error;
 pub mod ledger;
 pub mod mempool;
 pub mod merkle;
-pub mod randao;
 pub mod repository;
-pub mod rules;
-pub mod weight;
+
+// The consensus modules live under `consensus/`; these keep their old paths working.
+pub use consensus::{difficulty, randao, rules, weight};

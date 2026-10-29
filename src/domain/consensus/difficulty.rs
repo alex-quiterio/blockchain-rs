@@ -8,8 +8,8 @@
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use super::block::Block;
 use super::rules::Retarget;
+use crate::domain::block::Block;
 
 /// The most one adjustment may change the work by, either way, as in Bitcoin.
 pub const MAX_STEP: i64 = 4;

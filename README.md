@@ -201,16 +201,21 @@ flowchart TB
     api["<b>api/</b><br/>routes · handlers · DTOs"] --> app
     infra["<b>infrastructure/</b><br/>JSON file · in-memory · HTTP peers"] --> app
     app["<b>application/</b><br/>NodeService · Network"] --> domain
-    domain["<b>domain/</b><br/>Blockchain · Block · Transaction · Mempool · Ledger<br/>ChainRules · Address · ports"]
+    domain["<b>domain/</b><br/>chain/ · consensus/ · Block · Transaction<br/>Mempool · Ledger · Merkle · Address · ports"]
 ```
 
 - **`domain/`** has the rules and no I/O.
-  - `chain.rs`: the `Blockchain` aggregate root, which mines, forges, validates and runs `adopt_if_heavier`
+  - `chain/`: the chain itself.
+    - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`
+    - `validation.rs`: the rules each block is checked by, and replaying a chain by them
+    - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
+  - `consensus/`: how the network agrees on one chain.
+    - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
+    - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
+    - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
+    - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
   - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself
-  - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
-  - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
-  - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
-  - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
+  - `merkle.rs`: Merkle roots and proofs over a block's transactions
   - `mempool.rs`, `ledger.rs`: pending transactions, kept as a running projection, and the balances, stakes and nonces
   - `address.rs`: a value object that can only hold a valid public key
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port
@@ -260,7 +265,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 117 tests: unit, HTTP and property-based
+cargo test        # 121 tests: unit, HTTP and property-based
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

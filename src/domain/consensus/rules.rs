@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::crypto;
+use crate::domain::crypto;
 
 /// How a chain decides who may add the next block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
