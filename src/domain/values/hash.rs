@@ -39,6 +39,13 @@ macro_rules! sha256_type {
             }
         }
 
+        /// All zeros, until there's something to hash.
+        impl Default for $name {
+            fn default() -> Self {
+                Self::zero()
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(&self.0)
@@ -69,6 +76,22 @@ sha256_type!(
 sha256_type!(
     /// The root of the Merkle tree over a block's transactions, which its header carries.
     MerkleRoot
+);
+
+sha256_type!(
+    /// A link of a validator's reveal chain, shown in a block it forges. Hashing it once gives the
+    /// link shown before it, so anyone can check it, and nobody can show the next one early.
+    Reveal
+);
+
+sha256_type!(
+    /// The end of a validator's reveal chain, published in their first stake.
+    Commitment
+);
+
+sha256_type!(
+    /// The randomness that picks who forges next, which only validators' reveals move.
+    Beacon
 );
 
 #[cfg(test)]

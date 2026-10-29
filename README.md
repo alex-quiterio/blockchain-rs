@@ -220,7 +220,8 @@ flowchart TB
   - `mempool.rs`, `ledger.rs`: pending transactions, kept as a running projection, and the balances, stakes and nonces
   - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
     - `address.rs`: an `Address` can only hold a valid public key
-    - `hash.rs`: `BlockHash` and `MerkleRoot` can only hold 64 hex characters, and can't be passed for each other
+    - `hash.rs`: `BlockHash`, `MerkleRoot`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another
+    - `signature.rs`: `Signature`, 128 hex characters; a block reward has none, which travels as `""`
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
     - `party.rs`: where a transaction's coins come from (`Source`: an account, or new coins for a block reward) and go (`Destination`: an account, or into or out of a stake), instead of strings with magic values
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port, which is told the events to save
@@ -271,7 +272,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 131 tests: unit, HTTP, property-based and doctests
+cargo test        # 132 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

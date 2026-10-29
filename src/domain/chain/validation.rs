@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use chrono::Utc;
 
 use super::tally::Tally;
+use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty::{self, meets_work};
 use crate::domain::ledger::Ledger;
@@ -122,7 +123,7 @@ pub(super) fn apply_block(
         || Some(coinbase.amount) != payout(rules.reward, transfers)
         || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index
-        || block.validator.as_deref().is_some_and(|v| v != producer)
+        || block.validator.as_ref().is_some_and(|v| v.as_str() != producer)
     {
         return false;
     }
@@ -144,7 +145,9 @@ fn reveals_as_required(block: &Block, ledger: &mut Ledger, rules: &ChainRules) -
     }
     let selected = select_validator(&ledger.validator_stakes(), ledger.beacon()).is_some();
     match (&block.validator, &block.reveal) {
-        (Some(validator), Some(reveal)) if selected => ledger.apply_reveal(validator, reveal),
+        (Some(validator), Some(reveal)) if selected => {
+            ledger.apply_reveal(validator.as_str(), reveal)
+        }
         (_, None) => !selected,
         _ => false,
     }
@@ -175,8 +178,11 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
         Consensus::ProofOfStake => {
             block.nonce == 0
                 && block.is_signed_by_validator()
-                && select_validator(&ledger.validator_stakes(), ledger.beacon())
-                    .is_none_or(|expected| block.validator.as_deref() == Some(&expected))
+                && select_validator(&ledger.validator_stakes(), ledger.beacon()).is_none_or(
+                    |expected| {
+                        block.validator.as_ref().map(Address::as_str) == Some(expected.as_str())
+                    },
+                )
         }
     }
 }
@@ -184,7 +190,6 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::address::Address;
     use crate::domain::crypto;
 
     #[test]

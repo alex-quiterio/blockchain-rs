@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use super::block::Transaction;
 use super::error::ChainError;
 use super::ledger::Ledger;
+use super::values::Signature;
 
 /// Signed transfers waiting to be mined, in the order they arrived. Together they always apply
 /// cleanly on top of the confirmed ledger.
@@ -17,7 +18,7 @@ pub struct Mempool {
     /// The confirmed ledger with every waiting transaction applied.
     projected: Ledger,
     /// The signatures of everything waiting, to drop gossiped duplicates at once.
-    signatures: HashSet<String>,
+    signatures: HashSet<Signature>,
 }
 
 impl Mempool {
@@ -46,11 +47,12 @@ impl Mempool {
 
     /// Queues `tx` if it applies after everything already waiting.
     pub fn admit(&mut self, tx: Transaction) -> Result<(), ChainError> {
-        if self.signatures.contains(&tx.signature) {
+        if tx.signature.as_ref().is_some_and(|s| self.signatures.contains(s)) {
             return Err(ChainError::AlreadyPending);
         }
         self.projected.apply_transfer(&tx)?;
-        self.signatures.insert(tx.signature.clone());
+        // Only signed transfers get this far: a block reward is refused above.
+        self.signatures.extend(tx.signature.clone());
         self.waiting.push(tx);
         Ok(())
     }

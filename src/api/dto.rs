@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::block::{BlockHeader, Transaction};
 use crate::domain::merkle::Step;
-use crate::domain::values::{BlockHash, Coins};
+use crate::domain::values::{BlockHash, Coins, Commitment, Reveal};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
@@ -25,7 +25,7 @@ pub struct SignRequest {
     #[serde(default)]
     pub fee: Coins,
     /// For a first stake. Worked out from `secret_key` when left out.
-    pub commitment: Option<String>,
+    pub commitment: Option<Commitment>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,7 +39,7 @@ pub struct ProposalRequest {
     /// The address that will sign the block.
     pub validator: String,
     /// The next link of the validator's reveal chain. Leave it out while anyone may forge.
-    pub reveal: Option<String>,
+    pub reveal: Option<Reveal>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

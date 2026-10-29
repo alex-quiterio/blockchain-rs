@@ -191,7 +191,8 @@ impl Load {
             Ok(()) => {
                 let mut stats = self.stats.lock().unwrap();
                 stats.accepted += 1;
-                stats.unconfirmed.insert(tx.signature().to_string(), Instant::now());
+                let signature = tx.signature().expect("transfers are signed").to_string();
+                stats.unconfirmed.insert(signature, Instant::now());
             }
             Err(reason) => {
                 *self.stats.lock().unwrap().rejected.entry(reason).or_default() += 1;
@@ -280,7 +281,8 @@ impl Load {
             stats.blocks += 1;
             for tx in block.transactions().iter().skip(1) {
                 stats.fees += tx.fee().value();
-                if let Some(sent) = stats.unconfirmed.remove(tx.signature()) {
+                let signature = tx.signature().map(|s| s.as_str()).unwrap_or_default();
+                if let Some(sent) = stats.unconfirmed.remove(signature) {
                     stats.confirmed += 1;
                     stats.latencies.push(sent.elapsed().as_secs_f64());
                 }

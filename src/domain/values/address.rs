@@ -1,12 +1,15 @@
 use std::fmt;
 
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::crypto;
 use crate::domain::error::ChainError;
 
 /// An account: a hex-encoded ed25519 public key. Holding one means it has already been checked.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// On the wire it's the hex string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Address(String);
 
 impl Address {
@@ -25,6 +28,20 @@ impl Address {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for Address {
+    type Error = ChainError;
+
+    fn try_from(address: String) -> Result<Self, ChainError> {
+        Self::parse(&address)
+    }
+}
+
+impl From<Address> for String {
+    fn from(address: Address) -> String {
+        address.0
     }
 }
 

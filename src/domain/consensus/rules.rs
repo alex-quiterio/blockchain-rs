@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::crypto;
-use crate::domain::values::Coins;
+use crate::domain::values::{Beacon, Coins};
 
 /// How a chain decides who may add the next block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,12 +122,13 @@ impl Default for ChainRules {
 /// Picks who forges the block after `prev_hash`: a stake-weighted draw seeded by that hash, so
 /// every node computes the same answer. `stakes` must be sorted by address. `None` while nothing
 /// is staked, when anyone may forge.
-pub fn select_validator(stakes: &[(String, Coins)], prev_hash: &str) -> Option<String> {
+pub fn select_validator(stakes: &[(String, Coins)], beacon: &Beacon) -> Option<String> {
     let total = Coins::total(stakes.iter().map(|(_, amount)| *amount))?.value();
     if total == 0 {
         return None;
     }
-    let digest = hex::decode(crypto::sha256_hex(prev_hash.as_bytes())).expect("sha256 is hex");
+    let digest =
+        hex::decode(crypto::sha256_hex(beacon.as_str().as_bytes())).expect("sha256 is hex");
     let seed = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) % total;
     let mut cumulative = 0;
     stakes.iter().find_map(|(address, amount)| {
@@ -142,17 +143,23 @@ mod tests {
 
     #[test]
     fn nobody_is_selected_without_stake() {
-        assert_eq!(select_validator(&[], "abc"), None);
-        assert_eq!(select_validator(&[("a".into(), Coins::ZERO)], "abc"), None);
+        assert_eq!(select_validator(&[], &Beacon::of(b"abc")), None);
+        assert_eq!(select_validator(&[("a".into(), Coins::ZERO)], &Beacon::of(b"abc")), None);
     }
 
     #[test]
     fn selection_is_deterministic_and_weighted_by_stake() {
         let stakes = [("alice".to_string(), Coins::new(90)), ("bob".to_string(), Coins::new(10))];
-        assert_eq!(select_validator(&stakes, "seed"), select_validator(&stakes, "seed"));
+        assert_eq!(
+            select_validator(&stakes, &Beacon::of(b"seed")),
+            select_validator(&stakes, &Beacon::of(b"seed"))
+        );
 
         let alice = (0..1_000)
-            .filter(|i| select_validator(&stakes, &i.to_string()).as_deref() == Some("alice"))
+            .filter(|i| {
+                select_validator(&stakes, &Beacon::of(i.to_string().as_bytes())).as_deref()
+                    == Some("alice")
+            })
             .count();
         assert!((850..=950).contains(&alice), "alice was picked {alice} times out of 1000");
     }

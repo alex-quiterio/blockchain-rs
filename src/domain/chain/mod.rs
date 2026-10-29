@@ -15,7 +15,7 @@ use crate::domain::ledger::ValidatorState;
 use crate::domain::mempool::Mempool;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
-use crate::domain::values::{BlockHash, Coins};
+use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 mod events;
@@ -228,7 +228,7 @@ impl Blockchain {
     }
 
     /// The randomness beacon the next validator is drawn from.
-    pub fn beacon(&self) -> &str {
+    pub fn beacon(&self) -> &Beacon {
         self.tally().ledger.beacon()
     }
 
@@ -305,7 +305,7 @@ impl Blockchain {
     pub fn propose(
         &self,
         validator: &Address,
-        reveal: Option<String>,
+        reveal: Option<Reveal>,
     ) -> Result<Block, ChainError> {
         self.check_turn(validator)?;
         match (self.due_reveal(validator), &reveal) {
@@ -334,8 +334,8 @@ impl Blockchain {
     /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
     /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
     pub fn append_forged(&mut self, block: Block) -> Result<&Block, ChainError> {
-        let validator = block.validator.as_deref().ok_or(ChainError::InvalidBlock)?;
-        self.check_turn(&Address::parse(validator)?)?;
+        let validator = block.validator.clone().ok_or(ChainError::InvalidBlock)?;
+        self.check_turn(&validator)?;
         self.append_sealed(block)
     }
 
@@ -520,7 +520,7 @@ impl Blockchain {
         self.mempool
             .transactions()
             .iter()
-            .find(|tx| !signature.is_empty() && tx.signature == signature)
+            .find(|tx| tx.signature.as_ref().is_some_and(|s| s.as_str() == signature))
     }
 
     /// Transactions to or from `address` waiting in the mempool.
@@ -548,7 +548,10 @@ impl Blockchain {
             return None;
         }
         self.blocks.iter().rev().find_map(|block| {
-            let position = block.transactions.iter().position(|tx| tx.signature == signature)?;
+            let position = block
+                .transactions
+                .iter()
+                .position(|tx| tx.signature.as_ref().is_some_and(|s| s.as_str() == signature))?;
             Some((block, position))
         })
     }
@@ -1123,7 +1126,7 @@ mod tests {
     }
 
     /// The reveal `key`'s next block must carry, as a wallet would work it out.
-    fn reveal_for(chain: &Blockchain, key: &SigningKey) -> Option<String> {
+    fn reveal_for(chain: &Blockchain, key: &SigningKey) -> Option<Reveal> {
         chain.next_validator()?;
         let state = chain.validator_state(&Address::of(key));
         Some(randao::reveal(key, state.next_epoch - 1, state.reveals_left?))
@@ -1137,7 +1140,7 @@ mod tests {
 
         let block = chain.forge(&alice_key).unwrap();
         assert_eq!(block.nonce, 0);
-        assert_eq!(block.validator.as_deref(), Some(alice.as_str()));
+        assert_eq!(block.validator.as_ref(), Some(&alice));
         assert!(block.is_signed_by_validator());
         assert_eq!(chain.balance(&alice), Coins::new(50));
         assert!(chain.is_valid());
@@ -1217,7 +1220,7 @@ mod tests {
         chain.forge(&alice_key).unwrap();
 
         let mut blocks = chain.blocks().to_vec();
-        blocks[1].validator = Some(mallory.to_string());
+        blocks[1].validator = Some(mallory.clone());
         blocks[1].hash = blocks[1].computed_hash();
         assert!(!validate_blocks(&blocks, &POS), "signature no longer matches the validator");
 
@@ -1388,7 +1391,7 @@ mod tests {
 
         assert_eq!(chain.propose(&validator, None).err(), Some(ChainError::BadReveal));
         assert_eq!(
-            chain.propose(&validator, Some("0".repeat(64))).err(),
+            chain.propose(&validator, Some(Reveal::zero())).err(),
             Some(ChainError::BadReveal)
         );
         let skipped_ahead = randao::reveal(&key, 0, randao::LENGTH - 2);
@@ -1400,16 +1403,16 @@ mod tests {
         // A validly signed block with a made-up reveal still fails validation.
         let (index, txs) = chain.next_contents(&validator);
         let mut forged = Block::forge(index, Utc::now(), chain.tip().hash.clone(), txs, &key, None);
-        forged.reveal = Some("f".repeat(64));
+        forged.reveal = Some(Reveal::of(b"a link of nobody's chain"));
         forged.hash = forged.computed_hash();
         forged.sign(&key);
         assert_eq!(chain.append_forged(forged).err(), Some(ChainError::InvalidBlock));
 
-        let beacon = chain.beacon().to_string();
+        let beacon = chain.beacon().clone();
         let mut block = chain.propose(&validator, Some(due.clone())).unwrap();
         block.sign(&key);
         chain.append_forged(block).unwrap();
-        assert_eq!(chain.beacon(), randao::mix(&beacon, &due));
+        assert_eq!(*chain.beacon(), randao::mix(&beacon, &due));
         assert_eq!(chain.validator_state(&validator).reveals_left, Some(randao::LENGTH - 1));
         assert!(chain.is_valid());
     }
@@ -1473,14 +1476,14 @@ mod tests {
     #[test]
     fn the_beacon_only_moves_with_reveals() {
         let mut pow = chain();
-        let genesis_beacon = pow.beacon().to_string();
+        let genesis_beacon = pow.beacon().clone();
         pow.mine(&wallet().0).unwrap();
-        assert_eq!(pow.beacon(), genesis_beacon, "mining reveals nothing");
+        assert_eq!(*pow.beacon(), genesis_beacon, "mining reveals nothing");
 
         let mut pos = Blockchain::new(POS);
-        let start = pos.beacon().to_string();
+        let start = pos.beacon().clone();
         pos.forge(&wallet().1).unwrap();
-        assert_eq!(pos.beacon(), start, "nobody can steer it while anyone may forge");
+        assert_eq!(*pos.beacon(), start, "nobody can steer it while anyone may forge");
     }
 
     // ---- Fees -----------------------------------------------------------------------------

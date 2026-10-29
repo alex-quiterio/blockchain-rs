@@ -384,11 +384,14 @@ mod tests {
             node.submit(tx.clone()).unwrap();
             payments.push(tx);
         }
-        assert!(node.queries().prove(payments[3].signature()).is_none(), "not in a block yet");
+        assert!(
+            node.queries().prove(payments[3].signature().unwrap().as_str()).is_none(),
+            "not in a block yet"
+        );
         node.mine(&alice).unwrap();
         node.mine(&alice).unwrap();
 
-        let proof = node.queries().prove(payments[3].signature()).unwrap();
+        let proof = node.queries().prove(payments[3].signature().unwrap().as_str()).unwrap();
         assert_eq!(proof.transaction, payments[3]);
         assert_eq!((proof.header.index, proof.confirmations), (2, 2));
         assert_eq!(proof.header.hash, proof.header.computed_hash());
@@ -407,12 +410,13 @@ mod tests {
         let payment = Transaction::signed(&key, &bob, Coins::new(7), 0, Coins::new(1));
         node.submit(payment.clone()).unwrap();
 
-        let pending = node.queries().locate(payment.signature()).unwrap();
+        let pending = node.queries().locate(payment.signature().unwrap().as_str()).unwrap();
         assert_eq!((pending.transaction, pending.block), (payment.clone(), None));
         assert_eq!(node.queries().history(&bob).len(), 1);
 
         let block = node.mine(&alice).unwrap();
-        let placement = node.queries().locate(payment.signature()).unwrap().block.unwrap();
+        let placement =
+            node.queries().locate(payment.signature().unwrap().as_str()).unwrap().block.unwrap();
         assert_eq!((placement.height, placement.position, placement.confirmations), (2, 1, 1));
         assert_eq!(node.queries().block("2"), Some(block.clone()));
         assert_eq!(node.queries().block(block.hash().as_str()), Some(block));

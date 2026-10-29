@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use ed25519_dalek::SigningKey;
 
 use super::address::Address;
-use super::crypto;
 use super::difficulty::meets_work;
 use super::merkle;
 use super::rules::{ChainRules, Consensus};
-use super::values::{BlockHash, Coins, Destination, MerkleRoot, Source};
+use super::values::signature::{self, Signature};
+use super::values::{BlockHash, Coins, Commitment, Destination, MerkleRoot, Reveal, Source};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
@@ -46,7 +46,8 @@ pub struct Transaction {
     /// How many transactions the sender has made before this one. Stops replays.
     pub(in crate::domain) nonce: u64,
     /// Hex-encoded ed25519 signature over `signing_payload()`. Empty for coinbase.
-    pub(in crate::domain) signature: String,
+    #[serde(with = "signature::or_empty")]
+    pub(in crate::domain) signature: Option<Signature>,
     /// Optional tip for whoever adds the block, paid on top of `amount`. Left out when zero, so
     /// transactions without one keep their original JSON and signature.
     #[serde(default, skip_serializing_if = "Coins::is_zero")]
@@ -54,7 +55,7 @@ pub struct Transaction {
     /// Stakes only: the end of the staker's reveal hash chain, needed the first time they stake
     /// (see `randao`). Left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::domain) commitment: Option<String>,
+    pub(in crate::domain) commitment: Option<Commitment>,
 }
 
 impl Transaction {
@@ -76,17 +77,17 @@ impl Transaction {
         self.nonce
     }
 
-    /// Empty for a block reward.
-    pub fn signature(&self) -> &str {
-        &self.signature
+    /// `None` for a block reward.
+    pub fn signature(&self) -> Option<&Signature> {
+        self.signature.as_ref()
     }
 
     pub fn fee(&self) -> Coins {
         self.fee
     }
 
-    pub fn commitment(&self) -> Option<&str> {
-        self.commitment.as_deref()
+    pub fn commitment(&self) -> Option<&Commitment> {
+        self.commitment.as_ref()
     }
 
     pub fn signing_payload(
@@ -125,7 +126,7 @@ impl Transaction {
         amount: Coins,
         nonce: u64,
         fee: Coins,
-        commitment: Option<String>,
+        commitment: Option<Commitment>,
     ) -> Self {
         Self::signed_with(key, Destination::Stake, amount, nonce, fee, commitment)
     }
@@ -136,13 +137,13 @@ impl Transaction {
         amount: Coins,
         nonce: u64,
         fee: Coins,
-        commitment: Option<String>,
+        commitment: Option<Commitment>,
     ) -> Self {
         let from = Source::Account(Address::of(key));
         let (sender, recipient) = (from.to_string(), to.to_string());
-        let payload =
-            Self::signing_payload(&sender, &recipient, amount, nonce, fee, commitment.as_deref());
-        let signature = crypto::sign(key, &payload);
+        let commit = commitment.as_ref().map(Commitment::as_str);
+        let payload = Self::signing_payload(&sender, &recipient, amount, nonce, fee, commit);
+        let signature = Some(Signature::sign(key, &payload));
         Self { from, to, amount, nonce, signature, fee, commitment }
     }
 
@@ -153,7 +154,7 @@ impl Transaction {
             self.amount,
             self.nonce,
             self.fee,
-            self.commitment.as_deref(),
+            self.commitment.as_ref().map(Commitment::as_str),
         )
     }
 
@@ -188,7 +189,7 @@ impl Transaction {
             to: Destination::Account(producer.clone()),
             amount,
             nonce: height,
-            signature: String::new(),
+            signature: None,
             fee: Coins::ZERO,
             commitment: None,
         }
@@ -217,14 +218,14 @@ pub struct Block {
     /// Proof of stake only: who forged the block. Left out of proof-of-work blocks entirely, so
     /// their JSON and hashes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::domain) validator: Option<String>,
+    pub(in crate::domain) validator: Option<Address>,
     /// Proof of stake only: the next link of the validator's reveal chain, mixed into the beacon
     /// that picks who forges next. Absent while nothing is staked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::domain) reveal: Option<String>,
+    pub(in crate::domain) reveal: Option<Reveal>,
     /// Proof of stake only: the validator's signature over `hash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::domain) signature: Option<String>,
+    pub(in crate::domain) signature: Option<Signature>,
 }
 
 impl Block {
@@ -259,18 +260,18 @@ impl Block {
     }
 
     /// Proof of stake only.
-    pub fn validator(&self) -> Option<&str> {
-        self.validator.as_deref()
+    pub fn validator(&self) -> Option<&Address> {
+        self.validator.as_ref()
     }
 
     /// Proof of stake only.
-    pub fn reveal(&self) -> Option<&str> {
-        self.reveal.as_deref()
+    pub fn reveal(&self) -> Option<&Reveal> {
+        self.reveal.as_ref()
     }
 
     /// Proof of stake only.
-    pub fn signature(&self) -> Option<&str> {
-        self.signature.as_deref()
+    pub fn signature(&self) -> Option<&Signature> {
+        self.signature.as_ref()
     }
 
     /// The first block. Its timestamp is fixed, so every node with the same rules has the same one.
@@ -331,7 +332,7 @@ impl Block {
         prev_hash: BlockHash,
         transactions: Vec<Transaction>,
         key: &SigningKey,
-        reveal: Option<String>,
+        reveal: Option<Reveal>,
     ) -> Self {
         let validator = Address::of(key);
         let mut block =
@@ -348,10 +349,10 @@ impl Block {
         prev_hash: BlockHash,
         transactions: Vec<Transaction>,
         validator: &Address,
-        reveal: Option<String>,
+        reveal: Option<Reveal>,
     ) -> Self {
         let mut block = Self::unsealed(index, timestamp, prev_hash, transactions);
-        block.validator = Some(validator.to_string());
+        block.validator = Some(validator.clone());
         block.reveal = reveal;
         block.hash = block.computed_hash();
         block
@@ -359,7 +360,7 @@ impl Block {
 
     /// Proof of stake, step two: the validator signs the hash.
     pub fn sign(&mut self, key: &SigningKey) {
-        self.signature = Some(crypto::sign(key, self.hash.as_str().as_bytes()));
+        self.signature = Some(Signature::sign(key, self.hash.as_str().as_bytes()));
     }
 
     fn unsealed(
@@ -391,7 +392,10 @@ impl Block {
             &self.prev_hash,
             &self.merkle_root,
             self.nonce,
-            [&self.validator, &self.reveal],
+            [
+                self.validator.as_ref().map(Address::as_str),
+                self.reveal.as_ref().map(Reveal::as_str),
+            ],
         )
     }
 
@@ -419,7 +423,7 @@ impl Block {
     pub fn is_signed_by_validator(&self) -> bool {
         match (&self.validator, &self.signature) {
             (Some(validator), Some(signature)) => {
-                crypto::verify(validator, self.hash.as_str().as_bytes(), signature)
+                signature.is_by(validator, self.hash.as_str().as_bytes())
             }
             _ => false,
         }
@@ -437,11 +441,11 @@ pub struct BlockHeader {
     pub nonce: u64,
     pub hash: BlockHash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validator: Option<String>,
+    pub validator: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reveal: Option<String>,
+    pub reveal: Option<Reveal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
+    pub signature: Option<Signature>,
 }
 
 impl BlockHeader {
@@ -452,7 +456,10 @@ impl BlockHeader {
             &self.prev_hash,
             &self.merkle_root,
             self.nonce,
-            [&self.validator, &self.reveal],
+            [
+                self.validator.as_ref().map(Address::as_str),
+                self.reveal.as_ref().map(Reveal::as_str),
+            ],
         )
     }
 }
@@ -464,7 +471,7 @@ fn header_hash(
     prev_hash: &BlockHash,
     merkle_root: &MerkleRoot,
     nonce: u64,
-    extras: [&Option<String>; 2],
+    extras: [Option<&str>; 2],
 ) -> BlockHash {
     let ts = timestamp.to_rfc3339_opts(SecondsFormat::Nanos, true);
     let mut fields = format!("{index}|{ts}|{prev_hash}|{merkle_root}|{nonce}");

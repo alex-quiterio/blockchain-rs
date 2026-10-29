@@ -12,7 +12,7 @@ use crate::domain::error::ChainError;
 use crate::domain::ledger::ValidatorState;
 use crate::domain::merkle;
 use crate::domain::rules::ChainRules;
-use crate::domain::values::{BlockHash, Coins};
+use crate::domain::values::{BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 pub struct TipStatus {
@@ -229,7 +229,7 @@ impl ChainQueries {
     pub fn propose(
         &self,
         validator: &Address,
-        reveal: Option<String>,
+        reveal: Option<Reveal>,
     ) -> Result<Block, ChainError> {
         self.chain.lock().unwrap().propose(validator, reveal)
     }

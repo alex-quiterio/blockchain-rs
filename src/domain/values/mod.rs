@@ -5,7 +5,9 @@ pub mod address;
 mod coins;
 mod hash;
 mod party;
+pub mod signature;
 
 pub use coins::Coins;
-pub use hash::{BlockHash, MerkleRoot};
+pub use hash::{Beacon, BlockHash, Commitment, MerkleRoot, Reveal};
 pub use party::{Destination, Source, COINBASE, STAKE, UNSTAKE};
+pub use signature::Signature;

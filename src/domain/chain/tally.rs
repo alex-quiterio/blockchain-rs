@@ -27,7 +27,7 @@ pub(super) struct Tally {
 impl Tally {
     pub(super) fn at_genesis(genesis: &Block, rules: &ChainRules) -> Self {
         Self {
-            ledger: Ledger::starting_at(genesis.hash.as_str()),
+            ledger: Ledger::starting_at(&genesis.hash),
             weight: ChainWeight::ZERO,
             work: rules.initial_work(),
         }

@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::block::{Transaction, TxKind};
-use super::crypto;
 use super::error::ChainError;
 use super::randao;
-use super::values::Coins;
+use super::values::{Beacon, BlockHash, Coins, Reveal};
 
 /// Balances, stakes, nonces and validator randomness that result from applying blocks in order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -15,16 +14,17 @@ pub struct Ledger {
     stakes: HashMap<String, Coins>,
     nonces: HashMap<String, u64>,
     /// Each validator's reveal chain: the link they showed last and how many are left.
-    commitments: HashMap<String, Commitment>,
+    commitments: HashMap<String, RevealChain>,
     /// How many commitments each address has ever made, which numbers the next one.
     epochs: HashMap<String, u64>,
     /// The randomness that picks the next validator, mixed with every reveal.
-    beacon: String,
+    beacon: Beacon,
 }
 
+/// A validator's reveal chain as far as it's been shown: the last link, and how many are left.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Commitment {
-    head: String,
+struct RevealChain {
+    head: Reveal,
     remaining: u32,
 }
 
@@ -39,11 +39,12 @@ pub struct ValidatorState {
 
 impl Ledger {
     /// An empty ledger whose beacon starts at the genesis hash.
-    pub fn starting_at(genesis_hash: &str) -> Self {
-        Self { beacon: genesis_hash.to_string(), ..Self::default() }
+    pub fn starting_at(genesis_hash: &BlockHash) -> Self {
+        let beacon = Beacon::parse(genesis_hash.as_str()).expect("both are SHA-256 hex");
+        Self { beacon, ..Self::default() }
     }
 
-    pub fn beacon(&self) -> &str {
+    pub fn beacon(&self) -> &Beacon {
         &self.beacon
     }
 
@@ -62,21 +63,21 @@ impl Ledger {
         }
     }
 
-    fn active_commitment(&self, address: &str) -> Option<&Commitment> {
+    fn active_commitment(&self, address: &str) -> Option<&RevealChain> {
         self.commitments.get(address).filter(|c| c.remaining > 0)
     }
 
     /// Checks that `reveal` opens `validator`'s commitment, then moves their chain along by one
     /// and mixes the reveal into the beacon.
-    pub(super) fn apply_reveal(&mut self, validator: &str, reveal: &str) -> bool {
-        let Some(commitment) = self.commitments.get_mut(validator) else {
+    pub(super) fn apply_reveal(&mut self, validator: &str, reveal: &Reveal) -> bool {
+        let Some(chain) = self.commitments.get_mut(validator) else {
             return false;
         };
-        if commitment.remaining == 0 || !randao::opens(reveal, &commitment.head) {
+        if chain.remaining == 0 || !randao::opens(reveal, &chain.head) {
             return false;
         }
-        commitment.head = reveal.to_string();
-        commitment.remaining -= 1;
+        chain.head = reveal.clone();
+        chain.remaining -= 1;
         self.beacon = randao::mix(&self.beacon, reveal);
         true
     }
@@ -127,7 +128,7 @@ impl Ledger {
         if tx.nonce != expected {
             return Err(ChainError::BadNonce { expected, got: tx.nonce });
         }
-        if !crypto::verify(from, &tx.payload(), &tx.signature) {
+        if !tx.signature.as_ref().is_some_and(|s| s.is_by(sender, &tx.payload())) {
             return Err(ChainError::BadSignature);
         }
         // A first stake must commit to a reveal chain; any other transaction must not.
@@ -135,7 +136,6 @@ impl Ledger {
         match (&tx.commitment, needs_commitment) {
             (None, true) => return Err(ChainError::MissingCommitment),
             (Some(_), false) => return Err(ChainError::UnexpectedCommitment),
-            (Some(c), true) if !is_sha256_hex(c) => return Err(ChainError::MissingCommitment),
             _ => {}
         }
         // The fee always comes out of the balance. So does the amount, unless it is unstaked.
@@ -161,9 +161,9 @@ impl Ledger {
             }
         }
         if let Some(commitment) = &tx.commitment {
-            let head = commitment.clone();
+            let head = randao::first_link(commitment);
             self.commitments
-                .insert(from.to_string(), Commitment { head, remaining: randao::LENGTH });
+                .insert(from.to_string(), RevealChain { head, remaining: randao::LENGTH });
             *self.epochs.entry(from.to_string()).or_insert(0) += 1;
         }
         self.balances.insert(from.to_string(), left);
@@ -181,8 +181,4 @@ impl Ledger {
         self.nonces.insert(from.to_string(), expected + 1);
         Ok(())
     }
-}
-
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
