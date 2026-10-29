@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 
 use super::address::Address;
 use crate::domain::crypto;
-use crate::domain::error::ChainError;
+use crate::domain::error::ValueError;
 
 /// An ed25519 signature: 128 lowercase hex characters. On the wire it's the hex string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -14,11 +14,11 @@ use crate::domain::error::ChainError;
 pub struct Signature(String);
 
 impl Signature {
-    pub fn parse(hex: &str) -> Result<Self, ChainError> {
+    pub fn parse(hex: &str) -> Result<Self, ValueError> {
         if hex.len() == 128 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
             Ok(Self(hex.to_string()))
         } else {
-            Err(ChainError::BadSignature)
+            Err(ValueError::InvalidSignature(hex.to_string()))
         }
     }
 
@@ -44,9 +44,9 @@ impl fmt::Display for Signature {
 }
 
 impl TryFrom<String> for Signature {
-    type Error = ChainError;
+    type Error = ValueError;
 
-    fn try_from(hex: String) -> Result<Self, ChainError> {
+    fn try_from(hex: String) -> Result<Self, ValueError> {
         Self::parse(&hex)
     }
 }
@@ -96,6 +96,7 @@ mod tests {
         let signed: Signed = serde_json::from_str(&format!(r#"{{"signature":"{hex}"}}"#)).unwrap();
         assert_eq!(signed.signature.unwrap().as_str(), hex);
         assert!(serde_json::from_str::<Signed>(r#"{"signature":"nope"}"#).is_err());
-        assert_eq!(Signature::parse(&hex[..126]), Err(ChainError::BadSignature));
+        let short = &hex[..126];
+        assert_eq!(Signature::parse(short), Err(ValueError::InvalidSignature(short.to_string())));
     }
 }

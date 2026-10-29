@@ -4,7 +4,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::crypto;
-use crate::domain::error::ChainError;
+use crate::domain::error::ValueError;
 
 /// An account: a hex-encoded ed25519 public key. Holding one means it has already been checked.
 /// On the wire it's the hex string.
@@ -13,11 +13,11 @@ use crate::domain::error::ChainError;
 pub struct Address(String);
 
 impl Address {
-    pub fn parse(address: &str) -> Result<Self, ChainError> {
+    pub fn parse(address: &str) -> Result<Self, ValueError> {
         if crypto::is_valid_address(address) {
             Ok(Self(address.to_string()))
         } else {
-            Err(ChainError::InvalidAddress(address.to_string()))
+            Err(ValueError::InvalidAddress(address.to_string()))
         }
     }
 
@@ -32,9 +32,9 @@ impl Address {
 }
 
 impl TryFrom<String> for Address {
-    type Error = ChainError;
+    type Error = ValueError;
 
-    fn try_from(address: String) -> Result<Self, ChainError> {
+    fn try_from(address: String) -> Result<Self, ValueError> {
         Self::parse(&address)
     }
 }
@@ -61,7 +61,7 @@ mod tests {
         let key = crypto::parse_secret_key(&secret).unwrap();
         assert_eq!(Address::parse(&hex), Ok(Address::of(&key)));
         for bad in ["", "nobody", "coinbase", &hex[..62], &format!("{hex}00")] {
-            assert_eq!(Address::parse(bad), Err(ChainError::InvalidAddress(bad.to_string())));
+            assert_eq!(Address::parse(bad), Err(ValueError::InvalidAddress(bad.to_string())));
         }
     }
 }

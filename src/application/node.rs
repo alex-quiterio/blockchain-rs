@@ -8,7 +8,7 @@ use ed25519_dalek::SigningKey;
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::{Blockchain, ChainEvent, Extension};
-use crate::domain::error::ChainError;
+use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError};
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 
@@ -17,7 +17,7 @@ use super::queries::ChainQueries;
 #[derive(Debug)]
 pub enum NodeError {
     /// A domain rule refused the change.
-    Chain(ChainError),
+    Domain(DomainError),
     /// The change was valid but could not be saved, so it was not applied.
     Storage(RepositoryError),
 }
@@ -25,7 +25,7 @@ pub enum NodeError {
 impl fmt::Display for NodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Chain(e) => e.fmt(f),
+            Self::Domain(e) => e.fmt(f),
             Self::Storage(e) => write!(f, "could not save the chain: {e}"),
         }
     }
@@ -33,9 +33,9 @@ impl fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
-impl From<ChainError> for NodeError {
-    fn from(err: ChainError) -> Self {
-        Self::Chain(err)
+impl<E: Into<DomainError>> From<E> for NodeError {
+    fn from(err: E) -> Self {
+        Self::Domain(err.into())
     }
 }
 
@@ -110,7 +110,7 @@ impl NodeService {
     }
 
     /// Queues a transaction. The mempool isn't saved, so nothing is written.
-    pub fn submit(&self, tx: Transaction) -> Result<(), ChainError> {
+    pub fn submit(&self, tx: Transaction) -> Result<(), TransactionError> {
         self.chain.lock().unwrap().submit(tx)
     }
 
@@ -139,7 +139,7 @@ impl NodeService {
         let keep_going = || {
             !cancelled.load(Ordering::Relaxed) && *self.chain.lock().unwrap().tip().hash() == tip
         };
-        let block = template.mine_while(keep_going).ok_or(ChainError::StaleBlock)?;
+        let block = template.mine_while(keep_going).ok_or(BlockError::StaleBlock)?;
         self.commit(|chain| chain.append_mined(block).cloned())
     }
 
@@ -147,7 +147,7 @@ impl NodeService {
     pub fn adopt_if_heavier(&self, blocks: Vec<Block>) -> Result<(bool, usize), NodeError> {
         self.commit(|chain| {
             let adopted = chain.adopt_if_heavier(blocks)?;
-            Ok((adopted, chain.blocks().len()))
+            Ok::<_, ChainError>((adopted, chain.blocks().len()))
         })
     }
 
@@ -156,7 +156,7 @@ impl NodeService {
     pub fn extend(&self, blocks: Vec<Block>) -> Result<(Extension, usize), NodeError> {
         self.commit(|chain| {
             let extension = chain.extend(blocks)?;
-            Ok((extension, chain.blocks().len()))
+            Ok::<_, ChainError>((extension, chain.blocks().len()))
         })
     }
 
@@ -164,13 +164,13 @@ impl NodeService {
     /// saved, so memory and storage never disagree.
     /// The chain's events are what's saved and, once the chain is free again, what listeners
     /// hear.
-    fn commit<T>(
+    fn commit<T, E: Into<DomainError>>(
         &self,
-        change: impl FnOnce(&mut Blockchain) -> Result<T, ChainError>,
+        change: impl FnOnce(&mut Blockchain) -> Result<T, E>,
     ) -> Result<T, NodeError> {
         let mut chain = self.chain.lock().unwrap();
         let mut next = chain.clone();
-        let result = change(&mut next)?;
+        let result = change(&mut next).map_err(|e| NodeError::Domain(e.into()))?;
         let events = next.take_events();
         if !events.is_empty() {
             self.repository.save(next.blocks(), &events).map_err(NodeError::Storage)?;
@@ -320,7 +320,7 @@ mod tests {
         repo.save(&blocks, &[ChainEvent::Started]).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
-        assert!(matches!(err, NodeError::Chain(ChainError::InvalidChain)));
+        assert!(matches!(err, NodeError::Domain(DomainError::Chain(ChainError::InvalidChain))));
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         ours.extend(vec![theirs_block.clone()]).unwrap();
         match mining.join().unwrap() {
-            Err(NodeError::Chain(ChainError::StaleBlock)) => {
+            Err(NodeError::Domain(DomainError::Block(BlockError::StaleBlock))) => {
                 assert_eq!(ours.queries().blocks()[1], theirs_block);
                 assert_eq!(ours.queries().account(&miner).balance, Coins::new(0));
             }
@@ -367,7 +367,7 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         assert!(matches!(
             node.mine_unless(&new_address(), &cancelled),
-            Err(NodeError::Chain(ChainError::StaleBlock))
+            Err(NodeError::Domain(DomainError::Block(BlockError::StaleBlock)))
         ));
         assert_eq!(node.queries().blocks().len(), 1);
     }
@@ -497,7 +497,7 @@ mod tests {
         );
         assert!(matches!(
             ours.adopt_if_heavier(vec![]),
-            Err(NodeError::Chain(ChainError::InvalidChain))
+            Err(NodeError::Domain(DomainError::Chain(ChainError::InvalidChain)))
         ));
     }
 }

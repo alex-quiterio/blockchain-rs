@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::block::Transaction;
-use super::error::ChainError;
+use super::error::TransactionError;
 use super::ledger::Ledger;
 use super::values::Signature;
 
@@ -46,9 +46,9 @@ impl Mempool {
     }
 
     /// Queues `tx` if it applies after everything already waiting.
-    pub fn admit(&mut self, tx: Transaction) -> Result<(), ChainError> {
+    pub fn admit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
         if tx.signature.as_ref().is_some_and(|s| self.signatures.contains(s)) {
-            return Err(ChainError::AlreadyPending);
+            return Err(TransactionError::AlreadyPending);
         }
         self.projected.apply_transfer(&tx)?;
         // Only signed transfers get this far: a block reward is refused above.
@@ -85,7 +85,10 @@ mod tests {
         pool.admit(pay(&key, &to, 20, 1)).unwrap();
         assert_eq!(
             pool.admit(pay(&key, &to, 1, 2)),
-            Err(ChainError::InsufficientFunds { balance: Coins::new(0), amount: Coins::new(1) })
+            Err(TransactionError::InsufficientFunds {
+                balance: Coins::new(0),
+                amount: Coins::new(1)
+            })
         );
         assert_eq!(pool.projected().next_nonce(&Address::of(&key)), 2);
         assert_eq!(ledger.next_nonce(&Address::of(&key)), 0, "the confirmed ledger is untouched");
@@ -97,7 +100,7 @@ mod tests {
         let mut pool = Mempool::on(&ledger);
         let tx = pay(&key, &to, 5, 0);
         pool.admit(tx.clone()).unwrap();
-        assert_eq!(pool.admit(tx), Err(ChainError::AlreadyPending));
+        assert_eq!(pool.admit(tx), Err(TransactionError::AlreadyPending));
         assert_eq!(pool.transactions().len(), 1);
     }
 
@@ -107,7 +110,7 @@ mod tests {
         let mut pool = Mempool::on(&ledger);
         let mut forged = pay(&key, &to, 5, 0);
         forged.amount = Coins::new(50);
-        assert_eq!(pool.admit(forged), Err(ChainError::BadSignature));
+        assert_eq!(pool.admit(forged), Err(TransactionError::BadSignature));
         pool.admit(pay(&key, &to, 50, 0)).unwrap();
         assert_eq!(pool.projected().balance(&Address::of(&key)), Coins::new(0));
     }

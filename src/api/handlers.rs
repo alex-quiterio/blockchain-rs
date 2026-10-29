@@ -21,7 +21,7 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Extension;
 use crate::domain::crypto;
-use crate::domain::error::ChainError;
+use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError, ValueError};
 use crate::domain::randao;
 use crate::domain::rules::Consensus;
 use crate::domain::values::{Coins, Destination};
@@ -42,30 +42,46 @@ impl ApiError {
     }
 }
 
-impl From<ChainError> for ApiError {
-    fn from(err: ChainError) -> Self {
-        let status = match err {
-            ChainError::InsufficientFunds { .. }
-            | ChainError::InsufficientStake { .. }
-            | ChainError::BadNonce { .. }
-            | ChainError::MissingCommitment
-            | ChainError::UnexpectedCommitment => StatusCode::UNPROCESSABLE_ENTITY,
-            ChainError::BadSignature => StatusCode::UNAUTHORIZED,
-            ChainError::NotYourTurn { .. } => StatusCode::FORBIDDEN,
-            ChainError::NotProofOfWork
-            | ChainError::NotProofOfStake
-            | ChainError::StaleBlock
-            | ChainError::ReorgTooDeep { .. } => StatusCode::CONFLICT,
-            _ => StatusCode::BAD_REQUEST,
+impl From<DomainError> for ApiError {
+    fn from(err: DomainError) -> Self {
+        let status = match &err {
+            DomainError::Value(_) => StatusCode::BAD_REQUEST,
+            DomainError::Transaction(TransactionError::BadSignature) => StatusCode::UNAUTHORIZED,
+            DomainError::Transaction(
+                TransactionError::ZeroAmount
+                | TransactionError::UnexpectedCoinbase
+                | TransactionError::AlreadyPending,
+            ) => StatusCode::BAD_REQUEST,
+            DomainError::Transaction(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            DomainError::Block(BlockError::NotYourTurn { .. }) => StatusCode::FORBIDDEN,
+            DomainError::Block(
+                BlockError::NotProofOfWork | BlockError::NotProofOfStake | BlockError::StaleBlock,
+            ) => StatusCode::CONFLICT,
+            DomainError::Block(_) => StatusCode::BAD_REQUEST,
+            DomainError::Chain(ChainError::ReorgTooDeep { .. }) => StatusCode::CONFLICT,
+            DomainError::Chain(ChainError::InvalidChain) => StatusCode::BAD_REQUEST,
         };
         Self { status, message: err.to_string() }
     }
 }
 
+/// Each kind of refusal maps the same way, through `DomainError`.
+macro_rules! via_domain_error {
+    ($($kind:ty),*) => {$(
+        impl From<$kind> for ApiError {
+            fn from(err: $kind) -> Self {
+                DomainError::from(err).into()
+            }
+        }
+    )*};
+}
+
+via_domain_error!(ValueError, TransactionError, BlockError, ChainError);
+
 impl From<NodeError> for ApiError {
     fn from(err: NodeError) -> Self {
         match err {
-            NodeError::Chain(e) => e.into(),
+            NodeError::Domain(e) => e.into(),
             NodeError::Storage(_) => {
                 Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: err.to_string() }
             }

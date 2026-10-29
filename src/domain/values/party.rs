@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::address::Address;
-use crate::domain::error::ChainError;
+use crate::domain::error::ValueError;
 
 /// The sender a block reward names, since its coins come from nowhere.
 pub const COINBASE: &str = "coinbase";
@@ -32,7 +32,7 @@ pub enum Destination {
 }
 
 impl Source {
-    pub fn parse(from: &str) -> Result<Self, ChainError> {
+    pub fn parse(from: &str) -> Result<Self, ValueError> {
         match from {
             COINBASE => Ok(Self::NewCoins),
             _ => Address::parse(from).map(Self::Account),
@@ -49,7 +49,7 @@ impl Source {
 }
 
 impl Destination {
-    pub fn parse(to: &str) -> Result<Self, ChainError> {
+    pub fn parse(to: &str) -> Result<Self, ValueError> {
         match to {
             STAKE => Ok(Self::Stake),
             UNSTAKE => Ok(Self::Unstake),
@@ -98,17 +98,17 @@ impl fmt::Display for Destination {
 }
 
 impl TryFrom<String> for Source {
-    type Error = ChainError;
+    type Error = ValueError;
 
-    fn try_from(from: String) -> Result<Self, ChainError> {
+    fn try_from(from: String) -> Result<Self, ValueError> {
         Self::parse(&from)
     }
 }
 
 impl TryFrom<String> for Destination {
-    type Error = ChainError;
+    type Error = ValueError;
 
-    fn try_from(to: String) -> Result<Self, ChainError> {
+    fn try_from(to: String) -> Result<Self, ValueError> {
         Self::parse(&to)
     }
 }

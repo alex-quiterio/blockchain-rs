@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty;
-use crate::domain::error::ChainError;
+use crate::domain::error::{BlockError, ChainError, TransactionError};
 use crate::domain::ledger::ValidatorState;
 use crate::domain::mempool::Mempool;
 use crate::domain::randao;
@@ -241,21 +241,21 @@ impl Blockchain {
     }
 
     /// Validates a transaction against confirmed state plus the mempool, then queues it.
-    pub fn submit(&mut self, tx: Transaction) -> Result<(), ChainError> {
+    pub fn submit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
         self.mempool.admit(tx)
     }
 
     /// Proof of work: bundles the reward and every pending transaction into a new block.
-    pub fn mine(&mut self, miner: &Address) -> Result<&Block, ChainError> {
+    pub fn mine(&mut self, miner: &Address) -> Result<&Block, BlockError> {
         let block = self.mining_template(miner)?.mine_while(|| true).expect("never told to stop");
         self.append_mined(block)
     }
 
     /// Proof of work: what `miner`'s next block would hold, so it can be mined without holding
     /// the chain.
-    pub fn mining_template(&self, miner: &Address) -> Result<MiningTemplate, ChainError> {
+    pub fn mining_template(&self, miner: &Address) -> Result<MiningTemplate, BlockError> {
         if self.rules.is_proof_of_stake() {
-            return Err(ChainError::NotProofOfWork);
+            return Err(BlockError::NotProofOfWork);
         }
         let (index, transactions) = self.next_contents(miner);
         Ok(MiningTemplate {
@@ -269,23 +269,23 @@ impl Blockchain {
 
     /// Proof of work: appends a block mined from a template, unless another block took the tip
     /// in the meantime.
-    pub fn append_mined(&mut self, block: Block) -> Result<&Block, ChainError> {
+    pub fn append_mined(&mut self, block: Block) -> Result<&Block, BlockError> {
         if self.rules.is_proof_of_stake() {
-            return Err(ChainError::NotProofOfWork);
+            return Err(BlockError::NotProofOfWork);
         }
         self.append_sealed(block)
     }
 
     /// Proof of work at a chosen time, so tests can play out any pace of blocks.
     #[cfg(test)]
-    fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, ChainError> {
+    fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, BlockError> {
         let work = self.next_work();
         self.append(miner, |index, _, prev, txs| Block::mine(index, at, prev, txs, work))
     }
 
     /// Proof of stake: the selected validator signs the next block with `key`, revealing the
     /// next link of their reveal chain, which `key` also lets us work out.
-    pub fn forge(&mut self, key: &SigningKey) -> Result<&Block, ChainError> {
+    pub fn forge(&mut self, key: &SigningKey) -> Result<&Block, BlockError> {
         let validator = Address::of(key);
         self.check_turn(&validator)?;
         let reveal = self
@@ -302,13 +302,13 @@ impl Blockchain {
         &self,
         validator: &Address,
         reveal: Option<Reveal>,
-    ) -> Result<Block, ChainError> {
+    ) -> Result<Block, BlockError> {
         self.check_turn(validator)?;
         match (self.due_reveal(validator), &reveal) {
-            (Some(_), None) => return Err(ChainError::BadReveal),
-            (None, Some(_)) => return Err(ChainError::BadReveal),
+            (Some(_), None) => return Err(BlockError::BadReveal),
+            (None, Some(_)) => return Err(BlockError::BadReveal),
             (Some(_), Some(r)) if !self.tally().ledger.clone().apply_reveal(validator, r) => {
-                return Err(ChainError::BadReveal)
+                return Err(BlockError::BadReveal)
             }
             _ => {}
         }
@@ -327,21 +327,21 @@ impl Blockchain {
 
     /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
     /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
-    pub fn append_forged(&mut self, block: Block) -> Result<&Block, ChainError> {
-        let validator = block.validator.clone().ok_or(ChainError::InvalidBlock)?;
+    pub fn append_forged(&mut self, block: Block) -> Result<&Block, BlockError> {
+        let validator = block.validator.clone().ok_or(BlockError::InvalidBlock)?;
         self.check_turn(&validator)?;
         self.append_sealed(block)
     }
 
     /// Appends a block made elsewhere on our tip, after checking it like any other block.
     /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
-    fn append_sealed(&mut self, block: Block) -> Result<&Block, ChainError> {
+    fn append_sealed(&mut self, block: Block) -> Result<&Block, BlockError> {
         if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
-            return Err(ChainError::StaleBlock);
+            return Err(BlockError::StaleBlock);
         }
         let mut tally = self.tally().clone();
         if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
-            return Err(ChainError::InvalidBlock);
+            return Err(BlockError::InvalidBlock);
         }
         let waiting = self.mempool.transactions().to_vec();
         self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
@@ -352,14 +352,12 @@ impl Blockchain {
     }
 
     /// Under proof of stake, whether it's `validator`'s turn to forge.
-    fn check_turn(&self, validator: &Address) -> Result<(), ChainError> {
+    fn check_turn(&self, validator: &Address) -> Result<(), BlockError> {
         if !self.rules.is_proof_of_stake() {
-            return Err(ChainError::NotProofOfStake);
+            return Err(BlockError::NotProofOfStake);
         }
         match self.next_validator() {
-            Some(expected) if expected != *validator => {
-                Err(ChainError::NotYourTurn { expected: expected.to_string() })
-            }
+            Some(expected) if expected != *validator => Err(BlockError::NotYourTurn { expected }),
             _ => Ok(()),
         }
     }
@@ -382,12 +380,12 @@ impl Blockchain {
         &mut self,
         producer: &Address,
         seal: impl FnOnce(u64, DateTime<Utc>, BlockHash, Vec<Transaction>) -> Block,
-    ) -> Result<&Block, ChainError> {
+    ) -> Result<&Block, BlockError> {
         let (index, transactions) = self.next_contents(producer);
         let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
         let mut tally = self.tally().clone();
         if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
-            return Err(ChainError::InvalidBlock);
+            return Err(BlockError::InvalidBlock);
         }
         self.blocks.push(block);
         self.mempool = Mempool::on(&tally.ledger);
@@ -495,7 +493,7 @@ impl Blockchain {
         for block in new {
             if !apply_block(&self.blocks, block, &mut tally, &self.rules) {
                 self.blocks.truncate(height);
-                return Err(ChainError::InvalidBlock);
+                return Err(ChainError::InvalidChain);
             }
             self.blocks.push(block.clone());
             tallies.push(tally.clone());
@@ -616,7 +614,7 @@ mod tests {
 
         let mut tx = transfer(&mallory_key, &Address::of(&mallory_key), 10, 0);
         tx.from = Source::Account(alice.clone());
-        assert_eq!(chain.submit(tx), Err(ChainError::BadSignature));
+        assert_eq!(chain.submit(tx), Err(TransactionError::BadSignature));
     }
 
     #[test]
@@ -629,7 +627,10 @@ mod tests {
         chain.submit(transfer(&alice_key, &bob, 40, 0)).unwrap();
         assert_eq!(
             chain.submit(transfer(&alice_key, &bob, 20, 1)),
-            Err(ChainError::InsufficientFunds { balance: Coins::new(10), amount: Coins::new(20) })
+            Err(TransactionError::InsufficientFunds {
+                balance: Coins::new(10),
+                amount: Coins::new(20)
+            })
         );
     }
 
@@ -643,7 +644,7 @@ mod tests {
         let tx = transfer(&alice_key, &bob, 5, 0);
         chain.submit(tx.clone()).unwrap();
         chain.mine(&bob).unwrap();
-        assert_eq!(chain.submit(tx), Err(ChainError::BadNonce { expected: 1, got: 0 }));
+        assert_eq!(chain.submit(tx), Err(TransactionError::BadNonce { expected: 1, got: 0 }));
     }
 
     #[test]
@@ -682,7 +683,7 @@ mod tests {
         assert!(!validate_blocks(&blocks, &RULES));
 
         let mut ours = Blockchain::new(RULES);
-        assert_eq!(ours.extend(blocks[1..].to_vec()), Err(ChainError::InvalidBlock));
+        assert_eq!(ours.extend(blocks[1..].to_vec()), Err(ChainError::InvalidChain));
     }
 
     #[test]
@@ -759,7 +760,7 @@ mod tests {
         chain.mine(&wallet().0).unwrap();
 
         let block = stale.mine_while(|| true).unwrap();
-        assert_eq!(chain.append_mined(block), Err(ChainError::StaleBlock));
+        assert_eq!(chain.append_mined(block), Err(BlockError::StaleBlock));
         assert_eq!(chain.blocks().len(), 2);
         assert_eq!(chain.balance(&miner), Coins::new(0));
     }
@@ -890,7 +891,7 @@ mod tests {
         block.transactions[0].amount = Coins::new(1_000);
         block.hash = block.computed_hash();
 
-        assert_eq!(ours.extend(vec![block]), Err(ChainError::InvalidBlock));
+        assert_eq!(ours.extend(vec![block]), Err(ChainError::InvalidChain));
         assert_eq!(ours.blocks().len(), 1);
         assert_eq!(ours.extend(vec![]), Err(ChainError::InvalidChain));
     }
@@ -1153,7 +1154,7 @@ mod tests {
         assert_eq!(chain.next_validator(), Some(alice.clone()));
         assert_eq!(
             chain.forge(&bob_key).err(),
-            Some(ChainError::NotYourTurn { expected: alice.to_string() })
+            Some(BlockError::NotYourTurn { expected: alice.clone() })
         );
         chain.forge(&alice_key).unwrap();
         assert!(chain.is_valid());
@@ -1175,7 +1176,10 @@ mod tests {
                 1,
                 Coins::new(0)
             )),
-            Err(ChainError::InsufficientStake { staked: Coins::new(30), amount: Coins::new(31) })
+            Err(TransactionError::InsufficientStake {
+                staked: Coins::new(30),
+                amount: Coins::new(31)
+            })
         );
         chain
             .submit(Transaction::signed(
@@ -1194,8 +1198,8 @@ mod tests {
     #[test]
     fn each_consensus_refuses_the_other_ones_blocks() {
         let (alice, alice_key) = wallet();
-        assert_eq!(Blockchain::new(POS).mine(&alice).err(), Some(ChainError::NotProofOfWork));
-        assert_eq!(chain().forge(&alice_key).err(), Some(ChainError::NotProofOfStake));
+        assert_eq!(Blockchain::new(POS).mine(&alice).err(), Some(BlockError::NotProofOfWork));
+        assert_eq!(chain().forge(&alice_key).err(), Some(BlockError::NotProofOfStake));
 
         let mut pos = Blockchain::new(POS);
         pos.forge(&alice_key).unwrap();
@@ -1299,21 +1303,21 @@ mod tests {
         let proposal = chain.propose(&alice, reveal_for(&chain, &alice_key)).unwrap();
 
         let mut unsigned = proposal.clone();
-        assert_eq!(chain.append_forged(unsigned.clone()), Err(ChainError::InvalidBlock));
+        assert_eq!(chain.append_forged(unsigned.clone()), Err(BlockError::InvalidBlock));
         unsigned.sign(&mallory_key);
-        assert_eq!(chain.append_forged(unsigned).err(), Some(ChainError::InvalidBlock));
+        assert_eq!(chain.append_forged(unsigned).err(), Some(BlockError::InvalidBlock));
 
         let mut padded = proposal.clone();
         padded.transactions[0].amount =
             padded.transactions[0].amount.checked_add(Coins::new(1)).unwrap();
         padded.hash = padded.computed_hash();
         padded.sign(&alice_key);
-        assert_eq!(chain.append_forged(padded).err(), Some(ChainError::InvalidBlock));
+        assert_eq!(chain.append_forged(padded).err(), Some(BlockError::InvalidBlock));
 
         let mut signed = proposal;
         signed.sign(&alice_key);
         chain.append_forged(signed.clone()).unwrap();
-        assert_eq!(chain.append_forged(signed).err(), Some(ChainError::StaleBlock));
+        assert_eq!(chain.append_forged(signed).err(), Some(BlockError::StaleBlock));
         assert!(chain.is_valid());
     }
 
@@ -1325,9 +1329,9 @@ mod tests {
         chain.forge(&alice_key).unwrap();
         chain.submit(stake(&alice_key, 10, 0)).unwrap();
         chain.forge(&alice_key).unwrap();
-        assert!(matches!(chain.propose(&bob, None), Err(ChainError::NotYourTurn { .. })));
+        assert!(matches!(chain.propose(&bob, None), Err(BlockError::NotYourTurn { .. })));
         let pow = Blockchain::new(RULES);
-        assert_eq!(pow.propose(&bob, None).err(), Some(ChainError::NotProofOfStake));
+        assert_eq!(pow.propose(&bob, None).err(), Some(BlockError::NotProofOfStake));
     }
 
     // ---- Validator randomness ----------------------------------------------------------------
@@ -1382,15 +1386,15 @@ mod tests {
         let key = key_of(&keys, &validator);
         let due = reveal_for(&chain, &key).unwrap();
 
-        assert_eq!(chain.propose(&validator, None).err(), Some(ChainError::BadReveal));
+        assert_eq!(chain.propose(&validator, None).err(), Some(BlockError::BadReveal));
         assert_eq!(
             chain.propose(&validator, Some(Reveal::zero())).err(),
-            Some(ChainError::BadReveal)
+            Some(BlockError::BadReveal)
         );
         let skipped_ahead = randao::reveal(&key, 0, randao::LENGTH - 2);
         assert_eq!(
             chain.propose(&validator, Some(skipped_ahead)).err(),
-            Some(ChainError::BadReveal)
+            Some(BlockError::BadReveal)
         );
 
         // A validly signed block with a made-up reveal still fails validation.
@@ -1399,7 +1403,7 @@ mod tests {
         forged.reveal = Some(Reveal::of(b"a link of nobody's chain"));
         forged.hash = forged.computed_hash();
         forged.sign(&key);
-        assert_eq!(chain.append_forged(forged).err(), Some(ChainError::InvalidBlock));
+        assert_eq!(chain.append_forged(forged).err(), Some(BlockError::InvalidBlock));
 
         let beacon = chain.beacon().clone();
         let mut block = chain.propose(&validator, Some(due.clone())).unwrap();
@@ -1419,7 +1423,7 @@ mod tests {
 
         assert_eq!(
             chain.submit(Transaction::stake(&alice_key, Coins::new(10), 0, Coins::new(0), None)),
-            Err(ChainError::MissingCommitment)
+            Err(TransactionError::MissingCommitment)
         );
         assert_eq!(chain.commitment_due(&alice), Some(0));
         chain.submit(stake(&alice_key, 10, 0)).unwrap();
@@ -1432,7 +1436,7 @@ mod tests {
                 Coins::ZERO,
                 Some(randao::commitment(&alice_key, 1))
             )),
-            Err(ChainError::UnexpectedCommitment)
+            Err(TransactionError::UnexpectedCommitment)
         );
         chain
             .submit(Transaction::stake(&alice_key, Coins::new(5), 1, Coins::new(0), None))
@@ -1508,7 +1512,10 @@ mod tests {
         chain.mine(&alice).unwrap();
         assert_eq!(
             chain.submit(Transaction::signed(&alice_key, &bob, Coins::new(50), 0, Coins::new(1))),
-            Err(ChainError::InsufficientFunds { balance: Coins::new(50), amount: Coins::new(51) })
+            Err(TransactionError::InsufficientFunds {
+                balance: Coins::new(50),
+                amount: Coins::new(51)
+            })
         );
     }
 
@@ -1621,9 +1628,9 @@ mod tests {
         mine_paced(&mut chain, 12, 10);
         let miner = wallet().0;
         let median = chain.blocks()[chain.blocks().len() - 6].timestamp;
-        assert_eq!(chain.mine_at(&miner, median).err(), Some(ChainError::InvalidBlock));
+        assert_eq!(chain.mine_at(&miner, median).err(), Some(BlockError::InvalidBlock));
         let future = Utc::now() + chrono::TimeDelta::hours(3);
-        assert_eq!(chain.mine_at(&miner, future).err(), Some(ChainError::InvalidBlock));
+        assert_eq!(chain.mine_at(&miner, future).err(), Some(BlockError::InvalidBlock));
         chain.mine_at(&miner, median + chrono::TimeDelta::seconds(1)).unwrap();
     }
 

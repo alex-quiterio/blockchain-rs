@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::crypto;
-use crate::domain::error::ChainError;
+use crate::domain::error::ValueError;
 
 /// Declares a SHA-256 hash type: 64 lowercase hex characters, checked on the way in. Each kind
 /// of hash gets its own type, so one can't be passed where another is meant. On the wire and on
@@ -16,11 +16,11 @@ macro_rules! sha256_type {
         pub struct $name(String);
 
         impl $name {
-            pub fn parse(hex: &str) -> Result<Self, ChainError> {
+            pub fn parse(hex: &str) -> Result<Self, ValueError> {
                 if hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
                     Ok(Self(hex.to_string()))
                 } else {
-                    Err(ChainError::InvalidHash(hex.to_string()))
+                    Err(ValueError::InvalidHash(hex.to_string()))
                 }
             }
 
@@ -53,9 +53,9 @@ macro_rules! sha256_type {
         }
 
         impl TryFrom<String> for $name {
-            type Error = ChainError;
+            type Error = ValueError;
 
-            fn try_from(hex: String) -> Result<Self, ChainError> {
+            fn try_from(hex: String) -> Result<Self, ValueError> {
                 Self::parse(&hex)
             }
         }
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(BlockHash::zero().as_str(), "0".repeat(64));
         let upper = hash.as_str().to_uppercase();
         for bad in ["", "nope", &hash.as_str()[..63], &format!("{hash}0"), &upper] {
-            assert_eq!(BlockHash::parse(bad), Err(ChainError::InvalidHash(bad.to_string())));
+            assert_eq!(BlockHash::parse(bad), Err(ValueError::InvalidHash(bad.to_string())));
         }
     }
 

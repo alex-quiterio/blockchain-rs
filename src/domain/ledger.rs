@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::address::Address;
 use super::block::{Transaction, TxKind};
-use super::error::ChainError;
+use super::error::TransactionError;
 use super::randao;
 use super::values::{Beacon, BlockHash, Coins, Reveal};
 
@@ -113,30 +113,30 @@ impl Ledger {
     }
 
     /// Checks a signed transfer, stake or unstake against this state and applies it.
-    pub fn apply_transfer(&mut self, tx: &Transaction) -> Result<(), ChainError> {
+    pub fn apply_transfer(&mut self, tx: &Transaction) -> Result<(), TransactionError> {
         let kind = tx.kind();
         // A recipient account is a valid address by its type; only the sender needs unpacking.
         let Some(sender) = tx.sender() else {
-            return Err(ChainError::UnexpectedCoinbase);
+            return Err(TransactionError::UnexpectedCoinbase);
         };
         let from = sender;
         if tx.amount.is_zero() {
-            return Err(ChainError::ZeroAmount);
+            return Err(TransactionError::ZeroAmount);
         }
         // The nonce is checked before the signature: stale and replayed transactions, the
         // common case when peers gossip, are turned away without the costly verification.
         let expected = self.next_nonce(from);
         if tx.nonce != expected {
-            return Err(ChainError::BadNonce { expected, got: tx.nonce });
+            return Err(TransactionError::BadNonce { expected, got: tx.nonce });
         }
         if !tx.signature.as_ref().is_some_and(|s| s.is_by(sender, &tx.payload())) {
-            return Err(ChainError::BadSignature);
+            return Err(TransactionError::BadSignature);
         }
         // A first stake must commit to a reveal chain; any other transaction must not.
         let needs_commitment = kind == TxKind::Stake && self.active_commitment(from).is_none();
         match (&tx.commitment, needs_commitment) {
-            (None, true) => return Err(ChainError::MissingCommitment),
-            (Some(_), false) => return Err(ChainError::UnexpectedCommitment),
+            (None, true) => return Err(TransactionError::MissingCommitment),
+            (Some(_), false) => return Err(TransactionError::UnexpectedCommitment),
             _ => {}
         }
         // The fee always comes out of the balance. So does the amount, unless it is unstaked.
@@ -147,12 +147,12 @@ impl Ledger {
         let balance = self.balance(from);
         let Some(left) = spent.and_then(|spent| balance.checked_sub(spent)) else {
             let amount = spent.unwrap_or(Coins::new(u64::MAX));
-            return Err(ChainError::InsufficientFunds { balance, amount });
+            return Err(TransactionError::InsufficientFunds { balance, amount });
         };
         if kind == TxKind::Unstake {
             let staked = self.staked(from);
             if staked < tx.amount {
-                return Err(ChainError::InsufficientStake { staked, amount: tx.amount });
+                return Err(TransactionError::InsufficientStake { staked, amount: tx.amount });
             }
             let left = staked.checked_sub(tx.amount).expect("checked just above");
             self.stakes.insert(from.clone(), left);

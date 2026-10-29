@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Blockchain;
-use crate::domain::error::ChainError;
+use crate::domain::error::BlockError;
 use crate::domain::ledger::ValidatorState;
 use crate::domain::merkle;
 use crate::domain::rules::ChainRules;
@@ -230,7 +230,7 @@ impl ChainQueries {
         &self,
         validator: &Address,
         reveal: Option<Reveal>,
-    ) -> Result<Block, ChainError> {
+    ) -> Result<Block, BlockError> {
         self.chain.lock().unwrap().propose(validator, reveal)
     }
 }
