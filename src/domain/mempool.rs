@@ -68,7 +68,7 @@ mod tests {
     fn funded() -> (Ledger, ed25519_dalek::SigningKey, Address) {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
         let mut ledger = Ledger::default();
-        ledger.credit(Address::of(&key).as_str(), Coins::new(50));
+        ledger.credit(&Address::of(&key), Coins::new(50));
         let to = Address::parse(&crypto::generate_keypair().0).unwrap();
         (ledger, key, to)
     }
@@ -87,12 +87,8 @@ mod tests {
             pool.admit(pay(&key, &to, 1, 2)),
             Err(ChainError::InsufficientFunds { balance: Coins::new(0), amount: Coins::new(1) })
         );
-        assert_eq!(pool.projected().next_nonce(Address::of(&key).as_str()), 2);
-        assert_eq!(
-            ledger.next_nonce(Address::of(&key).as_str()),
-            0,
-            "the confirmed ledger is untouched"
-        );
+        assert_eq!(pool.projected().next_nonce(&Address::of(&key)), 2);
+        assert_eq!(ledger.next_nonce(&Address::of(&key)), 0, "the confirmed ledger is untouched");
     }
 
     #[test]
@@ -113,7 +109,7 @@ mod tests {
         forged.amount = Coins::new(50);
         assert_eq!(pool.admit(forged), Err(ChainError::BadSignature));
         pool.admit(pay(&key, &to, 50, 0)).unwrap();
-        assert_eq!(pool.projected().balance(Address::of(&key).as_str()), Coins::new(0));
+        assert_eq!(pool.projected().balance(&Address::of(&key)), Coins::new(0));
     }
 
     #[test]

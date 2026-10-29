@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::address::Address;
 use super::block::{Transaction, TxKind};
 use super::error::ChainError;
 use super::randao;
@@ -10,13 +11,13 @@ use super::values::{Beacon, BlockHash, Coins, Reveal};
 /// Balances, stakes, nonces and validator randomness that result from applying blocks in order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
-    balances: HashMap<String, Coins>,
-    stakes: HashMap<String, Coins>,
-    nonces: HashMap<String, u64>,
+    balances: HashMap<Address, Coins>,
+    stakes: HashMap<Address, Coins>,
+    nonces: HashMap<Address, u64>,
     /// Each validator's reveal chain: the link they showed last and how many are left.
-    commitments: HashMap<String, RevealChain>,
+    commitments: HashMap<Address, RevealChain>,
     /// How many commitments each address has ever made, which numbers the next one.
-    epochs: HashMap<String, u64>,
+    epochs: HashMap<Address, u64>,
     /// The randomness that picks the next validator, mixed with every reveal.
     beacon: Beacon,
 }
@@ -49,27 +50,27 @@ impl Ledger {
     }
 
     /// Stakes that can be picked to forge: those whose reveal chain isn't used up, by address.
-    pub fn validator_stakes(&self) -> Vec<(String, Coins)> {
+    pub fn validator_stakes(&self) -> Vec<(Address, Coins)> {
         self.stakes()
             .into_iter()
             .filter(|(address, _)| self.commitments.get(address).is_some_and(|c| c.remaining > 0))
             .collect()
     }
 
-    pub fn validator_state(&self, address: &str) -> ValidatorState {
+    pub fn validator_state(&self, address: &Address) -> ValidatorState {
         ValidatorState {
             next_epoch: self.epochs.get(address).copied().unwrap_or(0),
             reveals_left: self.active_commitment(address).map(|c| c.remaining),
         }
     }
 
-    fn active_commitment(&self, address: &str) -> Option<&RevealChain> {
+    fn active_commitment(&self, address: &Address) -> Option<&RevealChain> {
         self.commitments.get(address).filter(|c| c.remaining > 0)
     }
 
     /// Checks that `reveal` opens `validator`'s commitment, then moves their chain along by one
     /// and mixes the reveal into the beacon.
-    pub(super) fn apply_reveal(&mut self, validator: &str, reveal: &Reveal) -> bool {
+    pub(super) fn apply_reveal(&mut self, validator: &Address, reveal: &Reveal) -> bool {
         let Some(chain) = self.commitments.get_mut(validator) else {
             return false;
         };
@@ -82,16 +83,16 @@ impl Ledger {
         true
     }
 
-    pub fn balance(&self, address: &str) -> Coins {
+    pub fn balance(&self, address: &Address) -> Coins {
         self.balances.get(address).copied().unwrap_or_default()
     }
 
-    pub fn staked(&self, address: &str) -> Coins {
+    pub fn staked(&self, address: &Address) -> Coins {
         self.stakes.get(address).copied().unwrap_or_default()
     }
 
     /// Every non-zero stake, sorted by address so validator selection is the same everywhere.
-    pub fn stakes(&self) -> Vec<(String, Coins)> {
+    pub fn stakes(&self) -> Vec<(Address, Coins)> {
         let mut stakes: Vec<_> = self
             .stakes
             .iter()
@@ -102,12 +103,12 @@ impl Ledger {
         stakes
     }
 
-    pub fn next_nonce(&self, address: &str) -> u64 {
+    pub fn next_nonce(&self, address: &Address) -> u64 {
         self.nonces.get(address).copied().unwrap_or(0)
     }
 
-    pub(super) fn credit(&mut self, address: &str, amount: Coins) {
-        let balance = self.balances.entry(address.to_string()).or_default();
+    pub(super) fn credit(&mut self, address: &Address, amount: Coins) {
+        let balance = self.balances.entry(address.clone()).or_default();
         *balance = balance.saturating_add(amount);
     }
 
@@ -118,7 +119,7 @@ impl Ledger {
         let Some(sender) = tx.sender() else {
             return Err(ChainError::UnexpectedCoinbase);
         };
-        let from = sender.as_str();
+        let from = sender;
         if tx.amount.is_zero() {
             return Err(ChainError::ZeroAmount);
         }
@@ -154,7 +155,7 @@ impl Ledger {
                 return Err(ChainError::InsufficientStake { staked, amount: tx.amount });
             }
             let left = staked.checked_sub(tx.amount).expect("checked just above");
-            self.stakes.insert(from.to_string(), left);
+            self.stakes.insert(from.clone(), left);
             if staked == tx.amount {
                 // Fully unstaked: the reveal chain ends, and staking again needs a new one.
                 self.commitments.remove(from);
@@ -162,23 +163,22 @@ impl Ledger {
         }
         if let Some(commitment) = &tx.commitment {
             let head = randao::first_link(commitment);
-            self.commitments
-                .insert(from.to_string(), RevealChain { head, remaining: randao::LENGTH });
-            *self.epochs.entry(from.to_string()).or_insert(0) += 1;
+            self.commitments.insert(from.clone(), RevealChain { head, remaining: randao::LENGTH });
+            *self.epochs.entry(from.clone()).or_insert(0) += 1;
         }
-        self.balances.insert(from.to_string(), left);
+        self.balances.insert(from.clone(), left);
         match kind {
             TxKind::Stake => {
-                let stake = self.stakes.entry(from.to_string()).or_default();
+                let stake = self.stakes.entry(from.clone()).or_default();
                 *stake = stake.saturating_add(tx.amount);
             }
             TxKind::Unstake => self.credit(from, tx.amount),
             _ => {
                 let to = tx.to.account().expect("a transfer goes to an account");
-                self.credit(to.as_str(), tx.amount);
+                self.credit(to, tx.amount);
             }
         }
-        self.nonces.insert(from.to_string(), expected + 1);
+        self.nonces.insert(from.clone(), expected + 1);
         Ok(())
     }
 }

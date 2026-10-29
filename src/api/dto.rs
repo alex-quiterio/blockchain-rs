@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::address::Address;
 use crate::domain::block::{BlockHeader, Transaction};
 use crate::domain::merkle::Step;
 use crate::domain::values::{BlockHash, Coins, Commitment, Reveal};
@@ -44,7 +45,7 @@ pub struct ProposalRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StakeEntry {
-    pub address: String,
+    pub address: Address,
     pub amount: Coins,
 }
 

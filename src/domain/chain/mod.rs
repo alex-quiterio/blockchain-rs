@@ -193,21 +193,21 @@ impl Blockchain {
     }
 
     pub fn balance(&self, address: &Address) -> Coins {
-        self.tally().ledger.balance(address.as_str())
+        self.tally().ledger.balance(address)
     }
 
     pub fn staked(&self, address: &Address) -> Coins {
-        self.tally().ledger.staked(address.as_str())
+        self.tally().ledger.staked(address)
     }
 
     /// Every confirmed stake, sorted by address.
-    pub fn stakes(&self) -> Vec<(String, Coins)> {
+    pub fn stakes(&self) -> Vec<(Address, Coins)> {
         self.tally().ledger.stakes()
     }
 
     /// The nonce a new transaction from `address` must carry, counting the mempool.
     pub fn next_nonce(&self, address: &Address) -> u64 {
-        self.mempool.projected().next_nonce(address.as_str())
+        self.mempool.projected().next_nonce(address)
     }
 
     /// Who must forge the next block. `None` on proof-of-work chains, and on proof-of-stake chains
@@ -220,11 +220,7 @@ impl Blockchain {
         if !self.rules.is_proof_of_stake() {
             return None;
         }
-        let selected = select_validator(
-            &self.tally().ledger.validator_stakes(),
-            self.tally().ledger.beacon(),
-        )?;
-        Some(Address::parse(&selected).expect("only valid senders can stake"))
+        select_validator(&self.tally().ledger.validator_stakes(), self.tally().ledger.beacon())
     }
 
     /// The randomness beacon the next validator is drawn from.
@@ -234,13 +230,13 @@ impl Blockchain {
 
     /// Where `address` stands with its reveal chain.
     pub fn validator_state(&self, address: &Address) -> ValidatorState {
-        self.tally().ledger.validator_state(address.as_str())
+        self.tally().ledger.validator_state(address)
     }
 
     /// If `address`'s next stake must carry a commitment, the epoch to make it for. Counts stakes
     /// already waiting in the mempool, so a second stake in a row doesn't commit again.
     pub fn commitment_due(&self, address: &Address) -> Option<u64> {
-        let state = self.mempool.projected().validator_state(address.as_str());
+        let state = self.mempool.projected().validator_state(address);
         state.reveals_left.is_none().then_some(state.next_epoch)
     }
 
@@ -311,9 +307,7 @@ impl Blockchain {
         match (self.due_reveal(validator), &reveal) {
             (Some(_), None) => return Err(ChainError::BadReveal),
             (None, Some(_)) => return Err(ChainError::BadReveal),
-            (Some(_), Some(r))
-                if !self.tally().ledger.clone().apply_reveal(validator.as_str(), r) =>
-            {
+            (Some(_), Some(r)) if !self.tally().ledger.clone().apply_reveal(validator, r) => {
                 return Err(ChainError::BadReveal)
             }
             _ => {}
@@ -327,7 +321,7 @@ impl Blockchain {
     /// `None` while anyone may forge and no reveal is due.
     fn due_reveal(&self, validator: &Address) -> Option<(u64, u32)> {
         self.next_validator()?;
-        let state = self.tally().ledger.validator_state(validator.as_str());
+        let state = self.tally().ledger.validator_state(validator);
         Some((state.next_epoch.checked_sub(1)?, state.reveals_left?))
     }
 
@@ -911,8 +905,7 @@ mod tests {
             let kept = chain.tallies.after(height).unwrap();
             assert_eq!((kept.weight, kept.work), (replayed.weight, replayed.work), "at {height}");
             for who in watched {
-                let (k, r) =
-                    (kept.ledger.balance(who.as_str()), replayed.ledger.balance(who.as_str()));
+                let (k, r) = (kept.ledger.balance(who), replayed.ledger.balance(who));
                 assert_eq!(k, r, "{who} at {height}");
             }
         }
@@ -975,7 +968,7 @@ mod tests {
 
         // It's trusted for the blocks it covers: that's what it saves. Hence the checks below.
         let mut generous = snapshot.clone();
-        generous.tally.ledger.credit(bob.as_str(), Coins::new(1_000));
+        generous.tally.ledger.credit(&bob, Coins::new(1_000));
         let (trusting, _) =
             Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(generous)).unwrap();
         assert_eq!(trusting.balance(&bob), Coins::new(1_020));

@@ -70,7 +70,7 @@ pub struct ConsensusState {
     pub rules: ChainRules,
     /// Under proof of stake, who must forge next. `None` means anyone may.
     pub next_validator: Option<Address>,
-    pub stakes: Vec<(String, Coins)>,
+    pub stakes: Vec<(Address, Coins)>,
     /// The randomness the next validator is drawn from.
     pub beacon: String,
     /// Proof of work: the hashes the next block should take to find, on average.

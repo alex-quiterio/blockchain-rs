@@ -6,7 +6,6 @@ use std::collections::VecDeque;
 use chrono::Utc;
 
 use super::tally::Tally;
-use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty::{self, meets_work};
 use crate::domain::ledger::Ledger;
@@ -116,14 +115,14 @@ pub(super) fn apply_block(
     let Some((coinbase, transfers)) = block.transactions.split_first() else {
         return false;
     };
-    let Some(producer) = coinbase.to.account().map(|a| a.as_str()) else {
+    let Some(producer) = coinbase.to.account() else {
         return false;
     };
     if !coinbase.is_coinbase()
         || Some(coinbase.amount) != payout(rules.reward, transfers)
         || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index
-        || block.validator.as_ref().is_some_and(|v| v.as_str() != producer)
+        || block.validator.as_ref().is_some_and(|v| v != producer)
     {
         return false;
     }
@@ -145,9 +144,7 @@ fn reveals_as_required(block: &Block, ledger: &mut Ledger, rules: &ChainRules) -
     }
     let selected = select_validator(&ledger.validator_stakes(), ledger.beacon()).is_some();
     match (&block.validator, &block.reveal) {
-        (Some(validator), Some(reveal)) if selected => {
-            ledger.apply_reveal(validator.as_str(), reveal)
-        }
+        (Some(validator), Some(reveal)) if selected => ledger.apply_reveal(validator, reveal),
         (_, None) => !selected,
         _ => false,
     }
@@ -178,11 +175,8 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
         Consensus::ProofOfStake => {
             block.nonce == 0
                 && block.is_signed_by_validator()
-                && select_validator(&ledger.validator_stakes(), ledger.beacon()).is_none_or(
-                    |expected| {
-                        block.validator.as_ref().map(Address::as_str) == Some(expected.as_str())
-                    },
-                )
+                && select_validator(&ledger.validator_stakes(), ledger.beacon())
+                    .is_none_or(|expected| block.validator.as_ref() == Some(&expected))
         }
     }
 }
@@ -190,6 +184,7 @@ fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, wo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::address::Address;
     use crate::domain::crypto;
 
     #[test]
