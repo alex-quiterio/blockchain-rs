@@ -200,7 +200,7 @@ The code follows domain-driven design. Dependencies only point inward:
 flowchart TB
     api["<b>api/</b><br/>routes · handlers · DTOs"] --> app
     infra["<b>infrastructure/</b><br/>JSON file · in-memory · HTTP peers"] --> app
-    app["<b>application/</b><br/>NodeService · Network"] --> domain
+    app["<b>application/</b><br/>NodeService · ChainQueries · Network"] --> domain
     domain["<b>domain/</b><br/>chain/ · consensus/ · Block · Transaction<br/>Mempool · Ledger · Merkle · Address · ports"]
 ```
 
@@ -225,7 +225,8 @@ flowchart TB
     - `party.rs`: where a transaction's coins come from (`Source`: an account, or new coins for a block reward) and go (`Destination`: an account, or into or out of a stake), instead of strings with magic values
   - `error.rs`, `crypto.rs`, `repository.rs`: domain errors, signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
-  - `NodeService` runs each use case on a copy of the chain and only swaps it in once it's saved.
+  - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, then tells its listeners what happened.
+  - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing.
   - `Network` keeps the peers in step through the `PeerClient` port.
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
 - **`api/`** is the HTTP interface. **`public/`** is the web UI, plain HTML, CSS and JS with no build step.

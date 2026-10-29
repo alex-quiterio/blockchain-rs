@@ -1,21 +1,18 @@
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 
 use crate::domain::address::Address;
-use crate::domain::block::{Block, BlockHeader, Transaction};
+use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::{Blockchain, ChainEvent, Extension};
 use crate::domain::error::ChainError;
-use crate::domain::ledger::ValidatorState;
-use crate::domain::merkle;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
-use crate::domain::values::{BlockHash, Coins};
-use crate::domain::weight::ChainWeight;
+
+use super::queries::ChainQueries;
 
 #[derive(Debug)]
 pub enum NodeError {
@@ -42,72 +39,10 @@ impl From<ChainError> for NodeError {
     }
 }
 
-pub struct TipStatus {
-    pub height: u64,
-    pub hash: BlockHash,
-    pub weight: ChainWeight,
-    pub pending: usize,
-}
-
-pub struct ChainStatus {
-    pub valid: bool,
-    pub length: usize,
-    pub weight: ChainWeight,
-}
-
-pub struct Account {
-    pub balance: Coins,
-    pub staked: Coins,
-    pub next_nonce: u64,
-    pub validator: ValidatorState,
-    /// If the next stake must commit, the epoch to commit for.
-    pub commitment_due: Option<u64>,
-}
-
-/// Evidence that a transaction is in a block: its leaf, the sibling hashes up to the block's
-/// Merkle root, and the block's header, whose hash covers the root.
-pub struct TransactionProof {
-    pub transaction: Transaction,
-    pub leaf: String,
-    pub steps: Vec<merkle::Step>,
-    pub header: BlockHeader,
-    /// Blocks on top of it, counting its own.
-    pub confirmations: u64,
-}
-
-/// Where a transaction is: in a block, or still waiting in the mempool.
-pub struct Located {
-    pub transaction: Transaction,
-    /// The block holding it and its place there. `None` while it's pending.
-    pub block: Option<Placement>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Placement {
-    pub height: u64,
-    pub hash: BlockHash,
-    pub position: usize,
-    pub timestamp: DateTime<Utc>,
-    /// Blocks on top of it, counting its own.
-    pub confirmations: u64,
-}
-
-/// How the chain picks its next block, as of now.
-pub struct ConsensusState {
-    pub rules: ChainRules,
-    /// Under proof of stake, who must forge next. `None` means anyone may.
-    pub next_validator: Option<Address>,
-    pub stakes: Vec<(String, Coins)>,
-    /// The randomness the next validator is drawn from.
-    pub beacon: String,
-    /// Proof of work: the hashes the next block should take to find, on average.
-    pub next_work: u128,
-    /// Proof of work with retargeting: the next height where the work is adjusted.
-    pub next_retarget: Option<u64>,
-}
-
+/// The node's use cases: every change to the chain goes through here, is saved, and is told to
+/// listeners. Questions about the chain go to `ChainQueries`.
 pub struct NodeService {
-    chain: Mutex<Blockchain>,
+    chain: Arc<Mutex<Blockchain>>,
     repository: Box<dyn ChainRepository>,
     /// Blocks between snapshots. 0 takes none.
     snapshot_every: usize,
@@ -145,7 +80,7 @@ impl NodeService {
             }
         };
         Ok(Self {
-            chain: Mutex::new(chain),
+            chain: Arc::new(Mutex::new(chain)),
             repository,
             snapshot_every: SNAPSHOT_BLOCKS,
             last_snapshot: Mutex::new(restored_from.unwrap_or(0)),
@@ -169,153 +104,14 @@ impl NodeService {
         self.restored_from
     }
 
-    pub fn blocks(&self) -> Vec<Block> {
-        self.chain.lock().unwrap().blocks().to_vec()
-    }
-
-    /// The blocks from `height` on, for clients catching up.
-    pub fn blocks_from(&self, height: usize) -> Vec<Block> {
-        let chain = self.chain.lock().unwrap();
-        chain.blocks().get(height..).unwrap_or_default().to_vec()
-    }
-
-    /// Up to `limit` blocks from `height` on, without copying the rest.
-    pub fn blocks_between(&self, height: usize, limit: usize) -> Vec<Block> {
-        let chain = self.chain.lock().unwrap();
-        let blocks = chain.blocks().get(height..).unwrap_or_default();
-        blocks[..limit.min(blocks.len())].to_vec()
-    }
-
-    /// The headers from `height` on: everything a light client needs to follow the chain.
-    pub fn headers_from(&self, height: usize) -> Vec<BlockHeader> {
-        let chain = self.chain.lock().unwrap();
-        chain.blocks().get(height..).unwrap_or_default().iter().map(Block::header).collect()
-    }
-
-    /// The block at a height, given as digits, or with a hash.
-    pub fn block(&self, id: &str) -> Option<Block> {
-        let chain = self.chain.lock().unwrap();
-        let blocks = chain.blocks();
-        match id.parse::<usize>() {
-            Ok(height) => blocks.get(height).cloned(),
-            Err(_) => blocks.iter().rev().find(|block| block.hash.as_str() == id).cloned(),
-        }
-    }
-
-    /// Finds the transfer signed `signature`, confirmed or pending.
-    pub fn locate(&self, signature: &str) -> Option<Located> {
-        let chain = self.chain.lock().unwrap();
-        if let Some((block, position)) = chain.find_transaction(signature) {
-            return Some(Located {
-                transaction: block.transactions[position].clone(),
-                block: Some(placement(&chain, block, position)),
-            });
-        }
-        let pending = chain.pending_transaction(signature)?;
-        Some(Located { transaction: pending.clone(), block: None })
-    }
-
-    /// Every transaction to or from `address`, block rewards included: pending ones first, then
-    /// confirmed ones, newest first.
-    pub fn history(&self, address: &Address) -> Vec<Located> {
-        let chain = self.chain.lock().unwrap();
-        let pending =
-            chain.pending_of(address).map(|tx| Located { transaction: tx.clone(), block: None });
-        let confirmed = chain.history_of(address).map(|(block, position)| Located {
-            transaction: block.transactions[position].clone(),
-            block: Some(placement(&chain, block, position)),
-        });
-        pending.chain(confirmed).collect()
-    }
-
-    /// Proves that the confirmed transfer signed `signature` is in its block, or `None` if no
-    /// block holds it.
-    pub fn prove(&self, signature: &str) -> Option<TransactionProof> {
-        let chain = self.chain.lock().unwrap();
-        let (block, position) = chain.find_transaction(signature)?;
-        let transaction = block.transactions[position].clone();
-        Some(TransactionProof {
-            leaf: merkle::leaf(&transaction),
-            steps: merkle::proof(&block.transactions, position)?,
-            header: block.header(),
-            confirmations: chain.tip().index - block.index + 1,
-            transaction,
-        })
-    }
-
-    /// Where the chain stands, without replaying it: cheap enough to poll every second.
-    pub fn tip(&self) -> TipStatus {
-        let chain = self.chain.lock().unwrap();
-        TipStatus {
-            height: chain.blocks().len() as u64 - 1,
-            hash: chain.tip().hash.clone(),
-            weight: chain.weight(),
-            pending: chain.pending().len(),
-        }
-    }
-
-    /// Whether the chain replays cleanly, how long it is and what it weighs in a fork.
-    pub fn status(&self) -> ChainStatus {
-        let chain = self.chain.lock().unwrap();
-        ChainStatus {
-            valid: chain.is_valid(),
-            length: chain.blocks().len(),
-            weight: chain.weight(),
-        }
-    }
-
-    pub fn account(&self, address: &Address) -> Account {
-        let chain = self.chain.lock().unwrap();
-        Account {
-            balance: chain.balance(address),
-            staked: chain.staked(address),
-            next_nonce: chain.next_nonce(address),
-            validator: chain.validator_state(address),
-            commitment_due: chain.commitment_due(address),
-        }
-    }
-
-    pub fn next_nonce(&self, address: &Address) -> u64 {
-        self.chain.lock().unwrap().next_nonce(address)
-    }
-
-    pub fn pending(&self) -> Vec<Transaction> {
-        self.chain.lock().unwrap().pending().to_vec()
+    /// Answers questions about the same chain this service changes.
+    pub fn queries(&self) -> ChainQueries {
+        ChainQueries::new(self.chain.clone())
     }
 
     /// Queues a transaction. The mempool isn't saved, so nothing is written.
     pub fn submit(&self, tx: Transaction) -> Result<(), ChainError> {
         self.chain.lock().unwrap().submit(tx)
-    }
-
-    pub fn consensus(&self) -> ConsensusState {
-        let chain = self.chain.lock().unwrap();
-        ConsensusState {
-            rules: chain.rules(),
-            next_validator: chain.next_validator(),
-            stakes: chain.stakes(),
-            beacon: chain.beacon().to_string(),
-            next_work: chain.next_work(),
-            next_retarget: chain.next_retarget_height(),
-        }
-    }
-
-    pub fn rules(&self) -> ChainRules {
-        self.chain.lock().unwrap().rules()
-    }
-
-    /// Proof of work: the work each block required, by height.
-    pub fn work_history(&self) -> Vec<u128> {
-        self.chain.lock().unwrap().work_history()
-    }
-
-    /// The unsigned block `validator` should sign next. Changes nothing.
-    pub fn propose(
-        &self,
-        validator: &Address,
-        reveal: Option<String>,
-    ) -> Result<Block, ChainError> {
-        self.chain.lock().unwrap().propose(validator, reveal)
     }
 
     /// Appends a proof-of-stake block signed elsewhere and saves it.
@@ -410,18 +206,10 @@ impl NodeService {
     }
 }
 
-fn placement(chain: &Blockchain, block: &Block, position: usize) -> Placement {
-    Placement {
-        height: block.index,
-        hash: block.hash.clone(),
-        position,
-        timestamp: block.timestamp,
-        confirmations: chain.tip().index - block.index + 1,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::domain::merkle;
+    use crate::domain::values::Coins;
     use std::sync::Arc;
 
     use super::*;
@@ -478,7 +266,7 @@ mod tests {
     fn a_new_node_saves_its_genesis_block() {
         let repo = SharedRepository::default();
         let node = node(repo.clone());
-        assert_eq!(repo.load().unwrap().unwrap(), node.blocks());
+        assert_eq!(repo.load().unwrap().unwrap(), node.queries().blocks());
     }
 
     #[test]
@@ -490,8 +278,8 @@ mod tests {
         first.mine(&miner).unwrap();
 
         let second = node(repo);
-        assert_eq!(second.blocks(), first.blocks());
-        assert_eq!(second.account(&miner).balance, Coins::new(100));
+        assert_eq!(second.queries().blocks(), first.queries().blocks());
+        assert_eq!(second.queries().account(&miner).balance, Coins::new(100));
     }
 
     #[test]
@@ -509,8 +297,8 @@ mod tests {
         // Nine blocks; the last two may still be undone, so the snapshot is after block 6.
         let second = NodeService::open(Box::new(repo.clone()), rules).unwrap();
         assert_eq!(second.restored_from(), Some(6));
-        assert_eq!(second.blocks(), first.blocks());
-        assert_eq!(second.account(&miner).balance, Coins::new(400));
+        assert_eq!(second.queries().blocks(), first.queries().blocks());
+        assert_eq!(second.queries().account(&miner).balance, Coins::new(400));
 
         let none =
             NodeService::open(Box::new(repo.clone()), rules).unwrap().with_snapshots_every(0);
@@ -538,8 +326,8 @@ mod tests {
         let miner = new_address();
 
         assert!(matches!(node.mine(&miner), Err(NodeError::Storage(_))));
-        assert_eq!(node.blocks().len(), 1);
-        assert_eq!(node.account(&miner).balance, Coins::new(0));
+        assert_eq!(node.queries().blocks().len(), 1);
+        assert_eq!(node.queries().account(&miner).balance, Coins::new(0));
     }
 
     #[test]
@@ -561,8 +349,8 @@ mod tests {
         ours.extend(vec![theirs_block.clone()]).unwrap();
         match mining.join().unwrap() {
             Err(NodeError::Chain(ChainError::StaleBlock)) => {
-                assert_eq!(ours.blocks()[1], theirs_block);
-                assert_eq!(ours.account(&miner).balance, Coins::new(0));
+                assert_eq!(ours.queries().blocks()[1], theirs_block);
+                assert_eq!(ours.queries().account(&miner).balance, Coins::new(0));
             }
             // Ours happened to finish first; their block then lost or won the tie.
             Ok(block) => assert_eq!(block.index, 1),
@@ -578,7 +366,7 @@ mod tests {
             node.mine_unless(&new_address(), &cancelled),
             Err(NodeError::Chain(ChainError::StaleBlock))
         ));
-        assert_eq!(node.blocks().len(), 1);
+        assert_eq!(node.queries().blocks().len(), 1);
     }
 
     #[test]
@@ -593,18 +381,18 @@ mod tests {
             node.submit(tx.clone()).unwrap();
             payments.push(tx);
         }
-        assert!(node.prove(&payments[3].signature).is_none(), "not in a block yet");
+        assert!(node.queries().prove(&payments[3].signature).is_none(), "not in a block yet");
         node.mine(&alice).unwrap();
         node.mine(&alice).unwrap();
 
-        let proof = node.prove(&payments[3].signature).unwrap();
+        let proof = node.queries().prove(&payments[3].signature).unwrap();
         assert_eq!(proof.transaction, payments[3]);
         assert_eq!((proof.header.index, proof.confirmations), (2, 2));
         assert_eq!(proof.header.hash, proof.header.computed_hash());
-        assert_eq!(proof.header, node.headers_from(2)[0]);
+        assert_eq!(proof.header, node.queries().headers_from(2)[0]);
         assert_eq!(proof.leaf, merkle::leaf(&payments[3]));
         assert!(merkle::verify(&proof.leaf, &proof.steps, &proof.header.merkle_root));
-        assert!(node.prove("").is_none(), "block rewards have no signature to look up");
+        assert!(node.queries().prove("").is_none(), "block rewards have no signature to look up");
     }
 
     #[test]
@@ -616,21 +404,25 @@ mod tests {
         let payment = Transaction::signed(&key, &bob, Coins::new(7), 0, Coins::new(1));
         node.submit(payment.clone()).unwrap();
 
-        let pending = node.locate(&payment.signature).unwrap();
+        let pending = node.queries().locate(&payment.signature).unwrap();
         assert_eq!((pending.transaction, pending.block), (payment.clone(), None));
-        assert_eq!(node.history(&bob).len(), 1);
+        assert_eq!(node.queries().history(&bob).len(), 1);
 
         let block = node.mine(&alice).unwrap();
-        let placement = node.locate(&payment.signature).unwrap().block.unwrap();
+        let placement = node.queries().locate(&payment.signature).unwrap().block.unwrap();
         assert_eq!((placement.height, placement.position, placement.confirmations), (2, 1, 1));
-        assert_eq!(node.block("2"), Some(block.clone()));
-        assert_eq!(node.block(block.hash.as_str()), Some(block));
-        assert_eq!(node.block("9"), None);
-        assert!(node.locate("nope").is_none());
+        assert_eq!(node.queries().block("2"), Some(block.clone()));
+        assert_eq!(node.queries().block(block.hash.as_str()), Some(block));
+        assert_eq!(node.queries().block("9"), None);
+        assert!(node.queries().locate("nope").is_none());
 
         // Alice: the payment, then two block rewards, newest first.
-        let heights: Vec<_> =
-            node.history(&alice).iter().map(|l| l.block.as_ref().unwrap().height).collect();
+        let heights: Vec<_> = node
+            .queries()
+            .history(&alice)
+            .iter()
+            .map(|l| l.block.as_ref().unwrap().height)
+            .collect();
         assert_eq!(heights, [2, 2, 1]);
     }
 
@@ -658,10 +450,10 @@ mod tests {
         ours.mine(&new_address()).unwrap();
         ours.mine(&new_address()).unwrap();
         let theirs = node(InMemoryRepository::default());
-        theirs.extend(ours.blocks()[1..2].to_vec()).unwrap();
+        theirs.extend(ours.queries().blocks()[1..2].to_vec()).unwrap();
         theirs.mine(&new_address()).unwrap();
         theirs.mine(&new_address()).unwrap();
-        ours.extend(theirs.blocks()[2..].to_vec()).unwrap();
+        ours.extend(theirs.queries().blocks()[2..].to_vec()).unwrap();
 
         // Genesis, two new blocks, then a fork that replaces the second with two of theirs.
         let replaced = ChainEvent::Reorganized { from: 2, dropped: 1, added: 2 };
@@ -679,7 +471,7 @@ mod tests {
         assert_eq!(told, saved[1..].concat(), "listeners hear what happens after they subscribe");
 
         // Blocks we already have change nothing, so nothing is saved or told.
-        assert!(ours.extend(theirs.blocks()[2..].to_vec()).is_ok());
+        assert!(ours.extend(theirs.queries().blocks()[2..].to_vec()).is_ok());
         assert_eq!(repo.0.lock().unwrap().len(), 4);
     }
 
@@ -690,9 +482,12 @@ mod tests {
         let theirs = node(InMemoryRepository::default());
         theirs.mine(&new_address()).unwrap();
 
-        assert_eq!(ours.adopt_if_heavier(theirs.blocks()).unwrap(), (true, 2));
-        assert_eq!(repo.load().unwrap().unwrap(), theirs.blocks());
-        assert_eq!(ours.adopt_if_heavier(theirs.blocks()[..1].to_vec()).unwrap(), (false, 2));
+        assert_eq!(ours.adopt_if_heavier(theirs.queries().blocks()).unwrap(), (true, 2));
+        assert_eq!(repo.load().unwrap().unwrap(), theirs.queries().blocks());
+        assert_eq!(
+            ours.adopt_if_heavier(theirs.queries().blocks()[..1].to_vec()).unwrap(),
+            (false, 2)
+        );
         assert!(matches!(
             ours.adopt_if_heavier(vec![]),
             Err(NodeError::Chain(ChainError::InvalidChain))

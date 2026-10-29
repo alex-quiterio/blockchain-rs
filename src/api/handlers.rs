@@ -86,7 +86,7 @@ pub async fn get_chain(
     Query(query): Query<ChainQuery>,
 ) -> Json<Vec<Block>> {
     let from = query.from.unwrap_or(0);
-    Json(state.node.blocks_between(from, query.limit.unwrap_or(usize::MAX)))
+    Json(state.queries.blocks_between(from, query.limit.unwrap_or(usize::MAX)))
 }
 
 /// Every block's header, or with `?from=N` the headers from height N on. What a light client
@@ -95,7 +95,7 @@ pub async fn get_headers(
     State(state): State<AppState>,
     Query(query): Query<ChainQuery>,
 ) -> Json<Vec<BlockHeader>> {
-    Json(state.node.headers_from(query.from.unwrap_or(0)))
+    Json(state.queries.headers_from(query.from.unwrap_or(0)))
 }
 
 /// A block by height or hash.
@@ -104,7 +104,7 @@ pub async fn get_block(
     Path(id): Path<String>,
 ) -> Result<Json<Block>, ApiError> {
     state
-        .node
+        .queries
         .block(&id)
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no block with that height or hash"))
@@ -115,7 +115,7 @@ pub async fn get_transaction(
     State(state): State<AppState>,
     Path(signature): Path<String>,
 ) -> Result<Json<TransactionResponse>, ApiError> {
-    let located = state.node.locate(&signature).ok_or_else(|| {
+    let located = state.queries.locate(&signature).ok_or_else(|| {
         ApiError::not_found("no transaction with that signature, in a block or waiting")
     })?;
     Ok(Json(transaction_response(located)))
@@ -126,7 +126,7 @@ pub async fn get_address_transactions(
     State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Result<Json<Vec<TransactionResponse>>, ApiError> {
-    let history = state.node.history(&Address::parse(&address)?);
+    let history = state.queries.history(&Address::parse(&address)?);
     Ok(Json(history.into_iter().map(transaction_response).collect()))
 }
 
@@ -150,7 +150,7 @@ pub async fn get_proof(
     Path(signature): Path<String>,
 ) -> Result<Json<ProofResponse>, ApiError> {
     let proof = state
-        .node
+        .queries
         .prove(&signature)
         .ok_or_else(|| ApiError::not_found("no block holds a transaction with that signature"))?;
     Ok(Json(ProofResponse {
@@ -166,7 +166,7 @@ pub async fn get_proof(
 /// A peer polling it names itself, and is added back if this node had forgotten it.
 pub async fn get_status(State(state): State<AppState>, headers: HeaderMap) -> Json<StatusResponse> {
     sender(&state, &headers);
-    let tip = state.node.tip();
+    let tip = state.queries.tip();
     Json(StatusResponse {
         height: tip.height,
         tip: tip.hash,
@@ -196,7 +196,7 @@ pub async fn replace_chain(
 }
 
 pub async fn get_validity(State(state): State<AppState>) -> Json<ValidityResponse> {
-    let status = state.node.status();
+    let status = state.queries.status();
     Json(ValidityResponse {
         valid: status.valid,
         length: status.length,
@@ -213,7 +213,7 @@ pub async fn get_balance(
     State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Result<Json<BalanceResponse>, ApiError> {
-    let account = state.node.account(&Address::parse(&address)?);
+    let account = state.queries.account(&Address::parse(&address)?);
     Ok(Json(BalanceResponse {
         address,
         balance: account.balance,
@@ -233,12 +233,12 @@ pub async fn sign_transaction(
     let key = crypto::parse_secret_key(&req.secret_key)
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
     let from = Address::of(&key);
-    let nonce = req.nonce.unwrap_or_else(|| state.node.next_nonce(&from));
+    let nonce = req.nonce.unwrap_or_else(|| state.queries.next_nonce(&from));
     let to = Destination::parse(&req.to)?;
     if to != Destination::Stake {
         return Ok(Json(Transaction::signed(&key, to, req.amount, nonce, req.fee)));
     }
-    let due = state.node.account(&from).commitment_due;
+    let due = state.queries.account(&from).commitment_due;
     let commitment = req.commitment.or_else(|| due.map(|epoch| randao::commitment(&key, epoch)));
     Ok(Json(Transaction::stake(&key, req.amount, nonce, req.fee, commitment)))
 }
@@ -255,7 +255,7 @@ pub async fn submit_transaction(
 }
 
 pub async fn get_pending(State(state): State<AppState>) -> Json<Vec<Transaction>> {
-    Json(state.node.pending())
+    Json(state.queries.pending())
 }
 
 pub async fn mine(
@@ -275,7 +275,7 @@ pub async fn mine(
 }
 
 pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusResponse> {
-    let consensus = state.node.consensus();
+    let consensus = state.queries.consensus();
     let pos = consensus.rules.is_proof_of_stake();
     let retarget = consensus.rules.retarget();
     let (kind, difficulty) = match consensus.rules.consensus {
@@ -308,7 +308,7 @@ pub async fn get_work(
     State(state): State<AppState>,
     Query(query): Query<ChainQuery>,
 ) -> Json<Vec<String>> {
-    let history = state.node.work_history();
+    let history = state.queries.work_history();
     let from = query.from.unwrap_or(0).min(history.len());
     let shown = history[from..].iter().take(query.limit.unwrap_or(usize::MAX));
     Json(shown.map(u128::to_string).collect())
@@ -320,7 +320,7 @@ pub async fn propose(
     State(state): State<AppState>,
     Json(req): Json<ProposalRequest>,
 ) -> Result<Json<Block>, ApiError> {
-    Ok(Json(state.node.propose(&Address::parse(&req.validator)?, req.reveal)?))
+    Ok(Json(state.queries.propose(&Address::parse(&req.validator)?, req.reveal)?))
 }
 
 /// Accepts a proof-of-stake block signed by its validator.

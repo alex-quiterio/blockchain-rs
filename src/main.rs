@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = NodeService::open(repository, rules)
         .map_err(|e| format!("{chain_file}: {e}"))?
         .with_snapshots_every(env_or("SNAPSHOT_BLOCKS", SNAPSHOT_BLOCKS));
-    let length = node.tip().height + 1;
+    let length = node.queries().tip().height + 1;
     match node.restored_from() {
         Some(height) => tracing::info!(
             "Loaded {length} blocks from {chain_file} in {:.0?}, replaying only those after the snapshot at {height}",

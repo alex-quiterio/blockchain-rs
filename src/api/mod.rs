@@ -14,7 +14,7 @@ use tower_http::{services::ServeDir, set_header::SetResponseHeader, trace::Trace
 
 use chrono::{DateTime, Utc};
 
-use crate::application::{Network, NodeService};
+use crate::application::{ChainQueries, Network, NodeService};
 
 /// The header a node names itself in when it talks to a peer: when it gossips, so the peer
 /// doesn't relay the message straight back, and when it polls, so a peer that forgot it adds it
@@ -24,13 +24,16 @@ pub const PEER_HEADER: &str = "x-peer";
 #[derive(Clone)]
 pub struct AppState {
     pub node: Arc<NodeService>,
+    pub queries: ChainQueries,
     pub network: Arc<Network>,
     pub started_at: DateTime<Utc>,
 }
 
 impl AppState {
     pub fn new(network: Network) -> Self {
-        Self { node: network.node().clone(), network: Arc::new(network), started_at: Utc::now() }
+        let node = network.node().clone();
+        let queries = node.queries();
+        Self { node, queries, network: Arc::new(network), started_at: Utc::now() }
     }
 }
 

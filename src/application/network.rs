@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use futures_util::future::join_all;
 
-use super::NodeService;
+use super::{ChainQueries, NodeService};
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::Extension;
 use crate::domain::values::BlockHash;
@@ -74,6 +74,7 @@ pub struct SyncReport {
 /// peer may lack goes over the wire: a new block on its own, more history only when it asks.
 pub struct Network {
     node: Arc<NodeService>,
+    queries: ChainQueries,
     client: Box<dyn PeerClient>,
     /// This node's own URL, given to peers so they can reach back.
     me: Option<String>,
@@ -89,7 +90,8 @@ pub const SYNC_PAGE: usize = 500;
 impl Network {
     pub fn new(node: Arc<NodeService>, client: Box<dyn PeerClient>, me: Option<String>) -> Self {
         let me = me.map(|url| normalize(&url));
-        Self { node, client, me, peers: Mutex::default(), page: SYNC_PAGE }
+        let queries = node.queries();
+        Self { node, queries, client, me, peers: Mutex::default(), page: SYNC_PAGE }
     }
 
     /// Fetches `page` blocks per request when catching up, instead of `SYNC_PAGE`.
@@ -99,6 +101,10 @@ impl Network {
 
     pub fn node(&self) -> &Arc<NodeService> {
         &self.node
+    }
+
+    pub fn queries(&self) -> &ChainQueries {
+        &self.queries
     }
 
     pub fn peers(&self) -> Vec<(String, PeerStatus)> {
@@ -159,14 +165,14 @@ impl Network {
             };
             self.peers.lock().unwrap().insert(url, status);
         }
-        report.length = self.node.tip().height as usize + 1;
+        report.length = self.queries.tip().height as usize + 1;
         report
     }
 
     /// Catches up with one peer. Returns its status and whether its chain was adopted.
     async fn pull(&self, url: &str) -> Result<(PeerTip, bool), String> {
         let theirs = self.client.status(url, self.me.as_deref()).await?;
-        let ours = self.node.tip();
+        let ours = self.queries.tip();
         let mut adopted = false;
         if theirs.tip != ours.hash && theirs.weight >= ours.weight.value() {
             // From as far back as a fork may reach, a page at a time. Each page builds on the
@@ -201,12 +207,12 @@ impl Network {
     /// blocks a fork could reach back to. A push never sends more: a peer further behind than
     /// that catches up by pulling, which isn't held to a request's size limit.
     pub async fn broadcast_tip(&self, except: Option<&str>) {
-        let length = self.node.tip().height as usize + 1;
+        let length = self.queries.tip().height as usize + 1;
         join_all(self.peers_except(except).iter().map(|url| async move {
             let tip = length - 1;
             let recent = self.recent_start(length);
             for from in [tip, recent] {
-                let blocks = self.node.blocks_from(from);
+                let blocks = self.queries.blocks_from(from);
                 let offered = self.client.offer_blocks(url, &blocks, self.me.as_deref()).await;
                 if from == recent || !matches!(offered, Ok(Extension::MissingParent)) {
                     break;
@@ -227,7 +233,7 @@ impl Network {
     /// Where the blocks a fork could reach back to begin, for chains whose shorter one has
     /// `length` blocks. Never genesis, which every node shares.
     fn recent_start(&self, length: usize) -> usize {
-        let depth = self.node.rules().max_reorg_depth as usize;
+        let depth = self.queries.rules().max_reorg_depth as usize;
         length.saturating_sub(depth + 1).max(1)
     }
 
@@ -305,7 +311,7 @@ mod tests {
                 if let Some(me) = me {
                     network.add_peer(me).await?;
                 }
-                let tip = network.node().tip();
+                let tip = network.queries().tip();
                 Ok(PeerTip {
                     height: tip.height,
                     tip: tip.hash,
@@ -322,11 +328,13 @@ mod tests {
         ) -> PeerResult<'a, Vec<Block>> {
             Box::pin(async move {
                 let network = self.reach(peer, format!("chain from {height}")).await?;
-                Ok(network.node().blocks_from(height).into_iter().take(limit).collect())
+                Ok(network.queries().blocks_from(height).into_iter().take(limit).collect())
             })
         }
         fn pending<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<Transaction>> {
-            Box::pin(async move { Ok(self.reach(peer, "pending".into()).await?.node().pending()) })
+            Box::pin(
+                async move { Ok(self.reach(peer, "pending".into()).await?.queries().pending()) },
+            )
         }
         fn offer_blocks<'a>(
             &'a self,
@@ -403,8 +411,8 @@ mod tests {
         let report = a.sync().await;
         assert_eq!(report.adopted_from.as_deref(), Some("http://b"));
         assert_eq!((report.reached, report.length), (1, 3));
-        assert_eq!(a.node().blocks(), b.node().blocks());
-        assert_eq!(a.node().pending(), b.node().pending());
+        assert_eq!(a.queries().blocks(), b.queries().blocks());
+        assert_eq!(a.queries().pending(), b.queries().pending());
         assert_eq!(a.peers()[0].1.height, Some(3));
     }
 
@@ -421,13 +429,13 @@ mod tests {
         let key = crypto::parse_secret_key(&secret).unwrap();
         a.node().mine(&Address::of(&key)).unwrap();
         a.broadcast_tip(None).await;
-        assert_eq!(b.node().blocks(), a.node().blocks());
-        assert_eq!(c.node().blocks(), a.node().blocks());
+        assert_eq!(b.queries().blocks(), a.queries().blocks());
+        assert_eq!(c.queries().blocks(), a.queries().blocks());
 
         let tx = Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::new(0));
         a.node().submit(tx.clone()).unwrap();
         a.broadcast_transaction(&tx, None).await;
-        assert_eq!(c.node().pending(), [tx]);
+        assert_eq!(c.queries().pending(), [tx]);
     }
 
     #[tokio::test]
@@ -447,8 +455,8 @@ mod tests {
         a.node().mine(&miner()).unwrap();
         a.broadcast_tip(Some("http://c")).await;
         assert_eq!(mesh.sent(), ["http://b offered 1 block(s)"], "not back to where it came from");
-        assert_eq!(b.node().blocks(), a.node().blocks());
-        assert_eq!(c.node().blocks().len(), 6);
+        assert_eq!(b.queries().blocks(), a.queries().blocks());
+        assert_eq!(c.queries().blocks().len(), 6);
     }
 
     #[tokio::test]
@@ -463,7 +471,7 @@ mod tests {
 
         a.broadcast_tip(None).await;
         assert_eq!(mesh.sent(), ["http://b offered 1 block(s)", "http://b offered 2 block(s)"]);
-        assert_eq!(b.node().blocks(), a.node().blocks());
+        assert_eq!(b.queries().blocks(), a.queries().blocks());
 
         // Further behind than a fork may reach (3 blocks here): a push never sends the whole
         // chain, so b catches up when it next pulls.
@@ -472,11 +480,11 @@ mod tests {
         }
         a.broadcast_tip(None).await;
         assert_eq!(mesh.sent(), ["http://b offered 1 block(s)", "http://b offered 4 block(s)"]);
-        assert_eq!(b.node().blocks().len(), 3);
+        assert_eq!(b.queries().blocks().len(), 3);
 
         b.sync().await;
         assert_eq!(mesh.sent(), ["http://a status", "http://a chain from 1"]);
-        assert_eq!(b.node().blocks(), a.node().blocks());
+        assert_eq!(b.queries().blocks(), a.queries().blocks());
     }
 
     #[tokio::test]
@@ -506,7 +514,7 @@ mod tests {
 
         let report = fresh.sync().await;
         assert_eq!(report.adopted_from.as_deref(), Some("http://a"));
-        assert_eq!(fresh.node().blocks(), a.node().blocks());
+        assert_eq!(fresh.queries().blocks(), a.queries().blocks());
         assert_eq!(
             mesh.sent(),
             [
@@ -554,7 +562,7 @@ mod tests {
         a.add_peer("http://b").await.unwrap();
         b.node().mine(&miner()).unwrap();
         a.sync().await;
-        assert_eq!(a.node().blocks(), b.node().blocks());
+        assert_eq!(a.queries().blocks(), b.queries().blocks());
         mesh.sent();
 
         let report = a.sync().await;
