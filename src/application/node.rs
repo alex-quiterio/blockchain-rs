@@ -136,8 +136,9 @@ impl NodeService {
     pub fn mine_unless(&self, miner: &Address, cancelled: &AtomicBool) -> Result<Block, NodeError> {
         let template = self.chain.lock().unwrap().mining_template(miner)?;
         let tip = template.prev_hash.clone();
-        let keep_going =
-            || !cancelled.load(Ordering::Relaxed) && self.chain.lock().unwrap().tip().hash == tip;
+        let keep_going = || {
+            !cancelled.load(Ordering::Relaxed) && *self.chain.lock().unwrap().tip().hash() == tip
+        };
         let block = template.mine_while(keep_going).ok_or(ChainError::StaleBlock)?;
         self.commit(|chain| chain.append_mined(block).cloned())
     }
@@ -312,8 +313,10 @@ mod tests {
     fn a_tampered_store_refuses_to_start() {
         let repo = SharedRepository::default();
         node(repo.clone()).mine(&new_address()).unwrap();
-        let mut blocks = repo.load().unwrap().unwrap();
-        blocks[1].transactions[0].amount = Coins::new(1_000);
+        // Outside the domain a block can't be changed, only rewritten as JSON, as on disk.
+        let mut json = serde_json::to_value(repo.load().unwrap().unwrap()).unwrap();
+        json[1]["transactions"][0]["amount"] = 1_000.into();
+        let blocks: Vec<Block> = serde_json::from_value(json).unwrap();
         repo.save(&blocks, &[ChainEvent::Started]).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
@@ -353,7 +356,7 @@ mod tests {
                 assert_eq!(ours.queries().account(&miner).balance, Coins::new(0));
             }
             // Ours happened to finish first; their block then lost or won the tie.
-            Ok(block) => assert_eq!(block.index, 1),
+            Ok(block) => assert_eq!(block.index(), 1),
             Err(e) => panic!("{e}"),
         }
     }
@@ -381,11 +384,11 @@ mod tests {
             node.submit(tx.clone()).unwrap();
             payments.push(tx);
         }
-        assert!(node.queries().prove(&payments[3].signature).is_none(), "not in a block yet");
+        assert!(node.queries().prove(payments[3].signature()).is_none(), "not in a block yet");
         node.mine(&alice).unwrap();
         node.mine(&alice).unwrap();
 
-        let proof = node.queries().prove(&payments[3].signature).unwrap();
+        let proof = node.queries().prove(payments[3].signature()).unwrap();
         assert_eq!(proof.transaction, payments[3]);
         assert_eq!((proof.header.index, proof.confirmations), (2, 2));
         assert_eq!(proof.header.hash, proof.header.computed_hash());
@@ -404,15 +407,15 @@ mod tests {
         let payment = Transaction::signed(&key, &bob, Coins::new(7), 0, Coins::new(1));
         node.submit(payment.clone()).unwrap();
 
-        let pending = node.queries().locate(&payment.signature).unwrap();
+        let pending = node.queries().locate(payment.signature()).unwrap();
         assert_eq!((pending.transaction, pending.block), (payment.clone(), None));
         assert_eq!(node.queries().history(&bob).len(), 1);
 
         let block = node.mine(&alice).unwrap();
-        let placement = node.queries().locate(&payment.signature).unwrap().block.unwrap();
+        let placement = node.queries().locate(payment.signature()).unwrap().block.unwrap();
         assert_eq!((placement.height, placement.position, placement.confirmations), (2, 1, 1));
         assert_eq!(node.queries().block("2"), Some(block.clone()));
-        assert_eq!(node.queries().block(block.hash.as_str()), Some(block));
+        assert_eq!(node.queries().block(block.hash().as_str()), Some(block));
         assert_eq!(node.queries().block("9"), None);
         assert!(node.queries().locate("nope").is_none());
 

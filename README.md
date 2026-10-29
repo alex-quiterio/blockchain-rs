@@ -215,7 +215,7 @@ flowchart TB
     - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
     - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
     - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
-  - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself
+  - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself. Only the domain can change either; outside it they can only be read, and doctests check it stays that way
   - `merkle.rs`: Merkle roots and proofs over a block's transactions
   - `mempool.rs`, `ledger.rs`: pending transactions, kept as a running projection, and the balances, stakes and nonces
   - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
@@ -271,7 +271,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 129 tests: unit, HTTP and property-based
+cargo test        # 131 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

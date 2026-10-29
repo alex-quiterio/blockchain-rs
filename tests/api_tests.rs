@@ -283,7 +283,7 @@ async fn a_light_client_checks_a_transfer_from_headers_and_a_proof() {
     let (status, body) = call(&app, "GET", &uri, None).await;
     assert_eq!(status, StatusCode::OK);
     let proof: ProofResponse = serde_json::from_value(body).unwrap();
-    assert_eq!(proof.transaction.amount, Coins::new(2));
+    assert_eq!(proof.transaction.amount(), Coins::new(2));
     assert_eq!(proof.leaf, merkle::leaf(&proof.transaction));
     assert!(merkle::verify(&proof.leaf, &proof.proof, &proof.header.merkle_root));
 

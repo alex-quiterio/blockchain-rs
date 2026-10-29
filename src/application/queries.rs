@@ -119,7 +119,7 @@ impl ChainQueries {
         let blocks = chain.blocks();
         match id.parse::<usize>() {
             Ok(height) => blocks.get(height).cloned(),
-            Err(_) => blocks.iter().rev().find(|block| block.hash.as_str() == id).cloned(),
+            Err(_) => blocks.iter().rev().find(|block| block.hash().as_str() == id).cloned(),
         }
     }
 
@@ -128,7 +128,7 @@ impl ChainQueries {
         let chain = self.chain.lock().unwrap();
         if let Some((block, position)) = chain.find_transaction(signature) {
             return Some(Located {
-                transaction: block.transactions[position].clone(),
+                transaction: block.transactions()[position].clone(),
                 block: Some(placement(&chain, block, position)),
             });
         }
@@ -143,7 +143,7 @@ impl ChainQueries {
         let pending =
             chain.pending_of(address).map(|tx| Located { transaction: tx.clone(), block: None });
         let confirmed = chain.history_of(address).map(|(block, position)| Located {
-            transaction: block.transactions[position].clone(),
+            transaction: block.transactions()[position].clone(),
             block: Some(placement(&chain, block, position)),
         });
         pending.chain(confirmed).collect()
@@ -154,12 +154,12 @@ impl ChainQueries {
     pub fn prove(&self, signature: &str) -> Option<TransactionProof> {
         let chain = self.chain.lock().unwrap();
         let (block, position) = chain.find_transaction(signature)?;
-        let transaction = block.transactions[position].clone();
+        let transaction = block.transactions()[position].clone();
         Some(TransactionProof {
             leaf: merkle::leaf(&transaction),
-            steps: merkle::proof(&block.transactions, position)?,
+            steps: merkle::proof(block.transactions(), position)?,
             header: block.header(),
-            confirmations: chain.tip().index - block.index + 1,
+            confirmations: chain.tip().index() - block.index() + 1,
             transaction,
         })
     }
@@ -169,7 +169,7 @@ impl ChainQueries {
         let chain = self.chain.lock().unwrap();
         TipStatus {
             height: chain.blocks().len() as u64 - 1,
-            hash: chain.tip().hash.clone(),
+            hash: chain.tip().hash().clone(),
             weight: chain.weight(),
             pending: chain.pending().len(),
         }
@@ -237,10 +237,10 @@ impl ChainQueries {
 
 fn placement(chain: &Blockchain, block: &Block, position: usize) -> Placement {
     Placement {
-        height: block.index,
-        hash: block.hash.clone(),
+        height: block.index(),
+        hash: block.hash().clone(),
         position,
-        timestamp: block.timestamp,
-        confirmations: chain.tip().index - block.index + 1,
+        timestamp: block.timestamp(),
+        confirmations: chain.tip().index() - block.index() + 1,
     }
 }

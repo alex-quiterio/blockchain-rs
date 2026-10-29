@@ -191,11 +191,11 @@ impl Load {
             Ok(()) => {
                 let mut stats = self.stats.lock().unwrap();
                 stats.accepted += 1;
-                stats.unconfirmed.insert(tx.signature, Instant::now());
+                stats.unconfirmed.insert(tx.signature().to_string(), Instant::now());
             }
             Err(reason) => {
                 *self.stats.lock().unwrap().rejected.entry(reason).or_default() += 1;
-                self.resync(&tx.from.to_string(), home).await;
+                self.resync(&tx.from().to_string(), home).await;
             }
         }
     }
@@ -278,9 +278,9 @@ impl Load {
         let mut stats = self.stats.lock().unwrap();
         for block in blocks {
             stats.blocks += 1;
-            for tx in block.transactions.iter().skip(1) {
-                stats.fees += tx.fee.value();
-                if let Some(sent) = stats.unconfirmed.remove(&tx.signature) {
+            for tx in block.transactions().iter().skip(1) {
+                stats.fees += tx.fee().value();
+                if let Some(sent) = stats.unconfirmed.remove(tx.signature()) {
                     stats.confirmed += 1;
                     stats.latencies.push(sent.elapsed().as_secs_f64());
                 }

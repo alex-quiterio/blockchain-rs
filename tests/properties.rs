@@ -44,7 +44,7 @@ fn assert_nonces_match_history(chain: &Blockchain) {
         let sent = chain
             .blocks()
             .iter()
-            .flat_map(|b| &b.transactions)
+            .flat_map(|b| b.transactions())
             .chain(chain.pending())
             .filter(|tx| tx.sender() == Some(&from))
             .count() as u64;
@@ -57,9 +57,9 @@ fn add_block(chain: &mut Blockchain, by: usize) {
     let block = if chain.rules().is_proof_of_stake() {
         let turn = chain.next_validator();
         let by = turn.map_or(by, |v| (0..WALLETS).find(|&i| address(i) == v).expect("ours"));
-        chain.forge(&key(by)).map(|b| b.index)
+        chain.forge(&key(by)).map(|b| b.index())
     } else {
-        chain.mine(&address(by)).map(|b| b.index)
+        chain.mine(&address(by)).map(|b| b.index())
     };
     block.expect("the mempool always applies, so adding a block never fails");
 }
@@ -244,14 +244,14 @@ proptest! {
         }
         let winner = candidates
             .iter()
-            .max_by_key(|c| (c.weight(), Reverse(c.tip().hash.clone())))
+            .max_by_key(|c| (c.weight(), Reverse(c.tip().hash().clone())))
             .unwrap();
 
         let mut node = Blockchain::new(POW);
         for &i in &order {
             node.adopt_if_heavier(candidates[i].blocks().to_vec()).unwrap();
         }
-        prop_assert_eq!(&node.tip().hash, &winner.tip().hash);
+        prop_assert_eq!(&node.tip().hash(), &winner.tip().hash());
         for candidate in &candidates {
             prop_assert_eq!(node.adopt_if_heavier(candidate.blocks().to_vec()), Ok(false), "settled for good");
         }
@@ -302,7 +302,7 @@ proptest! {
         for (i, gap) in gaps.iter().enumerate() {
             at += chrono::TimeDelta::seconds(*gap) + chrono::TimeDelta::milliseconds(1);
             let work = chain.next_work();
-            let (index, prev) = (chain.blocks().len() as u64, chain.tip().hash.clone());
+            let (index, prev) = (chain.blocks().len() as u64, chain.tip().hash().clone());
             let payout = vec![Transaction::coinbase(&address(i % WALLETS), Coins::new(REWARD), index)];
             let mut blocks = chain.blocks().to_vec();
             blocks.push(Block::mine(index, at, prev, payout, work));
@@ -328,20 +328,27 @@ proptest! {
         for i in 0..5 + extra {
             theirs.mine(&address(i % WALLETS)).unwrap();
         }
+        // Outside the domain a block can't be changed, only rewritten as JSON, as a peer would.
         let mut forged = theirs.blocks().to_vec();
-        let target = &mut forged[block];
+        let mut json = serde_json::to_value(&forged[block]).unwrap();
+        let bump = |value: &serde_json::Value| serde_json::Value::from(value.as_u64().unwrap() + 1);
         match field {
-            0 => target.transactions[0].amount = Coins::new(target.transactions[0].amount.value() + 1),
-            1 => target.transactions[0].to = address(WALLETS + 1).into(), // never mines
-            2 => target.timestamp += chrono::TimeDelta::seconds(1),
-            3 => target.nonce += 1,
-            4 => target.prev_hash = BlockHash::of(b"a block that isn't there"),
-            _ => target.index += 1,
+            0 => json["transactions"][0]["amount"] = bump(&json["transactions"][0]["amount"]),
+            1 => json["transactions"][0]["to"] = address(WALLETS + 1).to_string().into(), // never mines
+            2 => {
+                let at: chrono::DateTime<chrono::Utc> = serde_json::from_value(json["timestamp"].clone()).unwrap();
+                json["timestamp"] = serde_json::to_value(at + chrono::TimeDelta::seconds(1)).unwrap();
+            }
+            3 => json["nonce"] = bump(&json["nonce"]),
+            4 => json["prev_hash"] = BlockHash::of(b"a block that isn't there").to_string().into(),
+            _ => json["index"] = bump(&json["index"]),
         }
         // Re-hashing the altered block isn't enough either: it breaks the work or the next link.
         if field.is_multiple_of(2) {
-            target.hash = target.computed_hash();
+            let altered: Block = serde_json::from_value(json.clone()).unwrap();
+            json["hash"] = altered.computed_hash().to_string().into();
         }
+        forged[block] = serde_json::from_value(json).unwrap();
 
         let before = ours.blocks().to_vec();
         prop_assert!(!validate_blocks(&forged, &POW));

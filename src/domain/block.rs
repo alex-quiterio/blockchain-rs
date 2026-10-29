@@ -30,26 +30,65 @@ pub enum TxKind {
 
 /// A signed movement of coins. Addresses are hex-encoded ed25519 public keys. Staking is a
 /// transaction to `Destination::Stake` or `Unstake`, so the signature covers what kind it is.
+///
+/// Only the domain changes one; everywhere else it can only be read:
+///
+/// ```compile_fail
+/// # fn tamper(tx: &mut blockchain::domain::block::Transaction) {
+/// tx.amount = blockchain::domain::values::Coins::new(1_000);
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transaction {
-    pub from: Source,
-    pub to: Destination,
-    pub amount: Coins,
+    pub(in crate::domain) from: Source,
+    pub(in crate::domain) to: Destination,
+    pub(in crate::domain) amount: Coins,
     /// How many transactions the sender has made before this one. Stops replays.
-    pub nonce: u64,
+    pub(in crate::domain) nonce: u64,
     /// Hex-encoded ed25519 signature over `signing_payload()`. Empty for coinbase.
-    pub signature: String,
+    pub(in crate::domain) signature: String,
     /// Optional tip for whoever adds the block, paid on top of `amount`. Left out when zero, so
     /// transactions without one keep their original JSON and signature.
     #[serde(default, skip_serializing_if = "Coins::is_zero")]
-    pub fee: Coins,
+    pub(in crate::domain) fee: Coins,
     /// Stakes only: the end of the staker's reveal hash chain, needed the first time they stake
     /// (see `randao`). Left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commitment: Option<String>,
+    pub(in crate::domain) commitment: Option<String>,
 }
 
 impl Transaction {
+    // Read access for code outside the domain, which may look at a transaction but not change it.
+
+    pub fn from(&self) -> &Source {
+        &self.from
+    }
+
+    pub fn to(&self) -> &Destination {
+        &self.to
+    }
+
+    pub fn amount(&self) -> Coins {
+        self.amount
+    }
+
+    pub fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    /// Empty for a block reward.
+    pub fn signature(&self) -> &str {
+        &self.signature
+    }
+
+    pub fn fee(&self) -> Coins {
+        self.fee
+    }
+
+    pub fn commitment(&self) -> Option<&str> {
+        self.commitment.as_deref()
+    }
+
     pub fn signing_payload(
         from: &str,
         to: &str,
@@ -156,32 +195,84 @@ impl Transaction {
     }
 }
 
+/// A block of transactions. Only the domain changes one; everywhere else it can only be read:
+///
+/// ```compile_fail
+/// # fn tamper(block: &mut blockchain::domain::block::Block) {
+/// block.nonce += 1;
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
-    pub index: u64,
-    pub timestamp: DateTime<Utc>,
-    pub prev_hash: BlockHash,
-    pub transactions: Vec<Transaction>,
+    pub(in crate::domain) index: u64,
+    pub(in crate::domain) timestamp: DateTime<Utc>,
+    pub(in crate::domain) prev_hash: BlockHash,
+    pub(in crate::domain) transactions: Vec<Transaction>,
     /// The root of the Merkle tree over `transactions`. The hash covers it instead of the
     /// transactions, so a transaction can be proven to be in the block from its header alone.
-    pub merkle_root: MerkleRoot,
+    pub(in crate::domain) merkle_root: MerkleRoot,
     /// Proof-of-work counter. Always 0 under proof of stake.
-    pub nonce: u64,
-    pub hash: BlockHash,
+    pub(in crate::domain) nonce: u64,
+    pub(in crate::domain) hash: BlockHash,
     /// Proof of stake only: who forged the block. Left out of proof-of-work blocks entirely, so
     /// their JSON and hashes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validator: Option<String>,
+    pub(in crate::domain) validator: Option<String>,
     /// Proof of stake only: the next link of the validator's reveal chain, mixed into the beacon
     /// that picks who forges next. Absent while nothing is staked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reveal: Option<String>,
+    pub(in crate::domain) reveal: Option<String>,
     /// Proof of stake only: the validator's signature over `hash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
+    pub(in crate::domain) signature: Option<String>,
 }
 
 impl Block {
+    // Read access for code outside the domain, which may look at a block but not change it.
+
+    pub fn index(&self) -> u64 {
+        self.index
+    }
+
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
+
+    pub fn prev_hash(&self) -> &BlockHash {
+        &self.prev_hash
+    }
+
+    pub fn transactions(&self) -> &[Transaction] {
+        &self.transactions
+    }
+
+    pub fn merkle_root(&self) -> &MerkleRoot {
+        &self.merkle_root
+    }
+
+    pub fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    pub fn hash(&self) -> &BlockHash {
+        &self.hash
+    }
+
+    /// Proof of stake only.
+    pub fn validator(&self) -> Option<&str> {
+        self.validator.as_deref()
+    }
+
+    /// Proof of stake only.
+    pub fn reveal(&self) -> Option<&str> {
+        self.reveal.as_deref()
+    }
+
+    /// Proof of stake only.
+    pub fn signature(&self) -> Option<&str> {
+        self.signature.as_deref()
+    }
+
     /// The first block. Its timestamp is fixed, so every node with the same rules has the same one.
     pub fn genesis(rules: &ChainRules) -> Self {
         let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is a valid time");
