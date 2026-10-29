@@ -83,12 +83,14 @@ async fn keep_in_sync(network: Arc<Network>, peers: String, every: Duration) {
 
 /// Says in the log what happened to the chain.
 fn log_event(event: &ChainEvent) {
-    match *event {
+    match event {
         ChainEvent::Started => tracing::info!("Started a new chain"),
         ChainEvent::Extended { from, to } if from == to => tracing::info!("Added block {to}"),
         ChainEvent::Extended { from, to } => tracing::info!("Added blocks {from} to {to}"),
-        ChainEvent::Reorganized { from, dropped, added } => tracing::info!(
-            "Switched to a heavier fork: {dropped} block(s) from height {from} replaced by {added}"
+        ChainEvent::Reorganized { from, dropped, added, returned } => tracing::info!(
+            "Switched to a heavier fork: {dropped} block(s) from height {from} replaced by \
+             {added}; {} transfer(s) back to the mempool",
+            returned.len()
         ),
     }
 }

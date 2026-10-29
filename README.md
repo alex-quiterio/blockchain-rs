@@ -217,7 +217,8 @@ flowchart TB
     - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
   - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself. Only the domain can change either; outside it they can only be read, and doctests check it stays that way
   - `merkle.rs`: Merkle roots and proofs over a block's transactions
-  - `mempool.rs`, `ledger.rs`: pending transactions, kept as a running projection, and the balances, stakes and nonces
+  - `mempool.rs`: the `Mempool`, an aggregate of its own: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block takes its transactions as candidates, and the chain keeps only those that still apply
+  - `ledger.rs`: balances, stakes, nonces and validators, keyed by `Address`
   - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
     - `address.rs`: an `Address` can only hold a valid public key
     - `hash.rs`: `BlockHash`, `MerkleRoot`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another
@@ -227,7 +228,7 @@ flowchart TB
   - `error.rs`: why something was refused, by what it was: `ValueError`, `TransactionError`, `BlockError` or `ChainError`, each operation failing only in the ways of what it handles, and `DomainError` where they meet
   - `crypto.rs`, `repository.rs`: signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
-  - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, then tells its listeners what happened.
+  - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
   - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing.
   - `Network` keeps the peers in step through the `PeerClient` port.
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
@@ -273,7 +274,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 132 tests: unit, HTTP, property-based and doctests
+cargo test        # 134 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, forks and tampering.

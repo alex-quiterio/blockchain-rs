@@ -10,6 +10,7 @@ use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Blockchain;
 use crate::domain::error::BlockError;
 use crate::domain::ledger::ValidatorState;
+use crate::domain::mempool::Mempool;
 use crate::domain::merkle;
 use crate::domain::rules::ChainRules;
 use crate::domain::values::{BlockHash, Coins, Reveal};
@@ -83,11 +84,13 @@ pub struct ConsensusState {
 #[derive(Clone)]
 pub struct ChainQueries {
     chain: Arc<Mutex<Blockchain>>,
+    mempool: Arc<Mutex<Mempool>>,
 }
 
 impl ChainQueries {
-    pub(super) fn new(chain: Arc<Mutex<Blockchain>>) -> Self {
-        Self { chain }
+    /// Where both are read, the chain is locked before the mempool, as everywhere in a node.
+    pub(super) fn new(chain: Arc<Mutex<Blockchain>>, mempool: Arc<Mutex<Mempool>>) -> Self {
+        Self { chain, mempool }
     }
 
     pub fn blocks(&self) -> Vec<Block> {
@@ -132,7 +135,8 @@ impl ChainQueries {
                 block: Some(placement(&chain, block, position)),
             });
         }
-        let pending = chain.pending_transaction(signature)?;
+        let mempool = self.mempool.lock().unwrap();
+        let pending = mempool.find(signature)?;
         Some(Located { transaction: pending.clone(), block: None })
     }
 
@@ -140,8 +144,9 @@ impl ChainQueries {
     /// confirmed ones, newest first.
     pub fn history(&self, address: &Address) -> Vec<Located> {
         let chain = self.chain.lock().unwrap();
+        let mempool = self.mempool.lock().unwrap();
         let pending =
-            chain.pending_of(address).map(|tx| Located { transaction: tx.clone(), block: None });
+            mempool.involving(address).map(|tx| Located { transaction: tx.clone(), block: None });
         let confirmed = chain.history_of(address).map(|(block, position)| Located {
             transaction: block.transactions()[position].clone(),
             block: Some(placement(&chain, block, position)),
@@ -171,7 +176,7 @@ impl ChainQueries {
             height: chain.blocks().len() as u64 - 1,
             hash: chain.tip().hash().clone(),
             weight: chain.weight(),
-            pending: chain.pending().len(),
+            pending: self.mempool.lock().unwrap().transactions().len(),
         }
     }
 
@@ -187,21 +192,22 @@ impl ChainQueries {
 
     pub fn account(&self, address: &Address) -> Account {
         let chain = self.chain.lock().unwrap();
+        let mempool = self.mempool.lock().unwrap();
         Account {
             balance: chain.balance(address),
             staked: chain.staked(address),
-            next_nonce: chain.next_nonce(address),
+            next_nonce: mempool.next_nonce(address),
             validator: chain.validator_state(address),
-            commitment_due: chain.commitment_due(address),
+            commitment_due: mempool.commitment_due(address),
         }
     }
 
     pub fn next_nonce(&self, address: &Address) -> u64 {
-        self.chain.lock().unwrap().next_nonce(address)
+        self.mempool.lock().unwrap().next_nonce(address)
     }
 
     pub fn pending(&self) -> Vec<Transaction> {
-        self.chain.lock().unwrap().pending().to_vec()
+        self.mempool.lock().unwrap().transactions().to_vec()
     }
 
     pub fn consensus(&self) -> ConsensusState {
@@ -231,7 +237,8 @@ impl ChainQueries {
         validator: &Address,
         reveal: Option<Reveal>,
     ) -> Result<Block, BlockError> {
-        self.chain.lock().unwrap().propose(validator, reveal)
+        let pending = self.pending();
+        self.chain.lock().unwrap().propose(validator, reveal, &pending)
     }
 }
 

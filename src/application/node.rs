@@ -9,6 +9,7 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::chain::{Blockchain, ChainEvent, Extension};
 use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError};
+use crate::domain::mempool::Mempool;
 use crate::domain::repository::{ChainRepository, RepositoryError};
 use crate::domain::rules::ChainRules;
 
@@ -43,6 +44,9 @@ impl<E: Into<DomainError>> From<E> for NodeError {
 /// listeners. Questions about the chain go to `ChainQueries`.
 pub struct NodeService {
     chain: Arc<Mutex<Blockchain>>,
+    /// What's waiting, an aggregate of its own, under its own lock: submitting a transaction
+    /// doesn't wait for mining or a peer's blocks. Whenever both are locked, the chain is first.
+    mempool: Arc<Mutex<Mempool>>,
     repository: Box<dyn ChainRepository>,
     /// Blocks between snapshots. 0 takes none.
     snapshot_every: usize,
@@ -80,6 +84,7 @@ impl NodeService {
             }
         };
         Ok(Self {
+            mempool: Arc::new(Mutex::new(Mempool::on(chain.ledger()))),
             chain: Arc::new(Mutex::new(chain)),
             repository,
             snapshot_every: SNAPSHOT_BLOCKS,
@@ -106,12 +111,18 @@ impl NodeService {
 
     /// Answers questions about the same chain this service changes.
     pub fn queries(&self) -> ChainQueries {
-        ChainQueries::new(self.chain.clone())
+        ChainQueries::new(self.chain.clone(), self.mempool.clone())
     }
 
-    /// Queues a transaction. The mempool isn't saved, so nothing is written.
+    /// Queues a transaction, checked against the confirmed ledger and everything already
+    /// waiting. The mempool isn't saved, so nothing is written.
     pub fn submit(&self, tx: Transaction) -> Result<(), TransactionError> {
-        self.chain.lock().unwrap().submit(tx)
+        self.mempool.lock().unwrap().admit(tx)
+    }
+
+    /// What's waiting, as the candidates for a new block.
+    fn candidates(&self) -> Vec<Transaction> {
+        self.mempool.lock().unwrap().transactions().to_vec()
     }
 
     /// Appends a proof-of-stake block signed elsewhere and saves it.
@@ -121,7 +132,8 @@ impl NodeService {
 
     /// Forges a proof-of-stake block signed with `key` and saves it.
     pub fn forge(&self, key: &SigningKey) -> Result<Block, NodeError> {
-        self.commit(|chain| chain.forge(key).cloned())
+        let pending = self.candidates();
+        self.commit(|chain| chain.forge(key, &pending).cloned())
     }
 
     /// Mines a block and saves it. The chain stays free while the proof of work is searched for,
@@ -134,7 +146,8 @@ impl NodeService {
     /// Like `mine`, but also stops with `StaleBlock` once `cancelled` is set, say because whoever
     /// asked for the block has stopped waiting for it.
     pub fn mine_unless(&self, miner: &Address, cancelled: &AtomicBool) -> Result<Block, NodeError> {
-        let template = self.chain.lock().unwrap().mining_template(miner)?;
+        let pending = self.candidates();
+        let template = self.chain.lock().unwrap().mining_template(miner, &pending)?;
         let tip = template.prev_hash.clone();
         let keep_going = || {
             !cancelled.load(Ordering::Relaxed) && *self.chain.lock().unwrap().tip().hash() == tip
@@ -175,6 +188,7 @@ impl NodeService {
         if !events.is_empty() {
             self.repository.save(next.blocks(), &events).map_err(NodeError::Storage)?;
             self.maybe_snapshot(&next);
+            self.mempool.lock().unwrap().rebase(next.ledger(), returned_by(&events));
         }
         *chain = next;
         drop(chain);
@@ -205,6 +219,15 @@ impl NodeService {
             }
         }
     }
+}
+
+/// The transfers forks in `events` dropped, for the mempool to take back.
+fn returned_by(events: &[ChainEvent]) -> Vec<Transaction> {
+    let returned = events.iter().filter_map(|event| match event {
+        ChainEvent::Reorganized { returned, .. } => Some(returned.iter().cloned()),
+        _ => None,
+    });
+    returned.flatten().collect()
 }
 
 #[cfg(test)]
@@ -448,6 +471,28 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_gives_the_mempool_back_what_its_dropped_block_carried() {
+        let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
+        let alice = Address::of(&key);
+        let ours = node(InMemoryRepository::default());
+        ours.mine(&alice).unwrap();
+        let theirs = node(InMemoryRepository::default());
+        theirs.extend(ours.queries().blocks()[1..].to_vec()).unwrap();
+
+        // Our next block confirms Alice's payment; their heavier fork never saw it.
+        let payment = Transaction::signed(&key, new_address(), Coins::new(5), 0, Coins::ZERO);
+        ours.submit(payment.clone()).unwrap();
+        ours.mine(&alice).unwrap();
+        assert!(ours.queries().pending().is_empty(), "confirmed, so no longer waiting");
+        theirs.mine(&new_address()).unwrap();
+        theirs.mine(&new_address()).unwrap();
+
+        ours.extend(theirs.queries().blocks()[2..].to_vec()).unwrap();
+        assert_eq!(ours.queries().pending(), [payment], "waiting again, to be mined anew");
+        assert_eq!(ours.queries().next_nonce(&alice), 1);
+    }
+
+    #[test]
     fn what_happened_is_saved_and_then_told_to_listeners() {
         let repo = RecordingRepository::default();
         let ours = node(repo.clone());
@@ -463,7 +508,7 @@ mod tests {
         ours.extend(theirs.queries().blocks()[2..].to_vec()).unwrap();
 
         // Genesis, two new blocks, then a fork that replaces the second with two of theirs.
-        let replaced = ChainEvent::Reorganized { from: 2, dropped: 1, added: 2 };
+        let replaced = ChainEvent::Reorganized { from: 2, dropped: 1, added: 2, returned: vec![] };
         let saved = repo.0.lock().unwrap().clone();
         assert_eq!(
             saved,

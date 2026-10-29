@@ -10,8 +10,8 @@ use ed25519_dalek::SigningKey;
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty;
-use crate::domain::error::{BlockError, ChainError, TransactionError};
-use crate::domain::ledger::ValidatorState;
+use crate::domain::error::{BlockError, ChainError};
+use crate::domain::ledger::{Ledger, ValidatorState};
 use crate::domain::mempool::Mempool;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
@@ -29,12 +29,12 @@ pub use events::ChainEvent;
 pub use tally::Snapshot;
 pub use validation::validate_blocks;
 
-/// The aggregate root: confirmed blocks, the mempool and the ledger they produce.
-/// Every change goes through its methods, so the three never disagree.
+/// The aggregate root: confirmed blocks and the ledger they produce. Every change goes through
+/// its methods, so the two never disagree. Waiting transactions are a `Mempool`'s, an aggregate
+/// of its own; producing a block takes them as candidates.
 #[derive(Clone)]
 pub struct Blockchain {
     blocks: Vec<Block>,
-    mempool: Mempool,
     /// What the chain added up to after each of its last `max_reorg_depth + 1` blocks; the last
     /// is what the whole chain adds up to.
     tallies: TallyLog,
@@ -121,8 +121,7 @@ impl Blockchain {
 
     fn from_parts(blocks: Vec<Block>, kept: VecDeque<Tally>, rules: ChainRules) -> Self {
         let tallies = TallyLog::new(blocks.len() - kept.len(), kept, keep(&rules));
-        let mempool = Mempool::on(&tallies.latest().ledger);
-        Self { mempool, blocks, tallies, rules, events: Vec::new() }
+        Self { blocks, tallies, rules, events: Vec::new() }
     }
 
     /// A snapshot after the oldest block no fork may undo any more, once the chain is long
@@ -188,8 +187,10 @@ impl Blockchain {
         self.blocks.last().expect("a chain always has its genesis block")
     }
 
-    pub fn pending(&self) -> &[Transaction] {
-        self.mempool.transactions()
+    /// The confirmed ledger: balances, stakes, nonces and validators as the chain leaves them.
+    /// A mempool rebases onto it whenever the chain changes.
+    pub fn ledger(&self) -> &Ledger {
+        &self.tally().ledger
     }
 
     pub fn balance(&self, address: &Address) -> Coins {
@@ -203,11 +204,6 @@ impl Blockchain {
     /// Every confirmed stake, sorted by address.
     pub fn stakes(&self) -> Vec<(Address, Coins)> {
         self.tally().ledger.stakes()
-    }
-
-    /// The nonce a new transaction from `address` must carry, counting the mempool.
-    pub fn next_nonce(&self, address: &Address) -> u64 {
-        self.mempool.projected().next_nonce(address)
     }
 
     /// Who must forge the next block. `None` on proof-of-work chains, and on proof-of-stake chains
@@ -233,31 +229,24 @@ impl Blockchain {
         self.tally().ledger.validator_state(address)
     }
 
-    /// If `address`'s next stake must carry a commitment, the epoch to make it for. Counts stakes
-    /// already waiting in the mempool, so a second stake in a row doesn't commit again.
-    pub fn commitment_due(&self, address: &Address) -> Option<u64> {
-        let state = self.mempool.projected().validator_state(address);
-        state.reveals_left.is_none().then_some(state.next_epoch)
-    }
-
-    /// Validates a transaction against confirmed state plus the mempool, then queues it.
-    pub fn submit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
-        self.mempool.admit(tx)
-    }
-
-    /// Proof of work: bundles the reward and every pending transaction into a new block.
-    pub fn mine(&mut self, miner: &Address) -> Result<&Block, BlockError> {
-        let block = self.mining_template(miner)?.mine_while(|| true).expect("never told to stop");
+    /// Proof of work: bundles the reward and those of `pending` that apply into a new block.
+    pub fn mine(&mut self, miner: &Address, pending: &[Transaction]) -> Result<&Block, BlockError> {
+        let template = self.mining_template(miner, pending)?;
+        let block = template.mine_while(|| true).expect("never told to stop");
         self.append_mined(block)
     }
 
     /// Proof of work: what `miner`'s next block would hold, so it can be mined without holding
     /// the chain.
-    pub fn mining_template(&self, miner: &Address) -> Result<MiningTemplate, BlockError> {
+    pub fn mining_template(
+        &self,
+        miner: &Address,
+        pending: &[Transaction],
+    ) -> Result<MiningTemplate, BlockError> {
         if self.rules.is_proof_of_stake() {
             return Err(BlockError::NotProofOfWork);
         }
-        let (index, transactions) = self.next_contents(miner);
+        let (index, transactions) = self.next_contents(miner, pending);
         Ok(MiningTemplate {
             index,
             timestamp: Utc::now(),
@@ -280,18 +269,22 @@ impl Blockchain {
     #[cfg(test)]
     fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, BlockError> {
         let work = self.next_work();
-        self.append(miner, |index, _, prev, txs| Block::mine(index, at, prev, txs, work))
+        self.append(miner, &[], |index, _, prev, txs| Block::mine(index, at, prev, txs, work))
     }
 
     /// Proof of stake: the selected validator signs the next block with `key`, revealing the
     /// next link of their reveal chain, which `key` also lets us work out.
-    pub fn forge(&mut self, key: &SigningKey) -> Result<&Block, BlockError> {
+    pub fn forge(
+        &mut self,
+        key: &SigningKey,
+        pending: &[Transaction],
+    ) -> Result<&Block, BlockError> {
         let validator = Address::of(key);
         self.check_turn(&validator)?;
         let reveal = self
             .due_reveal(&validator)
             .map(|(epoch, remaining)| randao::reveal(key, epoch, remaining));
-        self.append(&validator, |index, now, prev, txs| {
+        self.append(&validator, pending, |index, now, prev, txs| {
             Block::forge(index, now, prev, txs, key, reveal)
         })
     }
@@ -302,6 +295,7 @@ impl Blockchain {
         &self,
         validator: &Address,
         reveal: Option<Reveal>,
+        pending: &[Transaction],
     ) -> Result<Block, BlockError> {
         self.check_turn(validator)?;
         match (self.due_reveal(validator), &reveal) {
@@ -312,7 +306,7 @@ impl Blockchain {
             }
             _ => {}
         }
-        let (index, transactions) = self.next_contents(validator);
+        let (index, transactions) = self.next_contents(validator, pending);
         let prev_hash = self.tip().hash.clone();
         Ok(Block::propose(index, Utc::now(), prev_hash, transactions, validator, reveal))
     }
@@ -326,7 +320,6 @@ impl Blockchain {
     }
 
     /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
-    /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
     pub fn append_forged(&mut self, block: Block) -> Result<&Block, BlockError> {
         let validator = block.validator.clone().ok_or(BlockError::InvalidBlock)?;
         self.check_turn(&validator)?;
@@ -334,7 +327,6 @@ impl Blockchain {
     }
 
     /// Appends a block made elsewhere on our tip, after checking it like any other block.
-    /// Transactions it confirmed leave the mempool; the rest stay if they still apply.
     fn append_sealed(&mut self, block: Block) -> Result<&Block, BlockError> {
         if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
             return Err(BlockError::StaleBlock);
@@ -343,8 +335,6 @@ impl Blockchain {
         if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
             return Err(BlockError::InvalidBlock);
         }
-        let waiting = self.mempool.transactions().to_vec();
-        self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
         self.blocks.push(block);
         self.tallies.push(tally);
         self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
@@ -363,32 +353,38 @@ impl Blockchain {
     }
 
     /// The next block's index and transactions: a payout of the reward plus fees to `producer`,
-    /// then everything in the mempool.
-    fn next_contents(&self, producer: &Address) -> (u64, Vec<Transaction>) {
+    /// then those of `pending` that apply on top of this chain, in order. A mempool may lag the
+    /// chain for a moment, so its candidates are checked here rather than trusted.
+    fn next_contents(
+        &self,
+        producer: &Address,
+        pending: &[Transaction],
+    ) -> (u64, Vec<Transaction>) {
         let index = self.blocks.len() as u64;
-        let pending = self.mempool.transactions();
-        // The mempool only takes fees their senders can afford, so they always add up.
-        let payout = payout(self.rules.reward, pending).expect("affordable fees add up");
+        let fitting = Mempool::rebuilt(pending.iter().cloned(), self.ledger());
+        let fitting = fitting.transactions();
+        // Only fees their senders can afford get this far, so they always add up.
+        let payout = payout(self.rules.reward, fitting).expect("affordable fees add up");
         let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
-        transactions.extend(pending.iter().cloned());
+        transactions.extend(fitting.iter().cloned());
         (index, transactions)
     }
 
-    /// Pays `producer` the reward plus fees, includes the mempool and appends the block `seal`
-    /// makes, after checking it exactly as a peer replaying the chain would.
+    /// Pays `producer` the reward plus fees, includes what of `pending` applies and appends the
+    /// block `seal` makes, after checking it exactly as a peer replaying the chain would.
     fn append(
         &mut self,
         producer: &Address,
+        pending: &[Transaction],
         seal: impl FnOnce(u64, DateTime<Utc>, BlockHash, Vec<Transaction>) -> Block,
     ) -> Result<&Block, BlockError> {
-        let (index, transactions) = self.next_contents(producer);
+        let (index, transactions) = self.next_contents(producer, pending);
         let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
         let mut tally = self.tally().clone();
         if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
             return Err(BlockError::InvalidBlock);
         }
         self.blocks.push(block);
-        self.mempool = Mempool::on(&tally.ledger);
         self.tallies.push(tally);
         self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
         Ok(self.tip())
@@ -396,8 +392,8 @@ impl Blockchain {
 
     /// The fork-choice rule: adopts `blocks` if they form a valid chain heavier than ours. Exact
     /// ties go to the lower tip hash, so every node settles on the same fork. Never undoes more
-    /// than `max_reorg_depth` of our blocks. Transfers from our blocks that `blocks` drops go back
-    /// to the mempool if they still apply.
+    /// than `max_reorg_depth` of our blocks. The transfers of our blocks it drops travel in its
+    /// `Reorganized` event, for a mempool to take back.
     ///
     /// Only their blocks after the split are checked, starting from what our chain added up to
     /// there; before it, their blocks are ours hash for hash, and our copies are kept. A split
@@ -438,14 +434,12 @@ impl Blockchain {
         if depth as u64 > self.rules.max_reorg_depth {
             return Err(ChainError::ReorgTooDeep { depth, max: self.rules.max_reorg_depth });
         }
-        let orphaned: Vec<Transaction> = self.blocks[shared..]
+        let returned: Vec<Transaction> = self.blocks[shared..]
             .iter()
             .flat_map(|block| block.transactions.iter().skip(1))
-            .chain(self.mempool.transactions())
             .cloned()
             .collect();
 
-        self.mempool = Mempool::rebuilt(orphaned, &tally.ledger);
         self.tallies.replace_from(shared, chain.len() - kept.len(), kept);
         let ours = self.blocks.len();
         self.blocks = chain;
@@ -454,7 +448,8 @@ impl Blockchain {
             self.extended(shared, self.blocks.len() - 1);
         } else {
             let (dropped, added) = (ours - shared, self.blocks.len() - shared);
-            self.events.push(ChainEvent::Reorganized { from: shared, dropped, added });
+            let from = shared;
+            self.events.push(ChainEvent::Reorganized { from, dropped, added, returned });
         }
         Ok(true)
     }
@@ -498,26 +493,11 @@ impl Blockchain {
             self.blocks.push(block.clone());
             tallies.push(tally.clone());
         }
-        let waiting = self.mempool.transactions().to_vec();
-        self.mempool = Mempool::rebuilt(waiting, &tally.ledger);
         for tally in tallies {
             self.tallies.push(tally);
         }
         self.extended(height, self.blocks.len() - 1);
         Ok(Extension::Adopted)
-    }
-
-    /// The transfer signed `signature`, if it's waiting in the mempool.
-    pub fn pending_transaction(&self, signature: &str) -> Option<&Transaction> {
-        self.mempool
-            .transactions()
-            .iter()
-            .find(|tx| tx.signature.as_ref().is_some_and(|s| s.as_str() == signature))
-    }
-
-    /// Transactions to or from `address` waiting in the mempool.
-    pub fn pending_of<'a>(&'a self, address: &'a Address) -> impl Iterator<Item = &'a Transaction> {
-        self.mempool.transactions().iter().filter(move |tx| tx.involves(address))
     }
 
     /// Confirmed transactions to or from `address`, block rewards included, newest first: each
@@ -560,9 +540,149 @@ mod tests {
     use super::*;
     use crate::domain::crypto;
     use crate::domain::difficulty::meets_work;
+    use crate::domain::error::TransactionError;
+    use crate::domain::mempool::Mempool;
     use crate::domain::values::{Destination, Source};
 
     const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
+
+    /// A chain with a mempool beside it, coordinated as a node does, so a test can submit and
+    /// mine in one place. Reads go to the chain itself; what touches what's waiting is here.
+    #[derive(Clone)]
+    struct Pooled {
+        chain: Blockchain,
+        pool: Mempool,
+    }
+
+    impl std::ops::Deref for Pooled {
+        type Target = Blockchain;
+
+        fn deref(&self) -> &Blockchain {
+            &self.chain
+        }
+    }
+
+    impl std::ops::DerefMut for Pooled {
+        fn deref_mut(&mut self) -> &mut Blockchain {
+            &mut self.chain
+        }
+    }
+
+    impl From<Blockchain> for Pooled {
+        fn from(chain: Blockchain) -> Self {
+            let pool = Mempool::on(chain.ledger());
+            Self { chain, pool }
+        }
+    }
+
+    impl Pooled {
+        fn new(rules: ChainRules) -> Self {
+            Blockchain::new(rules).into()
+        }
+
+        fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
+            Blockchain::restore(blocks, rules).map(Self::from)
+        }
+
+        fn restore_from(
+            blocks: Vec<Block>,
+            rules: ChainRules,
+            snapshot: Option<Snapshot>,
+        ) -> Result<(Self, Option<usize>), ChainError> {
+            Blockchain::restore_from(blocks, rules, snapshot).map(|(c, from)| (c.into(), from))
+        }
+
+        fn submit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
+            self.pool.admit(tx)
+        }
+
+        fn pending(&self) -> &[Transaction] {
+            self.pool.transactions()
+        }
+
+        fn next_nonce(&self, address: &Address) -> u64 {
+            self.pool.next_nonce(address)
+        }
+
+        fn commitment_due(&self, address: &Address) -> Option<u64> {
+            self.pool.commitment_due(address)
+        }
+
+        fn candidates(&self) -> Vec<Transaction> {
+            self.pool.transactions().to_vec()
+        }
+
+        fn next_contents(&self, producer: &Address) -> (u64, Vec<Transaction>) {
+            self.chain.next_contents(producer, self.pool.transactions())
+        }
+
+        fn mining_template(&self, miner: &Address) -> Result<MiningTemplate, BlockError> {
+            self.chain.mining_template(miner, self.pool.transactions())
+        }
+
+        fn propose(
+            &self,
+            validator: &Address,
+            reveal: Option<Reveal>,
+        ) -> Result<Block, BlockError> {
+            self.chain.propose(validator, reveal, self.pool.transactions())
+        }
+
+        fn mine(&mut self, miner: &Address) -> Result<&Block, BlockError> {
+            let pending = self.candidates();
+            self.settling(|chain| chain.mine(miner, &pending).map(drop))?;
+            Ok(self.chain.tip())
+        }
+
+        fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, BlockError> {
+            self.settling(|chain| chain.mine_at(miner, at).map(drop))?;
+            Ok(self.chain.tip())
+        }
+
+        fn forge(&mut self, key: &SigningKey) -> Result<&Block, BlockError> {
+            let pending = self.candidates();
+            self.settling(|chain| chain.forge(key, &pending).map(drop))?;
+            Ok(self.chain.tip())
+        }
+
+        fn append_mined(&mut self, block: Block) -> Result<&Block, BlockError> {
+            self.settling(|chain| chain.append_mined(block).map(drop))?;
+            Ok(self.chain.tip())
+        }
+
+        fn append_forged(&mut self, block: Block) -> Result<&Block, BlockError> {
+            self.settling(|chain| chain.append_forged(block).map(drop))?;
+            Ok(self.chain.tip())
+        }
+
+        fn adopt_if_heavier(&mut self, blocks: Vec<Block>) -> Result<bool, ChainError> {
+            self.settling(|chain| chain.adopt_if_heavier(blocks))
+        }
+
+        fn extend(&mut self, blocks: Vec<Block>) -> Result<Extension, ChainError> {
+            self.settling(|chain| chain.extend(blocks))
+        }
+
+        /// Makes a change, then rebases the mempool on what it did, as a node does. The events
+        /// stay for the test to take.
+        fn settling<T, E>(
+            &mut self,
+            change: impl FnOnce(&mut Blockchain) -> Result<T, E>,
+        ) -> Result<T, E> {
+            // Blocks in a row merge into one event, so the tip says whether anything happened.
+            let (tip, before) = (self.chain.tip().hash.clone(), self.chain.events.len());
+            let result = change(&mut self.chain)?;
+            if self.chain.tip().hash != tip {
+                let returned = self.chain.events[before..].iter().filter_map(|event| match event {
+                    ChainEvent::Reorganized { returned, .. } => Some(returned.clone()),
+                    _ => None,
+                });
+                let returned = returned.flatten().collect();
+                self.pool.rebase(self.chain.ledger(), returned);
+            }
+            Ok(result)
+        }
+    }
 
     fn wallet() -> (Address, SigningKey) {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
@@ -573,8 +693,8 @@ mod tests {
         Transaction::signed(key, to, Coins::new(amount), nonce, Coins::new(0))
     }
 
-    fn chain() -> Blockchain {
-        Blockchain::new(RULES)
+    fn chain() -> Pooled {
+        Pooled::new(RULES)
     }
 
     #[test]
@@ -682,7 +802,7 @@ mod tests {
         assert_eq!(blocks[2].hash, blocks[2].computed_hash());
         assert!(!validate_blocks(&blocks, &RULES));
 
-        let mut ours = Blockchain::new(RULES);
+        let mut ours = Pooled::new(RULES);
         assert_eq!(ours.extend(blocks[1..].to_vec()), Err(ChainError::InvalidChain));
     }
 
@@ -695,7 +815,7 @@ mod tests {
         chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
         chain.mine(&alice).unwrap();
 
-        let restored = Blockchain::restore(chain.blocks().to_vec(), RULES).unwrap();
+        let restored = Pooled::restore(chain.blocks().to_vec(), RULES).unwrap();
         assert_eq!(restored.balance(&alice), Coins::new(80));
         assert_eq!(restored.balance(&bob), Coins::new(20));
         assert_eq!(restored.next_nonce(&alice), 1);
@@ -707,8 +827,8 @@ mod tests {
         chain.mine(&wallet().0).unwrap();
         let mut blocks = chain.blocks().to_vec();
         blocks[1].transactions[0].amount = Coins::new(1_000);
-        assert_eq!(Blockchain::restore(blocks, RULES).err(), Some(ChainError::InvalidChain));
-        assert_eq!(Blockchain::restore(Vec::new(), RULES).err(), Some(ChainError::InvalidChain));
+        assert_eq!(Pooled::restore(blocks, RULES).err(), Some(ChainError::InvalidChain));
+        assert_eq!(Pooled::restore(Vec::new(), RULES).err(), Some(ChainError::InvalidChain));
     }
 
     #[test]
@@ -716,11 +836,10 @@ mod tests {
         let mut chain = chain();
         chain.mine(&wallet().0).unwrap();
         // No SHA-256 hash is all zeros, so these blocks can't meet a difficulty of 64.
-        assert!(Blockchain::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(64, 50))
-            .is_err());
         assert!(
-            Blockchain::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(2, 25)).is_err()
+            Pooled::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(64, 50)).is_err()
         );
+        assert!(Pooled::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(2, 25)).is_err());
     }
 
     #[test]
@@ -782,7 +901,7 @@ mod tests {
     #[test]
     fn mining_stops_when_told_to() {
         let hard = ChainRules::proof_of_work(16, 50);
-        let template = Blockchain::new(RULES).mining_template(&wallet().0).unwrap();
+        let template = Pooled::new(RULES).mining_template(&wallet().0).unwrap();
         let template = MiningTemplate { work: hard.initial_work(), ..template };
         let mut asked = 0;
         assert_eq!(
@@ -796,9 +915,25 @@ mod tests {
     }
 
     #[test]
+    fn a_mempool_that_lags_the_chain_cannot_spoil_a_block() {
+        let (alice, alice_key) = wallet();
+        let (bob, _) = wallet();
+        let mut chain = super::Blockchain::new(RULES);
+        chain.mine(&alice, &[]).unwrap();
+        let payment = transfer(&alice_key, &bob, 5, 0);
+        chain.mine(&alice, std::slice::from_ref(&payment)).unwrap();
+
+        // A mempool that hasn't caught up still offers the payment the chain just confirmed.
+        let block = chain.mine(&alice, &[payment]).unwrap();
+        assert_eq!(block.transactions.len(), 1, "only the reward: the stale candidate is left out");
+        assert!(chain.is_valid());
+        assert_eq!(chain.balance(&bob), Coins::new(5));
+    }
+
+    #[test]
     fn every_change_says_what_happened() {
         let rules = RULES.with_max_reorg_depth(5);
-        let mut ours = Blockchain::new(rules);
+        let mut ours = Pooled::new(rules);
         assert_eq!(ours.take_events(), [ChainEvent::Started]);
         assert_eq!(ours.take_events(), [], "taken once");
         ours.mine(&wallet().0).unwrap();
@@ -806,7 +941,7 @@ mod tests {
         assert_eq!(ours.take_events(), [ChainEvent::Extended { from: 1, to: 2 }], "merged");
 
         // A restored chain starts with nothing to tell.
-        let mut theirs = Blockchain::restore(ours.blocks().to_vec(), rules).unwrap();
+        let mut theirs = Pooled::restore(ours.blocks().to_vec(), rules).unwrap();
         assert_eq!(theirs.take_events(), []);
         theirs.mine(&wallet().0).unwrap();
         theirs.mine(&wallet().0).unwrap();
@@ -819,12 +954,13 @@ mod tests {
         assert_eq!(ours.take_events(), [ChainEvent::Extended { from: 3, to: 4 }]);
 
         // A heavier fork from block 2 replaces three of ours with four of theirs.
-        let mut fork = Blockchain::restore(ours.blocks()[..2].to_vec(), rules).unwrap();
+        let mut fork = Pooled::restore(ours.blocks()[..2].to_vec(), rules).unwrap();
         for _ in 0..4 {
             fork.mine(&wallet().0).unwrap();
         }
         assert_eq!(ours.adopt_if_heavier(fork.blocks().to_vec()), Ok(true));
-        let replaced = ChainEvent::Reorganized { from: 2, dropped: 3, added: 4 };
+        // Their blocks held only rewards, which never go back: nothing is returned.
+        let replaced = ChainEvent::Reorganized { from: 2, dropped: 3, added: 4, returned: vec![] };
         assert_eq!(ours.take_events(), [replaced]);
 
         // Nothing adopted, nothing happened.
@@ -897,7 +1033,7 @@ mod tests {
     }
 
     /// The remembered tallies say what a full replay of the chain up to each of them would.
-    fn assert_remembers_correctly(chain: &Blockchain, watched: &[Address]) {
+    fn assert_remembers_correctly(chain: &Pooled, watched: &[Address]) {
         let heights = chain.tallies.heights();
         assert_eq!(heights.len(), keep(&chain.rules).min(chain.blocks.len()));
         assert_eq!(heights.end, chain.blocks.len(), "the last is after the tip");
@@ -917,14 +1053,14 @@ mod tests {
         let rules = RULES.with_max_reorg_depth(3);
         let (alice, alice_key) = wallet();
         let (bob, _) = wallet();
-        let mut ours = Blockchain::new(rules);
+        let mut ours = Pooled::new(rules);
         for _ in 0..6 {
             ours.mine(&alice).unwrap();
         }
         assert_remembers_correctly(&ours, &[alice.clone(), bob.clone()]);
 
         // Their fork splits two blocks back and carries a payment ours never saw.
-        let mut theirs = Blockchain::restore(ours.blocks()[..5].to_vec(), rules).unwrap();
+        let mut theirs = Pooled::restore(ours.blocks()[..5].to_vec(), rules).unwrap();
         theirs.submit(transfer(&alice_key, &bob, 30, 0)).unwrap();
         for _ in 0..3 {
             theirs.mine(&bob).unwrap();
@@ -947,7 +1083,7 @@ mod tests {
         let rules = RULES.with_max_reorg_depth(2);
         let (alice, alice_key) = wallet();
         let (bob, _) = wallet();
-        let mut chain = Blockchain::new(rules);
+        let mut chain = Pooled::new(rules);
         chain.mine(&alice).unwrap();
         chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
         for _ in 0..4 {
@@ -957,8 +1093,7 @@ mod tests {
         assert_eq!(snapshot.height, chain.blocks().len() - 3, "the oldest block no fork may undo");
 
         let (restored, from) =
-            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(snapshot.clone()))
-                .unwrap();
+            Pooled::restore_from(chain.blocks().to_vec(), rules, Some(snapshot.clone())).unwrap();
         assert_eq!(from, Some(snapshot.height));
         assert_eq!(
             (restored.balance(&alice), restored.balance(&bob)),
@@ -971,29 +1106,28 @@ mod tests {
         let mut generous = snapshot.clone();
         generous.tally.ledger.credit(&bob, Coins::new(1_000));
         let (trusting, _) =
-            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(generous)).unwrap();
+            Pooled::restore_from(chain.blocks().to_vec(), rules, Some(generous)).unwrap();
         assert_eq!(trusting.balance(&bob), Coins::new(1_020));
 
         // Blocks it covers that were changed don't lead to its block, so it isn't used.
         let mut tampered = chain.blocks().to_vec();
         tampered[2].transactions[1].amount = Coins::new(25);
-        assert!(Blockchain::restore_from(tampered, rules, Some(snapshot.clone())).is_err());
+        assert!(Pooled::restore_from(tampered, rules, Some(snapshot.clone())).is_err());
 
         // Nor under other rules, or for a chain where its block was replaced.
         let other = rules.with_max_reorg_depth(9);
         let (_, from) =
-            Blockchain::restore_from(chain.blocks().to_vec(), other, Some(snapshot.clone()))
-                .unwrap();
+            Pooled::restore_from(chain.blocks().to_vec(), other, Some(snapshot.clone())).unwrap();
         assert_eq!(from, None);
         let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot };
         let (full, from) =
-            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(replaced)).unwrap();
+            Pooled::restore_from(chain.blocks().to_vec(), rules, Some(replaced)).unwrap();
         assert_eq!((from, full.balance(&bob)), (None, Coins::new(20)));
     }
 
     #[test]
     fn a_short_chain_has_no_snapshot_yet() {
-        let mut chain = Blockchain::new(RULES.with_max_reorg_depth(3));
+        let mut chain = Pooled::new(RULES.with_max_reorg_depth(3));
         chain.mine(&wallet().0).unwrap();
         assert!(chain.snapshot().is_none());
     }
@@ -1005,7 +1139,7 @@ mod tests {
         chain.mine(&wallet().0).unwrap();
         chain.mine(&wallet().0).unwrap();
         assert_eq!(chain.weight().value(), 2 * 256);
-        let restored = Blockchain::restore(chain.blocks().to_vec(), RULES).unwrap();
+        let restored = Pooled::restore(chain.blocks().to_vec(), RULES).unwrap();
         assert_eq!(restored.weight(), chain.weight());
     }
 
@@ -1028,8 +1162,8 @@ mod tests {
     #[test]
     fn a_deep_reorg_is_refused_however_heavy() {
         let rules = RULES.with_max_reorg_depth(2);
-        let mut ours = Blockchain::new(rules);
-        let mut theirs = Blockchain::new(rules);
+        let mut ours = Pooled::new(rules);
+        let mut theirs = Pooled::new(rules);
         for _ in 0..3 {
             ours.mine(&wallet().0).unwrap();
         }
@@ -1041,7 +1175,7 @@ mod tests {
             Err(ChainError::ReorgTooDeep { depth: 3, max: 2 })
         );
 
-        let mut shallow = Blockchain::new(rules);
+        let mut shallow = Pooled::new(rules);
         shallow.adopt_if_heavier(ours.blocks()[..2].to_vec()).unwrap();
         shallow.mine(&wallet().0).unwrap();
         shallow.mine(&wallet().0).unwrap();
@@ -1120,7 +1254,7 @@ mod tests {
     }
 
     /// The reveal `key`'s next block must carry, as a wallet would work it out.
-    fn reveal_for(chain: &Blockchain, key: &SigningKey) -> Option<Reveal> {
+    fn reveal_for(chain: &Pooled, key: &SigningKey) -> Option<Reveal> {
         chain.next_validator()?;
         let state = chain.validator_state(&Address::of(key));
         Some(randao::reveal(key, state.next_epoch - 1, state.reveals_left?))
@@ -1128,7 +1262,7 @@ mod tests {
 
     #[test]
     fn anyone_may_forge_until_something_is_staked() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (alice, alice_key) = wallet();
         assert_eq!(chain.next_validator(), None);
 
@@ -1142,7 +1276,7 @@ mod tests {
 
     #[test]
     fn staking_locks_coins_and_makes_a_validator() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (alice, alice_key) = wallet();
         let (_, bob_key) = wallet();
         chain.forge(&alice_key).unwrap();
@@ -1162,7 +1296,7 @@ mod tests {
 
     #[test]
     fn unstaking_returns_coins_but_never_more_than_staked() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (alice, alice_key) = wallet();
         chain.forge(&alice_key).unwrap();
         chain.submit(stake(&alice_key, 30, 0)).unwrap();
@@ -1198,20 +1332,20 @@ mod tests {
     #[test]
     fn each_consensus_refuses_the_other_ones_blocks() {
         let (alice, alice_key) = wallet();
-        assert_eq!(Blockchain::new(POS).mine(&alice).err(), Some(BlockError::NotProofOfWork));
+        assert_eq!(Pooled::new(POS).mine(&alice).err(), Some(BlockError::NotProofOfWork));
         assert_eq!(chain().forge(&alice_key).err(), Some(BlockError::NotProofOfStake));
 
-        let mut pos = Blockchain::new(POS);
+        let mut pos = Pooled::new(POS);
         pos.forge(&alice_key).unwrap();
-        assert!(Blockchain::restore(pos.blocks().to_vec(), RULES).is_err());
+        assert!(Pooled::restore(pos.blocks().to_vec(), RULES).is_err());
         let mut pow = chain();
         pow.mine(&alice).unwrap();
-        assert!(Blockchain::restore(pow.blocks().to_vec(), POS).is_err());
+        assert!(Pooled::restore(pow.blocks().to_vec(), POS).is_err());
     }
 
     #[test]
     fn forged_blocks_cannot_be_tampered_with_or_reassigned() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (_, alice_key) = wallet();
         let (mallory, _) = wallet();
         chain.forge(&alice_key).unwrap();
@@ -1228,7 +1362,7 @@ mod tests {
 
     #[test]
     fn only_the_selected_validator_may_forge_on_a_replayed_chain() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (alice, alice_key) = wallet();
         let (_, bob_key) = wallet();
         chain.forge(&alice_key).unwrap();
@@ -1251,13 +1385,13 @@ mod tests {
         let (_, nobody_key) = wallet();
 
         // Four blocks anyone could forge, with nothing staked: weight 4.
-        let mut unstaked = Blockchain::new(POS);
+        let mut unstaked = Pooled::new(POS);
         for _ in 0..4 {
             unstaked.forge(&nobody_key).unwrap();
         }
 
         // Three blocks, the last forged by Alice with 30 staked: weight 1 + 1 + 30.
-        let mut staked = Blockchain::new(POS);
+        let mut staked = Pooled::new(POS);
         staked.forge(&alice_key).unwrap();
         staked.submit(stake(&alice_key, 30, 0)).unwrap();
         staked.forge(&alice_key).unwrap();
@@ -1271,7 +1405,7 @@ mod tests {
 
     #[test]
     fn a_proposal_signed_elsewhere_is_appended_like_a_forged_block() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (_, alice_key) = wallet();
         let (bob, bob_key) = wallet();
         chain.forge(&alice_key).unwrap();
@@ -1293,7 +1427,7 @@ mod tests {
 
     #[test]
     fn forged_submissions_are_checked() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (alice, alice_key) = wallet();
         let (_, mallory_key) = wallet();
         chain.forge(&alice_key).unwrap();
@@ -1323,22 +1457,22 @@ mod tests {
 
     #[test]
     fn only_the_selected_validator_gets_a_proposal() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (_, alice_key) = wallet();
         let (bob, _) = wallet();
         chain.forge(&alice_key).unwrap();
         chain.submit(stake(&alice_key, 10, 0)).unwrap();
         chain.forge(&alice_key).unwrap();
         assert!(matches!(chain.propose(&bob, None), Err(BlockError::NotYourTurn { .. })));
-        let pow = Blockchain::new(RULES);
+        let pow = Pooled::new(RULES);
         assert_eq!(pow.propose(&bob, None).err(), Some(BlockError::NotProofOfStake));
     }
 
     // ---- Validator randomness ----------------------------------------------------------------
 
     /// A chain where Alice and Bob have both staked and validators are being drawn.
-    fn staked_chain() -> (Blockchain, [SigningKey; 2]) {
-        let mut chain = Blockchain::new(POS);
+    fn staked_chain() -> (Pooled, [SigningKey; 2]) {
+        let mut chain = Pooled::new(POS);
         let (_, alice_key) = wallet();
         let (_, bob_key) = wallet();
         chain.forge(&alice_key).unwrap();
@@ -1416,7 +1550,7 @@ mod tests {
 
     #[test]
     fn only_a_first_stake_commits() {
-        let mut chain = Blockchain::new(POS);
+        let mut chain = Pooled::new(POS);
         let (alice, alice_key) = wallet();
         chain.forge(&alice_key).unwrap();
         chain.forge(&alice_key).unwrap();
@@ -1477,7 +1611,7 @@ mod tests {
         pow.mine(&wallet().0).unwrap();
         assert_eq!(*pow.beacon(), genesis_beacon, "mining reveals nothing");
 
-        let mut pos = Blockchain::new(POS);
+        let mut pos = Pooled::new(POS);
         let start = pos.beacon().clone();
         pos.forge(&wallet().1).unwrap();
         assert_eq!(*pos.beacon(), start, "nobody can steer it while anyone may forge");
@@ -1557,7 +1691,7 @@ mod tests {
     const ADJUSTING: ChainRules = ChainRules::proof_of_work(1, 50).with_retarget(10, 5);
 
     /// Mines `count` blocks `secs` apart, starting where the chain's tip left off.
-    fn mine_paced(chain: &mut Blockchain, count: usize, secs: i64) {
+    fn mine_paced(chain: &mut Pooled, count: usize, secs: i64) {
         let miner = wallet().0;
         for _ in 0..count {
             let last = chain.tip().timestamp.max(Utc::now() - chrono::TimeDelta::days(1));
@@ -1567,7 +1701,7 @@ mod tests {
 
     #[test]
     fn blocks_that_come_too_fast_make_mining_harder_and_too_slow_easier() {
-        let mut chain = Blockchain::new(ADJUSTING);
+        let mut chain = Pooled::new(ADJUSTING);
         mine_paced(&mut chain, 8, 1);
         assert_eq!(chain.next_work(), 16, "no adjustment until height 10: genesis isn't timed");
         mine_paced(&mut chain, 1, 1);
@@ -1582,13 +1716,13 @@ mod tests {
         assert_eq!(history[10..15], [64; 5]);
         let total: u128 = history[1..].iter().sum();
         assert_eq!(chain.weight().value(), total, "weight is the work each block required");
-        let restored = Blockchain::restore(chain.blocks().to_vec(), ADJUSTING).unwrap();
+        let restored = Pooled::restore(chain.blocks().to_vec(), ADJUSTING).unwrap();
         assert_eq!(restored.next_work(), chain.next_work());
     }
 
     #[test]
     fn the_adjustment_is_proportional_inside_the_cap() {
-        let mut chain = Blockchain::new(ADJUSTING);
+        let mut chain = Pooled::new(ADJUSTING);
         mine_paced(&mut chain, 9, 5);
         assert_eq!(chain.next_work(), 32, "twice as fast as the target: twice the work");
         mine_paced(&mut chain, 5, 20);
@@ -1598,7 +1732,7 @@ mod tests {
 
     #[test]
     fn a_block_below_the_required_work_is_rejected() {
-        let mut chain = Blockchain::new(ADJUSTING);
+        let mut chain = Pooled::new(ADJUSTING);
         mine_paced(&mut chain, 10, 1);
         assert_eq!(chain.next_work(), 64);
 
@@ -1624,7 +1758,7 @@ mod tests {
 
     #[test]
     fn timestamps_cannot_be_backdated_or_far_in_the_future() {
-        let mut chain = Blockchain::new(ADJUSTING);
+        let mut chain = Pooled::new(ADJUSTING);
         mine_paced(&mut chain, 12, 10);
         let miner = wallet().0;
         let median = chain.blocks()[chain.blocks().len() - 6].timestamp;
@@ -1637,10 +1771,10 @@ mod tests {
     #[test]
     fn a_shorter_but_harder_fork_beats_a_longer_easier_one() {
         // 10 blocks a second apart push the work to 64, so 5 more weigh 320.
-        let mut hard = Blockchain::new(ADJUSTING);
+        let mut hard = Pooled::new(ADJUSTING);
         mine_paced(&mut hard, 15, 1);
         // 17 slow blocks: every block after the first adjustment needs a quarter of the work.
-        let mut easy = Blockchain::new(ADJUSTING);
+        let mut easy = Pooled::new(ADJUSTING);
         mine_paced(&mut easy, 17, 100);
 
         assert!(hard.blocks().len() < easy.blocks().len());

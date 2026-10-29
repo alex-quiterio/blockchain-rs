@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use super::address::Address;
 use super::block::Transaction;
 use super::error::TransactionError;
 use super::ledger::Ledger;
@@ -7,6 +8,10 @@ use super::values::Signature;
 
 /// Signed transfers waiting to be mined, in the order they arrived. Together they always apply
 /// cleanly on top of the confirmed ledger.
+///
+/// An aggregate of its own: what's waiting isn't part of what makes the chain consistent, so it
+/// keeps its own state and, in a node, its own lock. When the chain changes, `rebase` brings it
+/// up to the new confirmed ledger; whoever produces a block reads `transactions()` as candidates.
 ///
 /// It keeps the ledger as it will be once everything waiting is confirmed, so admitting one more
 /// transaction only checks that one, instead of the whole queue again. Under load, with hundreds
@@ -43,6 +48,37 @@ impl Mempool {
 
     pub fn transactions(&self) -> &[Transaction] {
         &self.waiting
+    }
+
+    /// After the chain changed: keeps what still applies on top of its new `confirmed` ledger,
+    /// with `returned`, the transfers of blocks a fork dropped, ahead of what was waiting. What a
+    /// new block confirmed no longer applies, so it leaves.
+    pub fn rebase(&mut self, confirmed: &Ledger, returned: Vec<Transaction>) {
+        let waiting = std::mem::take(&mut self.waiting);
+        *self = Self::rebuilt(returned.into_iter().chain(waiting), confirmed);
+    }
+
+    /// The waiting transfer signed `signature`.
+    pub fn find(&self, signature: &str) -> Option<&Transaction> {
+        let signed = |tx: &&Transaction| tx.signature().is_some_and(|s| s.as_str() == signature);
+        self.waiting.iter().find(signed)
+    }
+
+    /// Waiting transfers to or from `address`.
+    pub fn involving<'a>(&'a self, address: &'a Address) -> impl Iterator<Item = &'a Transaction> {
+        self.waiting.iter().filter(move |tx| tx.involves(address))
+    }
+
+    /// The nonce a new transaction from `address` must carry, counting what's waiting.
+    pub fn next_nonce(&self, address: &Address) -> u64 {
+        self.projected.next_nonce(address)
+    }
+
+    /// If `address`'s next stake must carry a commitment, the epoch to make it for. Counts stakes
+    /// already waiting, so a second stake in a row doesn't commit again.
+    pub fn commitment_due(&self, address: &Address) -> Option<u64> {
+        let state = self.projected.validator_state(address);
+        state.reveals_left.is_none().then_some(state.next_epoch)
     }
 
     /// Queues `tx` if it applies after everything already waiting.

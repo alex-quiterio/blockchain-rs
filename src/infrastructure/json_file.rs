@@ -152,7 +152,7 @@ mod tests {
         let repo = JsonFileRepository::new(&path.0);
         let rules = ChainRules::proof_of_work(2, 50);
         let mut chain = Blockchain::new(rules);
-        chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
+        chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap(), &[]).unwrap();
 
         repo.save(chain.blocks(), &[ChainEvent::Started]).unwrap();
         let loaded = repo.load().unwrap().unwrap();
@@ -171,7 +171,7 @@ mod tests {
     fn chain_of(length: usize) -> Vec<Block> {
         let mut chain = Blockchain::new(ChainRules::proof_of_work(2, 50));
         for _ in 1..length {
-            chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
+            chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap(), &[]).unwrap();
         }
         chain.blocks().to_vec()
     }
@@ -191,7 +191,11 @@ mod tests {
         // A fork replaces the last two blocks.
         let mut forked = blocks[..2].to_vec();
         forked.extend(chain_of(4)[2..].iter().cloned());
-        repo.save(&forked, &[ChainEvent::Reorganized { from: 2, dropped: 2, added: 2 }]).unwrap();
+        repo.save(
+            &forked,
+            &[ChainEvent::Reorganized { from: 2, dropped: 2, added: 2, returned: vec![] }],
+        )
+        .unwrap();
         assert_eq!(JsonFileRepository::new(&path.0).load().unwrap().unwrap(), forked);
     }
 
@@ -225,7 +229,7 @@ mod tests {
         let rules = ChainRules::proof_of_work(2, 50).with_max_reorg_depth(1);
         let mut chain = Blockchain::new(rules);
         for _ in 0..3 {
-            chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap()).unwrap();
+            chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap(), &[]).unwrap();
         }
         let snapshot = chain.snapshot().unwrap();
         repo.save_snapshot(&snapshot).unwrap();
