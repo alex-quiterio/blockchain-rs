@@ -6,18 +6,23 @@ use std::collections::{HashMap, VecDeque};
 use crate::domain::address::Address;
 use crate::domain::block::Transaction;
 use crate::domain::ledger::Ledger;
+use crate::domain::values::BlockCapacity;
 
-/// At most `max` of `fitting`, highest fees first, in an order that applies on top of
+/// As many of `fitting` as a block of `capacity` holds, highest fees first, in an order that applies on top of
 /// `confirmed`. `fitting` must already apply in order there, as a rebuilt mempool's do.
 ///
 /// Each sender's transfers keep their nonce order, so a sender is ranked by the fee of their next
 /// one. Among equal fees, whichever arrived first goes first. A transfer that spends coins not
 /// received yet waits until the payment it needs is chosen.
 ///
-/// It never gets stuck short of `max`: the earliest transfer not yet chosen always applies, since
+/// It never stops short of a full block: the earliest transfer not yet chosen always applies, since
 /// everything before it in `fitting` is in, and nothing in can take coins from its sender.
-pub(super) fn by_fee(fitting: &[Transaction], confirmed: &Ledger, max: usize) -> Vec<Transaction> {
-    if fitting.len() <= max {
+pub(super) fn by_fee(
+    fitting: &[Transaction],
+    confirmed: &Ledger,
+    capacity: BlockCapacity,
+) -> Vec<Transaction> {
+    if capacity.holds(fitting.len()) {
         return fitting.to_vec();
     }
     // Each sender's transfers, with where they arrived, in the order they must apply.
@@ -35,8 +40,8 @@ pub(super) fn by_fee(fitting: &[Transaction], confirmed: &Ledger, max: usize) ->
     // signature and all, again every round.
     let mut waiting_for_coins = vec![false; queues.len()];
     let mut ledger = confirmed.clone();
-    let mut chosen = Vec::with_capacity(max);
-    while chosen.len() < max {
+    let mut chosen = Vec::new();
+    while capacity.holds(chosen.len() + 1) {
         let mut ranked: Vec<usize> =
             (0..queues.len()).filter(|&q| !waiting_for_coins[q] && !queues[q].is_empty()).collect();
         ranked.sort_by_key(|&q| {
@@ -86,7 +91,7 @@ mod tests {
         let mut ledger = Ledger::default();
         ledger.credit(&from, Coins::new(50));
         let txs = [pay(&a, &to, 1, 0, 1), pay(&a, &to, 1, 1, 9)];
-        assert_eq!(by_fee(&txs, &ledger, 2), txs);
+        assert_eq!(by_fee(&txs, &ledger, BlockCapacity::at_most(2)), txs);
     }
 
     #[test]
@@ -100,7 +105,7 @@ mod tests {
                 pay(&key, &to, 1, 0, fee)
             })
             .collect();
-        let chosen = by_fee(&txs, &ledger, 3);
+        let chosen = by_fee(&txs, &ledger, BlockCapacity::at_most(3));
         assert_eq!(fees(&chosen), [7, 7, 5]);
         assert_eq!(chosen[0], txs[1], "equal fees go in the order they arrived");
     }
@@ -113,7 +118,7 @@ mod tests {
         ledger.credit(&bob, Coins::new(50));
         // Alice's big fee sits behind her small one; Bob's middling one beats her small one.
         let txs = [pay(&a, &to, 1, 0, 1), pay(&a, &to, 1, 1, 20), pay(&b, &to, 1, 0, 5)];
-        assert_eq!(fees(&by_fee(&txs, &ledger, 2)), [5, 1]);
+        assert_eq!(fees(&by_fee(&txs, &ledger, BlockCapacity::at_most(2))), [5, 1]);
     }
 
     #[test]
@@ -123,13 +128,17 @@ mod tests {
         ledger.credit(&alice, Coins::new(50));
         // Bob can only pay once Alice's payment to him is in, however high his fee.
         let txs = [pay(&a, &bob, 10, 0, 1), pay(&b, &to, 5, 0, 9)];
-        let chosen = by_fee(&txs, &ledger, 1);
+        let chosen = by_fee(&txs, &ledger, BlockCapacity::at_most(1));
         assert_eq!(chosen, [txs[0].clone()]);
 
         let mut more = txs.to_vec();
         let (c, carol) = wallet();
         ledger.credit(&carol, Coins::new(50));
         more.push(pay(&c, &to, 1, 0, 3));
-        assert_eq!(fees(&by_fee(&more, &ledger, 2)), [3, 1], "Bob waits for his coins");
+        assert_eq!(
+            fees(&by_fee(&more, &ledger, BlockCapacity::at_most(2))),
+            [3, 1],
+            "Bob waits for his coins"
+        );
     }
 }

@@ -167,7 +167,7 @@ The first transaction in each block is the **payout**: the reward plus the block
 
 ### 💸 Fees decide what gets in
 
-A block holds at most `MAX_BLOCK_TRANSFERS` transfers, and every node refuses one with more. When more are waiting, whoever adds the block picks them by fee, highest first, with two limits on the order:
+A block holds at most `MAX_BLOCK_TRANSFERS` transfers, and every node refuses one with more; a block submitted with too many is told so (`TooManyTransfers`). When more are waiting, whoever adds the block picks them by fee, highest first, with two limits on the order:
 
 - **A sender's transfers keep their nonce order.** A sender is ranked by the fee of their *next* transfer, so a big fee stuck behind a small one waits for it.
 - **A payment goes in before what spends it.** A transfer paid for with coins that are still on their way waits until the payment that brings them is chosen.
@@ -234,6 +234,7 @@ flowchart TB
     - `address.rs`: an `Address` can only hold a valid public key
     - `hash.rs`: `BlockHash`, `MerkleRoot`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another
     - `signature.rs`: `Signature`, 128 hex characters; a block reward has none, which travels as `""`
+    - `capacity.rs`: `BlockCapacity`, how many transfers a block may hold: at most some number, or any
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
     - `party.rs`: where a transaction's coins come from (`Source`: an account, or new coins for a block reward) and go (`Destination`: an account, or into or out of a stake), instead of strings with magic values
   - `error.rs`: why something was refused, by what it was: `ValueError`, `TransactionError`, `BlockError` or `ChainError`, each operation failing only in the ways of what it handles, and `DomainError` where they meet
@@ -285,7 +286,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 142 tests: unit, HTTP, property-based and doctests
+cargo test        # 145 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.

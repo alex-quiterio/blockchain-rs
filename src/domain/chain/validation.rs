@@ -119,7 +119,7 @@ pub(super) fn apply_block(
         return false;
     };
     if !coinbase.is_coinbase()
-        || !rules.fits_in_block(transfers.len())
+        || !rules.block_capacity.holds(transfers.len())
         || Some(coinbase.amount) != payout(rules.reward, transfers)
         || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index

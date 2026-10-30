@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::address::Address;
 use crate::domain::crypto;
-use crate::domain::values::{Beacon, Coins};
+use crate::domain::values::{Beacon, BlockCapacity, Coins};
 
 /// How a chain decides who may add the next block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,15 +37,15 @@ pub struct ChainRules {
     /// The most of its own blocks a node will throw away to switch forks. Anything deeper is
     /// treated as an attack rewriting old history, however heavy the other fork is.
     pub max_reorg_depth: u64,
-    /// The most transfers a block may hold, besides its payout. When more are waiting, the
-    /// highest fees go first, so fees decide what gets in. `None` takes everything waiting.
+    /// How many transfers a block may hold besides its payout. When more are waiting, the
+    /// highest fees go first, so fees decide what gets in.
     #[serde(default)]
-    pub max_block_transfers: Option<u64>,
+    pub block_capacity: BlockCapacity,
 }
 
 pub const DEFAULT_MAX_REORG_DEPTH: u64 = 64;
 
-/// What a node holds its blocks to unless told otherwise.
+/// The most transfers a node's blocks hold unless told otherwise.
 pub const DEFAULT_MAX_BLOCK_TRANSFERS: u64 = 100;
 
 impl ChainRules {
@@ -54,7 +54,7 @@ impl ChainRules {
             consensus: Consensus::ProofOfWork { difficulty, retarget: None },
             reward: Coins::new(reward),
             max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
-            max_block_transfers: None,
+            block_capacity: BlockCapacity::ANY,
         }
     }
 
@@ -63,7 +63,7 @@ impl ChainRules {
             consensus: Consensus::ProofOfStake,
             reward: Coins::new(reward),
             max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
-            max_block_transfers: None,
+            block_capacity: BlockCapacity::ANY,
         }
     }
 
@@ -71,13 +71,8 @@ impl ChainRules {
         Self { max_reorg_depth, ..self }
     }
 
-    pub const fn with_max_block_transfers(self, max_block_transfers: Option<u64>) -> Self {
-        Self { max_block_transfers, ..self }
-    }
-
-    /// Whether a block may hold `transfers` transfers besides its payout.
-    pub fn fits_in_block(&self, transfers: usize) -> bool {
-        self.max_block_transfers.is_none_or(|max| transfers as u64 <= max)
+    pub const fn with_block_capacity(self, block_capacity: BlockCapacity) -> Self {
+        Self { block_capacity, ..self }
     }
 
     /// Proof of work only: adjusts the difficulty every `interval` blocks to aim for one block
@@ -129,8 +124,8 @@ impl fmt::Display for ChainRules {
             Consensus::ProofOfStake => write!(f, "proof of stake")?,
         }
         write!(f, ", reward {}", self.reward)?;
-        match self.max_block_transfers {
-            Some(max) => write!(f, ", at most {max} transfers a block"),
+        match self.block_capacity.max() {
+            Some(_) => write!(f, ", {}", self.block_capacity),
             None => Ok(()),
         }
     }

@@ -57,6 +57,8 @@ pub enum BlockError {
     BadReveal,
     /// It doesn't build on the current tip, usually because another block won.
     StaleBlock,
+    /// It holds more transfers than the rules let a block hold.
+    TooManyTransfers { max: u64, got: usize },
     /// It fails a check: its hash, signature, payout or transactions.
     InvalidBlock,
 }
@@ -123,6 +125,9 @@ impl fmt::Display for BlockError {
                 write!(f, "the reveal doesn't open the validator's commitment, or isn't due")
             }
             Self::StaleBlock => write!(f, "another block took the tip first"),
+            Self::TooManyTransfers { max, got } => {
+                write!(f, "block holds {got} transfers; at most {max} fit in one")
+            }
             Self::InvalidBlock => write!(f, "block does not validate"),
         }
     }

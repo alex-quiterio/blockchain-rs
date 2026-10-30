@@ -332,6 +332,12 @@ impl Blockchain {
         if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
             return Err(BlockError::StaleBlock);
         }
+        // Checked here too, so whoever made it hears why, not only that it doesn't validate.
+        let (capacity, transfers) =
+            (self.rules.block_capacity, block.transactions.len().saturating_sub(1));
+        if let (false, Some(max)) = (capacity.holds(transfers), capacity.max()) {
+            return Err(BlockError::TooManyTransfers { max, got: transfers });
+        }
         let mut tally = self.tally().clone();
         if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
             return Err(BlockError::InvalidBlock);
@@ -364,10 +370,8 @@ impl Blockchain {
     ) -> (u64, Vec<Transaction>) {
         let index = self.blocks.len() as u64;
         let fitting = Mempool::rebuilt(pending.iter().cloned(), self.ledger());
-        let fitting = match self.rules.max_block_transfers {
-            Some(max) => selection::by_fee(fitting.transactions(), self.ledger(), max as usize),
-            None => fitting.transactions().to_vec(),
-        };
+        let fitting =
+            selection::by_fee(fitting.transactions(), self.ledger(), self.rules.block_capacity);
         // Only fees their senders can afford get this far, so they always add up.
         let payout = payout(self.rules.reward, &fitting).expect("affordable fees add up");
         let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
@@ -547,7 +551,7 @@ mod tests {
     use crate::domain::difficulty::meets_work;
     use crate::domain::error::TransactionError;
     use crate::domain::mempool::Mempool;
-    use crate::domain::values::{Destination, Source};
+    use crate::domain::values::{BlockCapacity, Destination, Source};
 
     const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
 
@@ -732,7 +736,7 @@ mod tests {
 
     #[test]
     fn a_full_block_takes_the_highest_fees_and_leaves_the_rest_waiting() {
-        let mut chain = Pooled::new(RULES.with_max_block_transfers(Some(2)));
+        let mut chain = Pooled::new(RULES.with_block_capacity(BlockCapacity::at_most(2)));
         let (dave, _) = wallet();
         let senders: Vec<_> = (0..3).map(|_| wallet()).collect();
         for (address, _) in &senders {
@@ -766,7 +770,7 @@ mod tests {
         }
         chain.mine(&alice).unwrap();
 
-        let limited = RULES.with_max_block_transfers(Some(2));
+        let limited = RULES.with_block_capacity(BlockCapacity::at_most(2));
         assert!(Blockchain::restore(chain.blocks().to_vec(), RULES).is_ok());
         assert_eq!(
             Blockchain::restore(chain.blocks().to_vec(), limited).err(),
@@ -774,6 +778,11 @@ mod tests {
         );
         let mut peer = Blockchain::restore(chain.blocks()[..2].to_vec(), limited).unwrap();
         assert_eq!(peer.extend(chain.blocks()[2..].to_vec()), Err(ChainError::InvalidChain));
+        assert_eq!(
+            peer.append_mined(chain.blocks()[2].clone()).err(),
+            Some(BlockError::TooManyTransfers { max: 2, got: 3 }),
+            "a block made elsewhere is told why"
+        );
     }
 
     #[test]

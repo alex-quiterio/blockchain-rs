@@ -2,11 +2,13 @@
 //! the domain never handles a malformed one or mixes one kind up with another.
 
 pub mod address;
+mod capacity;
 mod coins;
 mod hash;
 mod party;
 pub mod signature;
 
+pub use capacity::BlockCapacity;
 pub use coins::Coins;
 pub use hash::{Beacon, BlockHash, Commitment, MerkleRoot, Reveal};
 pub use party::{Destination, Source, COINBASE, STAKE, UNSTAKE};

@@ -8,6 +8,7 @@ use blockchain::application::{Network, NodeEvent, NodeService, SNAPSHOT_BLOCKS};
 use blockchain::domain::chain::ChainEvent;
 use blockchain::domain::mempool::MempoolEvent;
 use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS, DEFAULT_MAX_REORG_DEPTH};
+use blockchain::domain::values::BlockCapacity;
 use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
@@ -30,9 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(other) => return Err(format!("CONSENSUS must be pow or pos, not {other}").into()),
     }
     .with_max_reorg_depth(env_or("MAX_REORG_DEPTH", DEFAULT_MAX_REORG_DEPTH))
-    .with_max_block_transfers(
-        Some(env_or("MAX_BLOCK_TRANSFERS", DEFAULT_MAX_BLOCK_TRANSFERS)).filter(|&max| max > 0),
-    );
+    .with_block_capacity(BlockCapacity::at_most(env_or(
+        "MAX_BLOCK_TRANSFERS",
+        DEFAULT_MAX_BLOCK_TRANSFERS,
+    )));
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let chain_file = std::env::var("CHAIN_FILE").unwrap_or_else(|_| DEFAULT_CHAIN_FILE.to_string());
 
