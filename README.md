@@ -238,7 +238,11 @@ flowchart TB
     - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
     - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
     - `validators.rs`: `Validators`, each validator's reveal chain and the beacon, and the rules for committing, revealing and retiring. Part of the ledger, but its own model: nothing in it moves coins
-  - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself. Only the domain can change either; outside it they can only be read, and doctests check it stays that way
+  - `block/`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself. Only the domain can change either; outside it they can only be read, and doctests check it stays that way
+    - `mod.rs`: `Block` itself, its hash, and the checks on its Merkle root and validator's signature
+    - `sealing.rs`: how a block gets made: genesis, mined, forged, or proposed and signed elsewhere
+    - `header.rs`: `BlockHeader`, what a light client keeps, and the header hash it shares with the block
+    - `transaction.rs`: `Transaction` and `TxKind`
   - `merkle.rs`: Merkle roots and proofs over a block's transactions
   - `mempool/`: the `Mempool`, an aggregate of its own: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block asks it for `candidates`, and the chain keeps those that still apply, in the order given, as many as a block holds.
     - `selection.rs`: what it offers when more is waiting than a block holds: the highest fees first, keeping each sender's nonce order. A producer's choice, not a consensus rule It says what happened with `MempoolEvent`s: `Accepted` for each transfer submitted, `Rebased` for how a chain change left it
@@ -324,7 +328,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 156 tests: unit, HTTP, property-based and doctests
+cargo test        # 158 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.
