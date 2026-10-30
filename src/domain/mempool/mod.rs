@@ -4,14 +4,17 @@ use super::address::Address;
 use super::block::Transaction;
 use super::error::TransactionError;
 use super::ledger::Ledger;
-use super::values::Signature;
+use super::values::{BlockCapacity, Signature};
+
+mod selection;
 
 /// Signed transfers waiting to be mined, in the order they arrived. Together they always apply
 /// cleanly on top of the confirmed ledger.
 ///
 /// An aggregate of its own: what's waiting isn't part of what makes the chain consistent, so it
 /// keeps its own state and, in a node, its own lock. When the chain changes, `rebase` brings it
-/// up to the new confirmed ledger; whoever produces a block reads `transactions()` as candidates.
+/// up to the new confirmed ledger; whoever produces a block asks it for `candidates`, which puts
+/// the highest fees first when more is waiting than a block holds.
 ///
 /// It keeps the ledger as it will be once everything waiting is confirmed, so admitting one more
 /// transaction only checks that one, instead of the whole queue again. Under load, with hundreds
@@ -20,6 +23,8 @@ use super::values::Signature;
 #[derive(Debug, Clone, Default)]
 pub struct Mempool {
     waiting: Vec<Transaction>,
+    /// The confirmed ledger it sits on, which candidates for a block are picked against.
+    confirmed: Ledger,
     /// The confirmed ledger with every waiting transaction applied.
     projected: Ledger,
     /// The signatures of everything waiting, to drop gossiped duplicates at once.
@@ -41,7 +46,7 @@ pub enum MempoolEvent {
 impl Mempool {
     /// An empty mempool on top of `confirmed`.
     pub fn on(confirmed: &Ledger) -> Self {
-        Self { projected: confirmed.clone(), ..Self::default() }
+        Self { confirmed: confirmed.clone(), projected: confirmed.clone(), ..Self::default() }
     }
 
     /// Keeps the candidates that still apply on top of `confirmed`, in order, dropping the rest.
@@ -65,6 +70,13 @@ impl Mempool {
 
     pub fn transactions(&self) -> &[Transaction] {
         &self.waiting
+    }
+
+    /// What to offer for the next block, which holds `capacity`: everything waiting while it
+    /// fits, in the order it arrived, or else the highest fees first. Either way they apply in
+    /// order on top of the confirmed ledger.
+    pub fn candidates(&self, capacity: BlockCapacity) -> Vec<Transaction> {
+        selection::by_fee(&self.waiting, &self.confirmed, capacity)
     }
 
     /// After the chain changed: keeps what still applies on top of its new `confirmed` ledger,
@@ -179,6 +191,21 @@ mod tests {
         let rebased = MempoolEvent::Rebased { kept: 1, dropped: 1, returned: 1 };
         assert_eq!(pool.take_events(), [rebased], "taking back what was there is quiet");
         assert_eq!(pool.transactions().len(), 2);
+    }
+
+    #[test]
+    fn a_full_block_is_offered_the_highest_fees() {
+        let (mut ledger, key, to) = funded();
+        let (_, other, _) = funded();
+        ledger.credit(&Address::of(&other), Coins::new(50));
+        let mut pool = Mempool::on(&ledger);
+        let cheap = Transaction::signed(&key, &to, Coins::new(1), 0, Coins::new(1));
+        let dear = Transaction::signed(&other, &to, Coins::new(1), 0, Coins::new(9));
+        pool.admit(cheap.clone()).unwrap();
+        pool.admit(dear.clone()).unwrap();
+        assert_eq!(pool.candidates(BlockCapacity::ANY), [cheap.clone(), dear.clone()]);
+        assert_eq!(pool.candidates(BlockCapacity::at_most(1)), [dear]);
+        assert_eq!(pool.transactions().len(), 2, "offering takes nothing out");
     }
 
     #[test]

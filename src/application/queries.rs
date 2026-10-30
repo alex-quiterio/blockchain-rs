@@ -237,7 +237,8 @@ impl ChainQueries {
         validator: &Address,
         reveal: Option<Reveal>,
     ) -> Result<Block, BlockError> {
-        let pending = self.pending();
+        let capacity = self.rules().block_capacity;
+        let pending = self.mempool.lock().unwrap().candidates(capacity);
         self.chain.lock().unwrap().propose(validator, reveal, &pending)
     }
 }

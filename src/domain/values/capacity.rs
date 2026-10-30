@@ -24,9 +24,14 @@ impl BlockCapacity {
         self.0.map(NonZeroU64::get)
     }
 
+    /// The most transfers a block may hold, as a count: `usize::MAX` for any number.
+    pub fn limit(self) -> usize {
+        self.0.map_or(usize::MAX, |max| usize::try_from(max.get()).unwrap_or(usize::MAX))
+    }
+
     /// Whether a block may hold `transfers` transfers besides its payout.
     pub fn holds(self, transfers: usize) -> bool {
-        self.0.is_none_or(|max| u64::try_from(transfers).is_ok_and(|n| n <= max.get()))
+        transfers <= self.limit()
     }
 }
 
@@ -48,14 +53,14 @@ mod tests {
         let two = BlockCapacity::at_most(2);
         assert!(two.holds(0) && two.holds(2));
         assert!(!two.holds(3));
-        assert_eq!(two.max(), Some(2));
+        assert_eq!((two.max(), two.limit()), (Some(2), 2));
     }
 
     #[test]
     fn zero_means_any_number() {
         assert_eq!(BlockCapacity::at_most(0), BlockCapacity::ANY);
         assert!(BlockCapacity::ANY.holds(usize::MAX));
-        assert_eq!(BlockCapacity::ANY.max(), None);
+        assert_eq!((BlockCapacity::ANY.max(), BlockCapacity::ANY.limit()), (None, usize::MAX));
     }
 
     #[test]

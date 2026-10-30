@@ -145,9 +145,10 @@ impl NodeService {
         Ok(())
     }
 
-    /// What's waiting, as the candidates for a new block.
+    /// What the mempool offers for a new block, as many as one holds.
     fn candidates(&self) -> Vec<Transaction> {
-        self.mempool.lock().unwrap().transactions().to_vec()
+        let capacity = self.chain.lock().unwrap().rules().block_capacity;
+        self.mempool.lock().unwrap().candidates(capacity)
     }
 
     /// Appends a proof-of-stake block signed elsewhere and saves it.

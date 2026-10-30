@@ -19,7 +19,6 @@ use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 mod events;
-mod selection;
 mod tally;
 mod validation;
 
@@ -360,9 +359,10 @@ impl Blockchain {
     }
 
     /// The next block's index and transactions: a payout of the reward plus fees to `producer`,
-    /// then those of `pending` that apply on top of this chain, in order. A mempool may lag the
-    /// chain for a moment, so its candidates are checked here rather than trusted. When more
-    /// apply than a block may hold, the highest fees go in.
+    /// then those of `pending` that apply on top of this chain, in the order given, as many as a
+    /// block holds. Which to offer, and in what order, is the producer's choice; a mempool puts
+    /// the highest fees first. It may lag the chain for a moment, so its candidates are checked
+    /// here rather than trusted.
     fn next_contents(
         &self,
         producer: &Address,
@@ -370,8 +370,8 @@ impl Blockchain {
     ) -> (u64, Vec<Transaction>) {
         let index = self.blocks.len() as u64;
         let fitting = Mempool::rebuilt(pending.iter().cloned(), self.ledger());
-        let fitting =
-            selection::by_fee(fitting.transactions(), self.ledger(), self.rules.block_capacity);
+        let mut fitting = fitting.transactions().to_vec();
+        fitting.truncate(self.rules.block_capacity.limit());
         // Only fees their senders can afford get this far, so they always add up.
         let payout = payout(self.rules.reward, &fitting).expect("affordable fees add up");
         let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
@@ -618,15 +618,15 @@ mod tests {
         }
 
         fn candidates(&self) -> Vec<Transaction> {
-            self.pool.transactions().to_vec()
+            self.pool.candidates(self.chain.rules().block_capacity)
         }
 
         fn next_contents(&self, producer: &Address) -> (u64, Vec<Transaction>) {
-            self.chain.next_contents(producer, self.pool.transactions())
+            self.chain.next_contents(producer, &self.candidates())
         }
 
         fn mining_template(&self, miner: &Address) -> Result<MiningTemplate, BlockError> {
-            self.chain.mining_template(miner, self.pool.transactions())
+            self.chain.mining_template(miner, &self.candidates())
         }
 
         fn propose(
@@ -634,7 +634,7 @@ mod tests {
             validator: &Address,
             reveal: Option<Reveal>,
         ) -> Result<Block, BlockError> {
-            self.chain.propose(validator, reveal, self.pool.transactions())
+            self.chain.propose(validator, reveal, &self.candidates())
         }
 
         fn mine(&mut self, miner: &Address) -> Result<&Block, BlockError> {
@@ -758,6 +758,19 @@ mod tests {
         assert!(chain.pending().is_empty());
         assert_eq!(chain.balance(&dave), Coins::new(30 + 58 + 51));
         assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn a_block_takes_candidates_in_the_order_given_as_many_as_it_holds() {
+        let mut chain = Blockchain::new(RULES.with_block_capacity(BlockCapacity::at_most(2)));
+        let senders: Vec<_> = (0..3).map(|_| wallet()).collect();
+        for (address, _) in &senders {
+            chain.mine(address, &[]).unwrap();
+        }
+        let (to, _) = wallet();
+        let offered: Vec<_> = senders.iter().map(|(_, key)| transfer(key, &to, 1, 0)).collect();
+        let (_, transactions) = chain.next_contents(&to, &offered);
+        assert_eq!(transactions[1..], offered[..2], "the chain doesn't reorder what it's offered");
     }
 
     #[test]

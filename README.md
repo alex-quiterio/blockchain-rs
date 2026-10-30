@@ -167,7 +167,7 @@ The first transaction in each block is the **payout**: the reward plus the block
 
 ### 💸 Fees decide what gets in
 
-A block holds at most `MAX_BLOCK_TRANSFERS` transfers, and every node refuses one with more; a block submitted with too many is told so (`TooManyTransfers`). When more are waiting, whoever adds the block picks them by fee, highest first, with two limits on the order:
+A block holds at most `MAX_BLOCK_TRANSFERS` transfers, and every node refuses one with more; a block submitted with too many is told so (`TooManyTransfers`). That cap is the only consensus rule; which transfers fill a block is the producer's choice. A node's mempool offers them by fee, highest first, with two limits on the order:
 
 - **A sender's transfers keep their nonce order.** A sender is ranked by the fee of their *next* transfer, so a big fee stuck behind a small one waits for it.
 - **A payment goes in before what spends it.** A transfer paid for with coins that are still on their way waits until the payment that brings them is chosen.
@@ -219,7 +219,6 @@ flowchart TB
     - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`
     - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
     - `validation.rs`: the rules each block is checked by, and replaying a chain by them
-    - `selection.rs`: what goes in a full block: the highest fees first, keeping each sender's nonce order
     - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
   - `consensus/`: how the network agrees on one chain.
     - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
@@ -228,7 +227,8 @@ flowchart TB
     - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
   - `block.rs`: `Block`, which mines, forges and hashes itself, and `Transaction`, which signs itself. Only the domain can change either; outside it they can only be read, and doctests check it stays that way
   - `merkle.rs`: Merkle roots and proofs over a block's transactions
-  - `mempool.rs`: the `Mempool`, an aggregate of its own: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block takes its transactions as candidates, and the chain keeps only those that still apply. It says what happened with `MempoolEvent`s: `Accepted` for each transfer submitted, `Rebased` for how a chain change left it
+  - `mempool/`: the `Mempool`, an aggregate of its own: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block asks it for `candidates`, and the chain keeps those that still apply, in the order given, as many as a block holds.
+    - `selection.rs`: what it offers when more is waiting than a block holds: the highest fees first, keeping each sender's nonce order. A producer's choice, not a consensus rule It says what happened with `MempoolEvent`s: `Accepted` for each transfer submitted, `Rebased` for how a chain change left it
   - `ledger.rs`: balances, stakes, nonces and validators, keyed by `Address`
   - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
     - `address.rs`: an `Address` can only hold a valid public key
@@ -286,7 +286,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 145 tests: unit, HTTP, property-based and doctests
+cargo test        # 147 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.

@@ -1,4 +1,5 @@
-//! What goes in a block when more is waiting than fits: the highest fees first.
+//! What a mempool offers for the next block when more is waiting than fits: the highest fees
+//! first. A producer's choice, not a consensus rule: peers only check that a block isn't too full.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
@@ -41,7 +42,7 @@ pub(super) fn by_fee(
     let mut waiting_for_coins = vec![false; queues.len()];
     let mut ledger = confirmed.clone();
     let mut chosen = Vec::new();
-    while capacity.holds(chosen.len() + 1) {
+    while chosen.len() < capacity.limit() {
         let mut ranked: Vec<usize> =
             (0..queues.len()).filter(|&q| !waiting_for_coins[q] && !queues[q].is_empty()).collect();
         ranked.sort_by_key(|&q| {
