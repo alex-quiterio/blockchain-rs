@@ -1,6 +1,8 @@
 //! Proof of stake's randomness: each validator's reveal chain, and the beacon their reveals mix
 //! into. Stakes decide how likely a validator is to be drawn; this decides who can be drawn at
 //! all, and the draw's seed.
+//!
+//! A value object, carried in the ledger beside the stakes it draws from, and copied with it.
 
 use std::collections::HashMap;
 

@@ -1,5 +1,6 @@
 //! Proof-of-work difficulty as *work*, the hashes a block takes to find on average, and how it
-//! adjusts to keep blocks coming at a steady pace.
+//! adjusts to keep blocks coming at a steady pace. A domain service: functions over a chain's
+//! blocks, with no state of their own.
 //!
 //! A hash meets `work` when its first 128 bits, read as a number, are at most `u128::MAX / work`.
 //! For `work = 16^d` that is exactly "starts with d hex zeros", so chains mined before difficulty

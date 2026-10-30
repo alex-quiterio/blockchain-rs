@@ -1,4 +1,5 @@
-//! Commit-reveal randomness for picking validators, after Ethereum's RANDAO.
+//! Commit-reveal randomness for picking validators, after Ethereum's RANDAO. A domain service:
+//! the hash chains are worked out from a key, and nothing here keeps state.
 //!
 //! A validator commits to the end of a hash chain when they stake: `H(H(…H(seed)))`, `LENGTH`
 //! times. Each block they forge reveals the previous link, which anyone can check by hashing it

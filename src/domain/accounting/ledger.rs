@@ -1,12 +1,19 @@
+//! What the confirmed transactions add up to: balances, stakes and nonces, and the rules a new
+//! transaction is checked by before it's applied.
+//!
+//! A value object holding an aggregate's state. It has no identity: the chain keeps a copy after
+//! each recent block and checks a fork on a copy, and the mempool projects onto its own. It's
+//! changed in place only on a private copy, which is then swapped in whole.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::address::Address;
-use super::block::{Transaction, TxKind};
-use super::error::TransactionError;
-use super::validators::{ValidatorState, Validators};
-use super::values::{Beacon, BlockHash, Coins, Reveal};
+use super::transaction::{Transaction, TxKind};
+use crate::domain::address::Address;
+use crate::domain::error::TransactionError;
+use crate::domain::validators::{ValidatorState, Validators};
+use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 
 /// Balances, stakes and nonces that result from applying blocks in order, and, for proof of
 /// stake, the `Validators` those stakes may be drawn from.
@@ -42,7 +49,7 @@ impl Ledger {
 
     /// Checks that `reveal` opens `validator`'s commitment, then moves their chain along by one
     /// and mixes the reveal into the beacon.
-    pub(super) fn apply_reveal(&mut self, validator: &Address, reveal: &Reveal) -> bool {
+    pub(in crate::domain) fn apply_reveal(&mut self, validator: &Address, reveal: &Reveal) -> bool {
         self.validators.apply_reveal(validator, reveal)
     }
 
@@ -70,7 +77,7 @@ impl Ledger {
         self.nonces.get(address).copied().unwrap_or(0)
     }
 
-    pub(super) fn credit(&mut self, address: &Address, amount: Coins) {
+    pub(in crate::domain) fn credit(&mut self, address: &Address, amount: Coins) {
         let balance = self.balances.entry(address.clone()).or_default();
         *balance = balance.saturating_add(amount);
     }

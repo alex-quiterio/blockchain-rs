@@ -1,5 +1,9 @@
 //! A signed movement of coins, and what kind it is. Shared by both aggregates: the chain's blocks
 //! carry transactions, and the mempool holds them until one does.
+//!
+//! A value object: it never changes once signed, and two with the same fields are the same
+//! transaction. Nothing tracks one's identity over time; the chain and the mempool each hold
+//! their own copy.
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};

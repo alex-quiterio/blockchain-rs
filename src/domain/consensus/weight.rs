@@ -1,3 +1,6 @@
+//! What a chain is worth when forks compete. `ChainWeight` is a value object: a block adds its
+//! work or its validator's stake to it, and the heavier fork wins.
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

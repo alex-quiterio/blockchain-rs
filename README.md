@@ -239,7 +239,9 @@ flowchart TB
         - `header.rs`: `BlockHeader`, what a light client keeps, and the header hash it shares with the block
     - `mempool/`: the `Mempool` aggregate: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block asks it for `candidates`, and the chain keeps those that still apply, in the order given, as many as a block holds. It says what happened with `MempoolEvent`s: `Accepted` for each transfer submitted, `Rebased` for how a chain change left it
       - `selection.rs`: what it offers when more is waiting than a block holds: the highest fees first, keeping each sender's nonce order. A producer's choice, not a consensus rule
-  - `transaction.rs`: `Transaction`, which signs itself, and `TxKind`. Shared by both aggregates, so it lives outside them; like a block, only the domain can change one
+  - `accounting/`: who owns what. Both aggregates work with it, so it lives outside them.
+    - `transaction.rs`: `Transaction`, which signs itself, and `TxKind`. A value object: it never changes once signed, and like a block, only the domain can change one
+    - `ledger.rs`: balances, stakes and nonces, keyed by `Address`, beside the `Validators` those stakes may be drawn from, and the rules a transaction is checked by. A value object holding an aggregate's state: the chain keeps a copy per recent block and the mempool its own
   - `consensus/`: how the network agrees on one chain.
     - `rules.rs`: `ChainRules`, what every node must share (consensus, reward and block capacity), `Consensus` and the stake-weighted `select_validator`
     - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
@@ -249,7 +251,6 @@ flowchart TB
   - `services/`: domain services, what the domain does that belongs to no one object, with no state of their own. The ones that decide on consensus live with its rules in `consensus/`.
     - `merkle.rs`: Merkle roots and proofs over a block's transactions
     - `crypto.rs`: hashing, and making, using and checking ed25519 keys
-  - `ledger.rs`: balances, stakes and nonces, keyed by `Address`, beside the `Validators` those stakes may be drawn from
   - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
     - `address.rs`: an `Address` can only hold a valid public key
     - `hash.rs`: `BlockHash`, `MerkleRoot` and `MerkleNode`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another

@@ -1,3 +1,8 @@
+//! The rules every node on a network must share, and drawing the next validator from the stakes.
+//!
+//! `ChainRules`, `Consensus` and `Retarget` are value objects; `select_validator` is a domain
+//! service, a function every node computes the same way.
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
