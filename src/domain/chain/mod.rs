@@ -12,7 +12,6 @@ use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty;
 use crate::domain::error::{BlockError, ChainError};
 use crate::domain::ledger::Ledger;
-use crate::domain::mempool::Mempool;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
 use crate::domain::validators::ValidatorState;
@@ -361,9 +360,15 @@ impl Blockchain {
         pending: &[Transaction],
     ) -> (u64, Vec<Transaction>) {
         let index = self.blocks.len() as u64;
-        let fitting = Mempool::rebuilt(pending.iter().cloned(), self.ledger());
-        let mut fitting = fitting.transactions().to_vec();
-        fitting.truncate(self.rules.block_capacity.limit());
+        // Each is tried on top of the ones kept before it, and trying stops once the block is
+        // full. A repeat of one already kept fails its nonce.
+        let mut ledger = self.ledger().clone();
+        let fitting: Vec<_> = pending
+            .iter()
+            .filter(|tx| ledger.apply_transfer(tx).is_ok())
+            .take(self.rules.block_capacity.limit())
+            .cloned()
+            .collect();
         // Only fees their senders can afford get this far, so they always add up.
         let payout = payout(self.rules.reward, &fitting).expect("affordable fees add up");
         let mut transactions = vec![Transaction::coinbase(producer, payout, index)];

@@ -216,7 +216,7 @@ flowchart TB
 
 - **`domain/`** has the rules and no I/O.
   - `chain/`: the chain itself.
-    - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`
+    - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`. It knows nothing of the mempool: a new block takes whatever candidates it's given and keeps those that apply on its own ledger, as many as a block holds
     - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
     - `validation.rs`: the rules each block is checked by, and replaying a chain by them
     - `tests.rs`: the aggregate's tests, kept apart so `mod.rs` holds only what changes the chain
