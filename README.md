@@ -57,9 +57,12 @@ For **proof of stake**, run `CONSENSUS=pos CHAIN_FILE=pos.json cargo run` (or pu
 ```sh
 ./scripts/story.sh                                    # a narrated tour of the Docker network
 docker compose --profile load run --rm loadgen        # flood it with transactions and watch it cope
+cargo run --bin life                                  # a life ledger on :4000, beside a node on :3000
 ```
 
 The **story** opens wallets, gossips transfers, fills a block, turns away cheaters, races two miners and checks a Merkle proof, timing each message as it reaches each node. The **load generator** sends random signed transactions with random fees, adds blocks on a schedule, and prints throughput, latency and whether the nodes agree. Its first run found a real bottleneck: every transaction re-checked the whole mempool.
+
+The **life ledger** makes each trait of a life (health, work, love…) an account, and each entry about one a transfer to it from you, weighted by how much of you it took. The words stay in `life.json`; the transfer carries only a salted hash of them as its `memo`, so peers learn nothing, yet `GET /entries/:id` proves an entry was written by its block's time and never edited since. The routes are listed at the top of `src/bin/life.rs`.
 
 In the Docker network, node C and node A only know node B, and gossip carries everything across. Each node keeps its chain in a volume; `docker compose down -v` wipes them.
 

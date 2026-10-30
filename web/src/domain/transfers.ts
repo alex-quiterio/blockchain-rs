@@ -6,7 +6,7 @@ export const COINBASE = "coinbase";
 export const STAKE = "stake";
 export const UNSTAKE = "unstake";
 
-/** A transfer as its sender signs it. A fee or commitment is left out when there's none. */
+/** A transfer as its sender signs it. A fee, commitment or memo is left out when there's none. */
 export interface UnsignedTransfer {
   from: string;
   to: string;
@@ -14,6 +14,8 @@ export interface UnsignedTransfer {
   nonce: number;
   fee?: number;
   commitment?: string;
+  /** The hash of a note kept off the chain. */
+  memo?: string;
 }
 
 /** A transfer as the node keeps it. A block's payout has an empty signature. */
@@ -35,8 +37,11 @@ export const kindOf = (tx: UnsignedTransfer): TransferKind =>
 export const feesOf = (txs: readonly UnsignedTransfer[]): number =>
   txs.reduce((sum, tx) => sum + (tx.fee || 0), 0);
 
-/** What the sender signs: `from|to|amount|nonce`, then `|fee=N` and `|commit=C` if present. */
+/**
+ * What the sender signs: `from|to|amount|nonce`, then `|fee=N`, `|commit=C` and `|memo=M` if
+ * present.
+ */
 export function signingPayload(tx: UnsignedTransfer): string {
-  const extras = `${tx.fee ? `|fee=${tx.fee}` : ""}${tx.commitment ? `|commit=${tx.commitment}` : ""}`;
+  const extras = `${tx.fee ? `|fee=${tx.fee}` : ""}${tx.commitment ? `|commit=${tx.commitment}` : ""}${tx.memo ? `|memo=${tx.memo}` : ""}`;
   return `${tx.from}|${tx.to}|${tx.amount}|${tx.nonce}${extras}`;
 }

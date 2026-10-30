@@ -83,6 +83,9 @@ pub async fn sign_transaction(
     let from = Address::of(&key);
     let nonce = req.nonce.unwrap_or_else(|| state.queries.next_nonce(&from));
     let to = Destination::parse(&req.to)?;
+    if let Some(memo) = req.memo {
+        return Ok(Json(Transaction::with_memo(&key, to, req.amount, nonce, req.fee, memo)));
+    }
     if to != Destination::Stake {
         return Ok(Json(Transaction::signed(&key, to, req.amount, nonce, req.fee)));
     }
