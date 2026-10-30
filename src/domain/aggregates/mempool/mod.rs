@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use super::address::Address;
-use super::block::Transaction;
-use super::error::TransactionError;
-use super::ledger::Ledger;
-use super::values::{BlockCapacity, Coins, Signature};
+use crate::domain::address::Address;
+use crate::domain::error::TransactionError;
+use crate::domain::ledger::Ledger;
+use crate::domain::transaction::Transaction;
+use crate::domain::values::{BlockCapacity, Coins, Signature};
 
 mod selection;
 

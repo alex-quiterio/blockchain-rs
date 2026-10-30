@@ -1,27 +1,27 @@
-//! Blocks and the transactions they carry: a block itself (here), how one is made
-//! (`sealing`), its header (`header`), and a transaction (`transaction`).
+//! The chain aggregate's entity: a block itself (here), how one is made (`sealing`) and its
+//! header (`header`). The transactions it carries are shared with the mempool, so they live in
+//! `domain::transaction`; they're re-exported here, where they've always been found.
 
 mod header;
 mod sealing;
-mod transaction;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::address::Address;
-use super::merkle;
-use super::values::{BlockHash, MerkleRoot, Reveal, Signature};
+use crate::domain::address::Address;
+use crate::domain::merkle;
+use crate::domain::values::{BlockHash, MerkleRoot, Reveal, Signature};
 
+pub use crate::domain::transaction::{Transaction, TxKind};
 use header::header_hash;
 pub use header::BlockHeader;
-pub use transaction::{Transaction, TxKind};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
 
 // The names a transaction's sender and recipient take when they aren't accounts. They live with
 // `Source` and `Destination`; these keep their old paths working.
-pub use super::values::{COINBASE, STAKE, UNSTAKE};
+pub use crate::domain::values::{COINBASE, STAKE, UNSTAKE};
 
 /// A block of transactions. Only the domain changes one; everywhere else it can only be read:
 ///

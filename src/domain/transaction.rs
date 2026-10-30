@@ -1,4 +1,5 @@
-//! A signed movement of coins, and what kind it is.
+//! A signed movement of coins, and what kind it is. Shared by both aggregates: the chain's blocks
+//! carry transactions, and the mempool holds them until one does.
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -21,13 +22,13 @@ pub enum TxKind {
 /// Only the domain changes one; everywhere else it can only be read:
 ///
 /// ```
-/// # fn read(tx: &blockchain::domain::block::Transaction) -> blockchain::domain::values::Coins {
+/// # fn read(tx: &blockchain::domain::transaction::Transaction) -> blockchain::domain::values::Coins {
 /// tx.amount()
 /// # }
 /// ```
 ///
 /// ```compile_fail
-/// # fn tamper(tx: &mut blockchain::domain::block::Transaction) {
+/// # fn tamper(tx: &mut blockchain::domain::transaction::Transaction) {
 /// tx.amount = blockchain::domain::values::Coins::new(1_000);
 /// # }
 /// ```

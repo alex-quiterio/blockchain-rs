@@ -18,6 +18,7 @@ use crate::domain::validators::ValidatorState;
 use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
+pub mod block;
 mod events;
 mod reorg;
 mod tally;
