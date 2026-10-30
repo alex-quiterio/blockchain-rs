@@ -44,6 +44,9 @@ pub trait PeerClient: Send + Sync {
         tx: &'a Transaction,
         me: Option<&'a str>,
     ) -> PeerResult<'a, ()>;
+    /// The nodes `peer` is in contact with: those it has reached, and reached the last time it
+    /// tried.
+    fn peers<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<String>>;
     /// Asks `peer` to add `me` to its own peers.
     fn introduce<'a>(&'a self, peer: &'a str, me: &'a str) -> PeerResult<'a, ()>;
 }

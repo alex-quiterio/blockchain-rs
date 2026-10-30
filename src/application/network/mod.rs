@@ -1,7 +1,9 @@
 //! The other nodes this one keeps in step with: who they are (here), the port to reach them
-//! (`client`), pulling what they have (`sync`) and pushing what's new (`gossip`).
+//! (`client`), pulling what they have (`sync`), pushing what's new (`gossip`) and meeting the
+//! peers of our peers (`discovery`).
 
 mod client;
+mod discovery;
 mod gossip;
 mod sync;
 
@@ -14,6 +16,7 @@ use chrono::{DateTime, Utc};
 use super::{ChainQueries, NodeService};
 
 pub use client::{PeerClient, PeerResult, PeerTip};
+pub use discovery::{DISCOVER_EVERY, MAX_PEERS};
 pub use sync::SyncReport;
 
 /// What this node last heard from a peer.
@@ -36,6 +39,8 @@ pub struct Network {
     peers: Mutex<BTreeMap<String, PeerStatus>>,
     /// How many blocks to fetch per request when catching up.
     page: usize,
+    /// The most peers discovery adds up to.
+    max_peers: usize,
 }
 
 /// Blocks per request when catching up: small enough to arrive well within a request's timeout,
@@ -49,12 +54,25 @@ impl Network {
     pub fn new(node: Arc<NodeService>, client: Box<dyn PeerClient>, me: Option<String>) -> Self {
         let me = me.map(|url| normalize(&url));
         let queries = node.queries();
-        Self { node, queries, client, me, peers: Mutex::default(), page: SYNC_PAGE }
+        Self {
+            node,
+            queries,
+            client,
+            me,
+            peers: Mutex::default(),
+            page: SYNC_PAGE,
+            max_peers: MAX_PEERS,
+        }
     }
 
     /// Fetches `page` blocks per request when catching up, instead of `SYNC_PAGE`.
     pub fn with_sync_page(self, page: usize) -> Self {
         Self { page: page.max(1), ..self }
+    }
+
+    /// Stops discovering peers once it has `max_peers`, instead of `MAX_PEERS`.
+    pub fn with_max_peers(self, max_peers: usize) -> Self {
+        Self { max_peers, ..self }
     }
 
     pub fn node(&self) -> &Arc<NodeService> {

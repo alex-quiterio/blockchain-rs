@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use crate::application::SNAPSHOT_BLOCKS;
+use crate::application::{MAX_PEERS, SNAPSHOT_BLOCKS};
 use crate::domain::chain::ReorgLimit;
 use crate::domain::consensus::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS};
 use crate::domain::consensus::BlockCapacity;
@@ -28,6 +28,8 @@ pub struct Config {
     pub public_url: String,
     /// The peers to join on startup.
     pub peers: Vec<String>,
+    /// The most peers to seek out by discovery.
+    pub max_peers: usize,
     /// How often to pull from peers.
     pub sync_every: Duration,
 }
@@ -62,6 +64,7 @@ impl Config {
                 .filter(|url| !url.is_empty())
                 .map(str::to_string)
                 .collect(),
+            max_peers: env_or("MAX_PEERS", MAX_PEERS),
             sync_every: Duration::from_secs(env_or("SYNC_SECS", 5).max(1)),
             bind_addr,
         })

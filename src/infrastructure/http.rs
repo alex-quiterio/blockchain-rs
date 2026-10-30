@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,14 @@ struct Status {
     tip: BlockHash,
     weight: String,
     pending: usize,
+}
+
+/// The parts of each entry in a peer's `GET /peers` reply this client reads.
+#[derive(Deserialize)]
+struct Listed {
+    url: String,
+    last_seen: Option<DateTime<Utc>>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +136,14 @@ impl PeerClient for HttpPeerClient {
         me: Option<&'a str>,
     ) -> PeerResult<'a, ()> {
         Box::pin(async move { self.post(format!("{peer}/transactions"), tx, me).await.map(drop) })
+    }
+
+    fn peers<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<String>> {
+        Box::pin(async move {
+            let listed: Vec<Listed> = self.get(format!("{peer}/peers")).await?;
+            let reached = listed.into_iter().filter(|p| p.last_seen.is_some() && p.error.is_none());
+            Ok(reached.map(|p| p.url).collect())
+        })
     }
 
     fn introduce<'a>(&'a self, peer: &'a str, me: &'a str) -> PeerResult<'a, ()> {

@@ -9,7 +9,7 @@ use std::time::Duration;
 use chrono::Utc;
 use futures_util::future::join_all;
 
-use super::{Network, PeerStatus, PeerTip, HEADER_PAGE};
+use super::{Network, PeerStatus, PeerTip, DISCOVER_EVERY, HEADER_PAGE};
 use crate::application::off_runtime;
 use crate::domain::chain::block::{Block, BlockHeader};
 use crate::domain::chain::{Extension, HeaderVerdict};
@@ -24,7 +24,8 @@ pub struct SyncReport {
 
 impl Network {
     /// Joins `peers`, then pulls from every peer every `every`, for as long as the node runs.
-    /// After adopting a heavier chain from one, tells the rest about it.
+    /// After adopting a heavier chain from one, tells the rest about it. Meets the peers of its
+    /// peers after the first sync, once it has heard from them, and every `DISCOVER_EVERY` after.
     pub async fn keep_in_sync(self: Arc<Self>, peers: Vec<String>, every: Duration) {
         for url in &peers {
             match self.add_peer(url).await {
@@ -33,12 +34,15 @@ impl Network {
             }
         }
         let mut ticker = tokio::time::interval(every);
-        loop {
+        for round in 0u64.. {
             ticker.tick().await;
             let report = self.sync().await;
             if let Some(peer) = report.adopted_from {
                 tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
                 self.broadcast_tip(Some(&peer)).await;
+            }
+            if round % DISCOVER_EVERY == 0 {
+                self.discover().await;
             }
         }
     }

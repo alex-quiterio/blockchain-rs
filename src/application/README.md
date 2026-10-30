@@ -51,9 +51,10 @@ Questions only a reader asks, like an address's history, are worked out here fro
 | | |
 | --- | --- |
 | `mod.rs` | `Network` and its peers: `add_peer` introduces this node back, so links go both ways and heal after a restart. |
-| `client.rs` | `PeerClient`: the **port** to other nodes (status, headers, blocks, pending, offers, introductions). |
+| `client.rs` | `PeerClient`: the **port** to other nodes (status, headers, blocks, pending, offers, peers, introductions). |
 | `gossip.rs` | Pushing: `broadcast_tip` sends a new block to every peer at once, plus recent blocks to a peer that lacks the parent. `gossip_accepted` passes on every transaction the mempool accepts, except back to the peer it came from. |
 | `sync.rs` | Pulling: `sync` checks in with every peer at once, and `keep_in_sync` does it every few seconds. |
+| `discovery.rs` | Meeting the peers of our peers: `discover` asks every peer who it has reached and adds those, up to `MAX_PEERS`. `keep_in_sync` runs it after the first sync and every `DISCOVER_EVERY` syncs after. |
 
 **Catching up is headers first.** When a peer claims a heavier chain, the node fetches its headers (`HEADER_PAGE` at a time) and has the domain check and weigh them. It fetches blocks only if they hold up, only from where the peer's chain leaves ours. Blocks on top of our tip are offered a page at a time (`SYNC_PAGE`). A fork is fetched whole first, since one page of it can weigh less than what it replaces.
 

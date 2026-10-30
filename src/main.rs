@@ -37,7 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let client = Box::new(HttpPeerClient::new());
-    let network = Network::new(Arc::new(node), client, Some(config.public_url));
+    let network = Network::new(Arc::new(node), client, Some(config.public_url))
+        .with_max_peers(config.max_peers);
     let state = AppState::new(network);
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
     tracing::info!("Node listening on {} ({})", config.bind_addr, config.rules);

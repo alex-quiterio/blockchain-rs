@@ -133,6 +133,15 @@ impl PeerClient for Mesh {
                 .map_err(|e| e.to_string())
         })
     }
+    fn peers<'a>(&'a self, peer: &'a str) -> PeerResult<'a, Vec<String>> {
+        Box::pin(async move {
+            let network = self.reach(peer, "peers".into()).await?;
+            // As the HTTP adapter does: only peers it reached the last time it tried.
+            let reached = network.peers().into_iter();
+            let reached = reached.filter(|(_, s)| s.last_seen.is_some() && s.error.is_none());
+            Ok(reached.map(|(url, _)| url).collect())
+        })
+    }
     fn introduce<'a>(&'a self, peer: &'a str, me: &'a str) -> PeerResult<'a, ()> {
         Box::pin(async move {
             self.reach(peer, "introduced".into()).await?.add_peer(me).await?;
@@ -470,4 +479,74 @@ async fn an_unreachable_peer_is_reported_not_fatal() {
     let report = a.sync().await;
     assert_eq!(report.reached, 0);
     assert_eq!(a.peers()[0].1.error.as_deref(), Some("http://gone is down"));
+}
+
+#[tokio::test]
+async fn a_node_meets_the_peers_of_its_peers() {
+    let mesh = Mesh::default();
+    // A line: c knows b, b knows a. a and c are linked only through b.
+    let a = mesh.join("http://a");
+    let b = mesh.join("http://b");
+    let c = mesh.join("http://c");
+    b.add_peer("http://a").await.unwrap();
+    c.add_peer("http://b").await.unwrap();
+    b.sync().await;
+    mesh.sent();
+
+    assert_eq!(c.discover().await, 1);
+    // c introduces itself to a, and a, meeting c for the first time, introduces itself back.
+    assert_eq!(mesh.sent(), ["http://b peers", "http://a introduced", "http://c introduced"]);
+    let known = |n: &Network| n.peers().into_iter().map(|(url, _)| url).collect::<Vec<_>>();
+    assert_eq!(known(&c), ["http://a", "http://b"]);
+    assert_eq!(known(&a), ["http://b", "http://c"], "introduced both ways");
+
+    assert_eq!(c.discover().await, 0, "nobody new");
+}
+
+#[tokio::test]
+async fn only_peers_that_answered_are_passed_on() {
+    let mesh = Mesh::default();
+    let a = mesh.join("http://a");
+    let b = mesh.join("http://b");
+    b.add_peer("http://gone").await.unwrap();
+    b.add_peer("http://new").await.unwrap();
+    b.sync().await;
+    // b added http://new after its last sync, so it hasn't heard from it yet.
+    mesh.join("http://late");
+    b.add_peer("http://late").await.unwrap();
+    a.add_peer("http://b").await.unwrap();
+
+    assert_eq!(a.discover().await, 0);
+    assert_eq!(a.peers().len(), 1, "neither the unreachable nor the unheard-from peer");
+}
+
+#[tokio::test]
+async fn discovery_stops_at_max_peers() {
+    let mesh = Mesh::default();
+    let hub = mesh.join("http://hub");
+    for url in ["http://b", "http://c", "http://d", "http://e"] {
+        mesh.join(url);
+        hub.add_peer(url).await.unwrap();
+    }
+    hub.sync().await;
+    let a = Arc::new(
+        Network::new(
+            Arc::new(
+                NodeService::open(
+                    Box::new(ChainInMemoryRepository::default()),
+                    ChainRules::proof_of_work(2, 50),
+                    ReorgLimit::new(3),
+                )
+                .unwrap(),
+            ),
+            Box::new(mesh.clone()),
+            Some("http://a".into()),
+        )
+        .with_max_peers(3),
+    );
+    mesh.nodes.lock().unwrap().insert("http://a".into(), a.clone());
+    a.add_peer("http://hub").await.unwrap();
+
+    assert_eq!(a.discover().await, 2);
+    assert_eq!(a.peers().len(), 3);
 }

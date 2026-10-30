@@ -34,6 +34,7 @@ The adapters: what plugs the [domain](../domain/README.md) and the [application]
 | `pending` | `GET /transactions/pending` |
 | `offer_blocks` | `POST /chain` |
 | `offer_transaction` | `POST /transactions` |
+| `peers` | `GET /peers`, keeping those it reached and whose last attempt didn't fail |
 | `introduce` | `POST /peers` |
 
 - **Saying who's asking.** Status checks and offers carry this node's URL in the `x-peer` header. The peer then doesn't relay an offer straight back, and adds this node back after a status check if it had forgotten it.
@@ -46,7 +47,7 @@ The adapters: what plugs the [domain](../domain/README.md) and the [application]
 
 ## Configuration (`config.rs`)
 
-`Config::from_env` reads a node's settings from the environment: the chain rules, reorg limit, snapshot interval, address, chain file, public URL, peers and sync interval. Every setting has a default, so a node starts with none set. A value that doesn't parse falls back to its default, except `CONSENSUS`, which must be `pow` or `pos`. The [main README](../../README.md) lists them all, under Configuration.
+`Config::from_env` reads a node's settings from the environment: the chain rules, reorg limit, snapshot interval, address, chain file, public URL, peers, how many peers to discover and sync interval. Every setting has a default, so a node starts with none set. A value that doesn't parse falls back to its default, except `CONSENSUS`, which must be `pow` or `pos`. The [main README](../../README.md) lists them all, under Configuration.
 
 ## Adding an adapter
 

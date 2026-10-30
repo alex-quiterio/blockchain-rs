@@ -24,7 +24,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ⛏️ **Proof of work** | Find a hash below a target. The difficulty adjusts to keep blocks coming at a steady pace. |
 | 🪙 **Proof of stake** | Stake coins; each block's validator is drawn by stake from a randomness beacon nobody can steer. |
 | 💸 **Fees** | Blocks have a size limit, so the highest fees go in first. `GET /fees` says what fee gets in now. |
-| 🌐 **Peers** | Nodes gossip new blocks and transactions, catch up headers first, and heal links after a restart. |
+| 🌐 **Peers** | Nodes gossip new blocks and transactions, catch up headers first, meet the peers of their peers, and heal links after a restart. |
 | 🏆 **Forks** | The heaviest valid chain wins (most work or most stake), never undoing more than `MAX_REORG_DEPTH` blocks. |
 | 🌳 **Merkle proofs** | A light client can check a payment is in a block with a few hashes. |
 | 🔍 **Validation** | Every rule is replayed, and a refusal names the block and the rule it broke. |
@@ -84,6 +84,7 @@ In the Docker network, node C and node A only know node B, and gossip carries ev
 | `PEERS` | none | Comma-separated peer URLs to join on startup. |
 | `PUBLIC_URL` | `http://$BIND_ADDR` | How peers should reach this node. |
 | `SYNC_SECS` | `5` | How often to pull from peers. |
+| `MAX_PEERS` | `16` | The most peers a node seeks out by discovery. Peers it's told to join, and peers that reach out to it, are always added. |
 | `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. |
 | `SNAPSHOT_BLOCKS` | `100` | Blocks between balance snapshots, so a restart needn't replay everything. `0` takes none. |
 
@@ -179,5 +180,5 @@ Nothing here is built yet:
 
 - **Consensus:** slashing for double-signing, finality checkpoints, skipping absent validators.
 - **Wallets:** HD wallets from a seed phrase, multisig addresses.
-- **Network:** peer discovery, banning peers that keep sending invalid chains.
+- **Network:** banning peers that keep sending invalid chains, forgetting peers that stay unreachable.
 - **Load generator:** partition a node mid-run, or add miners part way, and watch forks and retargeting react.
