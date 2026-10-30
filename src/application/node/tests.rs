@@ -13,7 +13,7 @@ use crate::domain::chain::Snapshot;
 use crate::domain::crypto;
 use crate::domain::crypto::address::Address;
 use crate::domain::mempool::MempoolEvent;
-use crate::infrastructure::InMemoryRepository;
+use crate::infrastructure::ChainInMemoryRepository;
 use std::sync::atomic::AtomicBool;
 
 const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
@@ -24,7 +24,7 @@ fn new_address() -> Address {
 
 /// Shares one in-memory store between service instances, like a file surviving a restart.
 #[derive(Clone, Default)]
-struct SharedRepository(Arc<InMemoryRepository>);
+struct SharedRepository(Arc<ChainInMemoryRepository>);
 
 impl ChainRepository for SharedRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
@@ -145,11 +145,11 @@ fn a_failed_save_leaves_the_chain_unchanged() {
 fn mining_gives_up_when_a_peer_takes_the_tip() {
     let rules = ChainRules::proof_of_work(4, 50);
     let ours = Arc::new(
-        NodeService::open(Box::new(InMemoryRepository::default()), rules, ReorgLimit::DEFAULT)
+        NodeService::open(Box::new(ChainInMemoryRepository::default()), rules, ReorgLimit::DEFAULT)
             .unwrap(),
     );
     let theirs =
-        NodeService::open(Box::new(InMemoryRepository::default()), rules, ReorgLimit::DEFAULT)
+        NodeService::open(Box::new(ChainInMemoryRepository::default()), rules, ReorgLimit::DEFAULT)
             .unwrap();
     let theirs_block = theirs.mine(&new_address()).unwrap();
 
@@ -175,7 +175,7 @@ fn mining_gives_up_when_a_peer_takes_the_tip() {
 
 #[test]
 fn mining_stops_when_cancelled() {
-    let node = node(InMemoryRepository::default());
+    let node = node(ChainInMemoryRepository::default());
     let cancelled = AtomicBool::new(true);
     assert!(matches!(
         node.mine_unless(&new_address(), &cancelled),
@@ -186,7 +186,7 @@ fn mining_stops_when_cancelled() {
 
 #[test]
 fn a_confirmed_transfer_can_be_proven_from_its_header() {
-    let node = node(InMemoryRepository::default());
+    let node = node(ChainInMemoryRepository::default());
     let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
     let alice = Address::of(&key);
     node.mine(&alice).unwrap();
@@ -215,7 +215,7 @@ fn a_confirmed_transfer_can_be_proven_from_its_header() {
 
 #[test]
 fn transactions_are_found_pending_then_confirmed_and_in_histories() {
-    let node = node(InMemoryRepository::default());
+    let node = node(ChainInMemoryRepository::default());
     let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
     let (alice, bob) = (Address::of(&key), new_address());
     node.mine(&alice).unwrap();
@@ -259,9 +259,9 @@ impl ChainRepository for RecordingRepository {
 fn a_fork_gives_the_mempool_back_what_its_dropped_block_carried() {
     let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
     let alice = Address::of(&key);
-    let ours = node(InMemoryRepository::default());
+    let ours = node(ChainInMemoryRepository::default());
     ours.mine(&alice).unwrap();
-    let theirs = node(InMemoryRepository::default());
+    let theirs = node(ChainInMemoryRepository::default());
     theirs.extend(ours.queries().blocks()[1..].to_vec()).unwrap();
 
     // Our next block confirms Alice's payment; their heavier fork never saw it.
@@ -286,7 +286,7 @@ fn what_happened_is_saved_and_then_told_to_listeners() {
     ours.subscribe(move |event| log.lock().unwrap().push(event.clone()));
     ours.mine(&new_address()).unwrap();
     ours.mine(&new_address()).unwrap();
-    let theirs = node(InMemoryRepository::default());
+    let theirs = node(ChainInMemoryRepository::default());
     theirs.extend(ours.queries().blocks()[1..2].to_vec()).unwrap();
     theirs.mine(&new_address()).unwrap();
     theirs.mine(&new_address()).unwrap();
@@ -344,7 +344,7 @@ fn a_listener_given_before_opening_hears_a_new_chain_start() {
 fn adopting_a_heavier_chain_saves_it() {
     let repo = SharedRepository::default();
     let ours = node(repo.clone());
-    let theirs = node(InMemoryRepository::default());
+    let theirs = node(ChainInMemoryRepository::default());
     theirs.mine(&new_address()).unwrap();
 
     assert_eq!(ours.adopt_if_heavier(theirs.queries().blocks()).unwrap(), (true, 2));

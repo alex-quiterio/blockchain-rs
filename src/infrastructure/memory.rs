@@ -6,12 +6,12 @@ use crate::domain::chain::{ChainEvent, Snapshot};
 
 /// Keeps the chain in memory only, for tests and throwaway nodes.
 #[derive(Default)]
-pub struct InMemoryRepository {
+pub struct ChainInMemoryRepository {
     blocks: Mutex<Option<Vec<Block>>>,
     snapshot: Mutex<Option<Snapshot>>,
 }
 
-impl ChainRepository for InMemoryRepository {
+impl ChainRepository for ChainInMemoryRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         Ok(self.blocks.lock().unwrap().clone())
     }

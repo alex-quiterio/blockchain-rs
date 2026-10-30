@@ -11,4 +11,4 @@ pub use config::Config;
 pub use event_log::log_event;
 pub use http_peer::HttpPeerClient;
 pub use json_file::ChainJsonFileRepository;
-pub use memory::InMemoryRepository;
+pub use memory::ChainInMemoryRepository;

@@ -18,7 +18,7 @@ use blockchain::domain::chain::block::BlockHeader;
 use blockchain::domain::chain::ReorgLimit;
 use blockchain::domain::consensus::rules::ChainRules;
 use blockchain::domain::consensus::BlockCapacity;
-use blockchain::infrastructure::{HttpPeerClient, InMemoryRepository};
+use blockchain::infrastructure::{ChainInMemoryRepository, HttpPeerClient};
 
 fn app() -> Router {
     app_with(ChainRules::proof_of_work(2, 50))
@@ -29,7 +29,8 @@ fn app_with(rules: ChainRules) -> Router {
 }
 
 fn app_limited(rules: ChainRules, limit: ReorgLimit) -> Router {
-    let node = NodeService::open(Box::new(InMemoryRepository::default()), rules, limit).unwrap();
+    let node =
+        NodeService::open(Box::new(ChainInMemoryRepository::default()), rules, limit).unwrap();
     router(AppState::new(Network::new(Arc::new(node), Box::new(HttpPeerClient::new()), None)))
 }
 

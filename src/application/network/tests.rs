@@ -12,7 +12,7 @@ use crate::domain::chain::ReorgLimit;
 use crate::domain::consensus::rules::ChainRules;
 use crate::domain::crypto;
 use crate::domain::crypto::address::Address;
-use crate::infrastructure::InMemoryRepository;
+use crate::infrastructure::ChainInMemoryRepository;
 
 /// A whole network in one process: peer URLs map straight to other nodes' networks. Every
 /// message is logged as `peer what`, so tests can see what went over the wire.
@@ -35,7 +35,7 @@ impl Mesh {
 
     fn join(&self, url: &str) -> Arc<Network> {
         let node = NodeService::open(
-            Box::new(InMemoryRepository::default()),
+            Box::new(ChainInMemoryRepository::default()),
             ChainRules::proof_of_work(2, 50),
             ReorgLimit::new(3),
         )
@@ -273,7 +273,7 @@ async fn a_node_far_behind_catches_up_a_page_at_a_time() {
         Network::new(
             Arc::new(
                 NodeService::open(
-                    Box::new(InMemoryRepository::default()),
+                    Box::new(ChainInMemoryRepository::default()),
                     ChainRules::proof_of_work(2, 50),
                     ReorgLimit::new(3),
                 )
