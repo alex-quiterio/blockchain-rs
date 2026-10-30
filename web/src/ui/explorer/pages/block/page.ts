@@ -1,13 +1,7 @@
 // A block's page: why it's valid, each of the node's checks redone here, and what it holds.
 
-import { block as lookUpBlock, context, rules } from "@application/lookup";
-import { feesOf } from "@domain/transfers";
-import { headerHash, meetsWork } from "@domain/verification/blocks";
-import { root } from "@domain/verification/merkle";
-import {
-  blockIsSigned,
-  transferIsSigned,
-} from "@domain/verification/signatures";
+import { auditBlock } from "@application/audit";
+import { context } from "@application/lookup";
 import { ago, el, fmt, short } from "@ui/dom";
 import {
   checkRow,
@@ -23,8 +17,8 @@ import {
 } from "@ui/explorer/components";
 
 export async function blockPage(id: string): Promise<HTMLElement[]> {
-  const { block, prev, work } = await lookUpBlock(id);
-  const [payout, ...transfers] = block.transactions;
+  const audit = await auditBlock(id);
+  const { block } = audit;
   const isTip = block.hash === context.tip;
 
   const facts = el("dl", { className: "facts" });
@@ -42,22 +36,20 @@ export async function blockPage(id: string): Promise<HTMLElement[]> {
   checkRow(
     facts,
     "Header hash",
-    headerHash(block).then((h): Verdict => [
-      h === block.hash,
-      "recomputed here and matches",
-    ]),
+    audit.header.then((ok): Verdict => [ok, "recomputed here and matches"]),
     formula(
       "sha256(index | timestamp | prev_hash | merkle_root | nonce" +
         (block.validator ? " | validator | reveal" : "") +
         ")",
     ),
   );
-  if (prev) {
+  if (audit.link) {
+    const { prev } = audit.link;
     checkRow(
       facts,
       "Link",
       Promise.resolve<Verdict>([
-        prev.hash === block.prev_hash,
+        audit.link.passed,
         `prev_hash is block #${prev.index}'s hash`,
       ]),
       link(href.block(prev.index), short(block.prev_hash)),
@@ -69,24 +61,25 @@ export async function blockPage(id: string): Promise<HTMLElement[]> {
       "Genesis: the fixed first block every node builds the same way.",
     );
   }
-  if (block.validator) {
+  const { seal } = audit;
+  if (seal.by === "signature") {
     checkRow(
       facts,
       "Proof",
-      blockIsSigned(block).then((v): Verdict => [
-        v,
+      seal.passed.then((ok): Verdict => [
+        ok,
         "the validator's signature over the hash",
       ]),
       "by ",
-      who(block.validator),
+      who(seal.validator),
     );
   } else {
     checkRow(
       facts,
       "Proof of work",
       Promise.resolve<Verdict>([
-        work != null && meetsWork(block.hash, work),
-        `hash is below the target for ${fmt(work ?? 0)} hashes`,
+        seal.passed,
+        `hash is below the target for ${fmt(seal.work ?? 0)} hashes`,
       ]),
       `nonce ${fmt(block.nonce)}`,
     );
@@ -94,34 +87,33 @@ export async function blockPage(id: string): Promise<HTMLElement[]> {
   checkRow(
     facts,
     "Merkle root",
-    root(block.transactions).then((r): Verdict => [
-      r === block.merkle_root,
+    audit.contents.then((ok): Verdict => [
+      ok,
       `recomputed from the ${block.transactions.length} transactions`,
     ]),
     el("span", { className: "mono", textContent: short(block.merkle_root) }),
   );
-  if (transfers.length) {
+  if (audit.signatures) {
     checkRow(
       facts,
       "Signatures",
-      Promise.all(transfers.map(transferIsSigned)).then((results): Verdict => [
-        results.every(Boolean),
-        `${results.filter(Boolean).length} of ${results.length} verified here`,
+      audit.signatures.then(({ verified, of }): Verdict => [
+        verified === of,
+        `${verified} of ${of} verified here`,
       ]),
     );
   }
-  if (payout) {
-    const fees = feesOf(transfers);
-    const reward = rules().reward;
+  if (audit.payout) {
+    const { passed, reward, fees, amount, to } = audit.payout;
     checkRow(
       facts,
       "Payout",
       Promise.resolve<Verdict>([
-        payout.amount === reward + fees,
-        `${fmt(reward)} reward + ${fmt(fees)} in fees = ${fmt(payout.amount)}`,
+        passed,
+        `${fmt(reward)} reward + ${fmt(fees)} in fees = ${fmt(amount)}`,
       ]),
       "to ",
-      who(payout.to),
+      who(to),
     );
   }
   factRow(

@@ -1,12 +1,8 @@
 // A transaction's page: what it is, who signed it, what it changes, and, once confirmed, the
 // Merkle proof that it's in its block, each hash redone here.
 
-import { transaction as lookUpTransaction } from "@application/lookup";
-import type { Placement, Proof } from "@application/ports";
-import { kindOf, signingPayload, type Transfer } from "@domain/transfers";
-import { headerHash } from "@domain/verification/blocks";
-import { climb, leaf } from "@domain/verification/merkle";
-import { transferIsSigned } from "@domain/verification/signatures";
+import { auditTransaction, type InclusionAudit } from "@application/audit";
+import { kindOf, signingPayload } from "@domain/transfers";
 import { ago, el, fmt, short } from "@ui/dom";
 import {
   checkRow,
@@ -20,12 +16,8 @@ import {
 } from "@ui/explorer/components";
 
 export async function txPage(signature: string): Promise<HTMLElement[]> {
-  const {
-    transaction: tx,
-    placed,
-    block,
-    proof,
-  } = await lookUpTransaction(signature);
+  const audit = await auditTransaction(signature);
+  const { transaction: tx, placed, block } = audit;
   const kind = kindOf(tx);
 
   const summary = el("dl", { className: "facts" });
@@ -91,8 +83,8 @@ export async function txPage(signature: string): Promise<HTMLElement[]> {
   checkRow(
     signed,
     "Verified",
-    transferIsSigned(tx).then((v): Verdict => [
-      v,
+    audit.signature.then((ok): Verdict => [
+      ok,
       "ed25519, against the sender's address as public key",
     ]),
     "Change any field and this fails, which is why nobody can alter a transfer on its way.",
@@ -141,34 +133,28 @@ export async function txPage(signature: string): Promise<HTMLElement[]> {
     panel("Who signed it", signed),
     panel("What it changes", effects),
   ];
-  if (placed && proof)
+  if (audit.inclusion) {
     views.push(
-      panel("Proof it's in the block", ...(await proofView(tx, placed, proof))),
+      panel("Proof it's in the block", ...proofView(await audit.inclusion)),
     );
+  }
   return views;
 }
 
 /** The Merkle path from this transaction up to its block's root, each hash redone here. */
-async function proofView(
-  tx: Transfer,
-  placed: Placement,
-  proof: Proof,
-): Promise<HTMLElement[]> {
-  const ownLeaf = await leaf(tx);
-  const path = await climb(ownLeaf, proof.proof);
-  const header = proof.header;
-
+function proofView(inclusion: InclusionAudit): HTMLElement[] {
+  const { path, steps: proofSteps, height } = inclusion;
   const steps = el(
     "ol",
     { className: "path" },
     el(
       "li",
       {},
-      el("span", { className: "mono", textContent: short(ownLeaf) }),
+      el("span", { className: "mono", textContent: short(path[0] ?? "") }),
       " leaf: ",
       formula("sha256(leaf | the transaction's JSON)"),
     ),
-    proof.proof.map((step, i) =>
+    proofSteps.map((step, i) =>
       el(
         "li",
         {},
@@ -195,7 +181,7 @@ async function proofView(
     facts,
     "Leaf",
     Promise.resolve<Verdict>([
-      ownLeaf === proof.leaf,
+      inclusion.leafMatches,
       "hashed here and matches the node's",
     ]),
   );
@@ -203,23 +189,23 @@ async function proofView(
     facts,
     "Root",
     Promise.resolve<Verdict>([
-      path.at(-1) === header.merkle_root,
-      `${proof.proof.length} hashes lead to the block's Merkle root`,
+      inclusion.reachesRoot,
+      `${proofSteps.length} hashes lead to the block's Merkle root`,
     ]),
-    el("span", { className: "mono", textContent: short(header.merkle_root) }),
+    el("span", { className: "mono", textContent: short(inclusion.root) }),
   );
   checkRow(
     facts,
     "Header",
-    headerHash(header).then((h): Verdict => [
-      h === header.hash && h === placed.hash,
-      `its hash covers that root and is block #${header.index}'s`,
+    inclusion.header.then((ok): Verdict => [
+      ok,
+      `its hash covers that root and is block #${height}'s`,
     ]),
   );
   factRow(
     facts,
     "Why it matters",
-    `A light client keeps only headers (${fmt(header.index + 1)} so far) and checks this proof instead of downloading every transaction in the block.`,
+    `A light client keeps only headers (${fmt(height + 1)} so far) and checks this proof instead of downloading every transaction in the block.`,
   );
   return [facts, steps];
 }

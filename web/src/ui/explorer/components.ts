@@ -1,6 +1,7 @@
 // Small views the explorer's pages share: links, verdicts that arrive once a check finishes, fact
 // lists, panels and tables of transactions.
 
+import { signatureOf } from "@application/audit";
 import type { Located } from "@application/ports";
 import {
   COINBASE,
@@ -9,7 +10,6 @@ import {
   kindOf,
   type Transfer,
 } from "@domain/transfers";
-import { transferIsSigned } from "@domain/verification/signatures";
 import { el, fmt, short, type Child } from "@ui/dom";
 
 export const href = {
@@ -118,15 +118,14 @@ export function txTable(
     const kind = kindOf(tx);
     const sign = perspective ? (tx.from === perspective ? "−" : "+") : "";
     const verdict = el("span", { className: "muted", textContent: "…" });
-    (kind === "coinbase" ? Promise.resolve(null) : transferIsSigned(tx)).then(
-      (v) =>
-        verdict.replaceWith(
-          v === null
-            ? el("span", { className: "muted", textContent: "–" })
-            : v
-              ? ok("")
-              : bad(""),
-        ),
+    signatureOf(tx).then((v) =>
+      verdict.replaceWith(
+        v === null
+          ? el("span", { className: "muted", textContent: "–" })
+          : v
+            ? ok("")
+            : bad(""),
+      ),
     );
     return el(
       "tr",

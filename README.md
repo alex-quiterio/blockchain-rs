@@ -300,7 +300,7 @@ flowchart TB
     - `wallets/`: the `Wallets` **aggregate**, whose invariant is that nothing signs while it's locked, kept through `WalletsRepository`, a port it declares; and the **domain services** it uses: `keys.ts` (making keys and signing), `vault.ts` (encrypting keys with the passphrase) and `reveals.ts` (a wallet's reveal chain, for staking and forging)
     - `verification/` (**domain service**): re-checking what the node sends, so the page needn't trust it: Merkle roots and proofs, header hashes, work, signatures
     - `transfers.ts` and `blocks.ts`: what a transfer and a block are to the page (**value objects**). `encoding.ts`: hex and SHA-256
-  - `src/application/`: the use cases: the node as the page last saw it (`node_view.ts`), sending, producing a block, the wallets, peers, and the explorer's lookups. They talk through `ports.ts`, which declares `NodePort` and what each of its answers holds; each page's `main.ts` wires the adapters, so no use case names one
+  - `src/application/`: the use cases: the node as the page last saw it (`node_view.ts`), sending, producing a block, the wallets, peers, the explorer's lookups, and `audit.ts`, which runs every check the pages show and returns the verdicts, so the pages only say what each means. They talk through `ports.ts`, which declares `NodePort` and what each of its answers holds; each page's `main.ts` wires the adapters, so no use case names one
   - `src/infrastructure/`: the **adapters**: `node_client.ts`, the node's HTTP API, implementing `NodePort`, and `repository/local_storage.ts`, implementing `WalletsRepository`
   - `src/ui/`: `dom.ts` and `base.css`, which both pages share, and the two pages, `node/` and `explorer/`. Each page's folder has its `index.html` and `main.ts` at the root, which wires the adapters, with its layout in `main.css` and what several of its parts draw in `components.ts` and `components.css`. Beneath it, each part is a folder holding its own script and styles:
     - `node/panels/`: `chain/`, `wallets/`, `sending/`, `producing/` and `network/`, each a `panel.ts` and `panel.css`
@@ -351,7 +351,7 @@ flowchart TB
 
 ```sh
 cargo test        # 158 tests: unit, HTTP, property-based and doctests
-npm test          # 40 tests of the web UI's domain and use cases
+npm test          # 47 tests of the web UI's domain and use cases
 npm run check     # TypeScript, sources and tests
 npm run e2e       # both pages in headless Chrome; needs Chrome, a release build and npm run build
 npm run format    # Prettier, for everything in web/

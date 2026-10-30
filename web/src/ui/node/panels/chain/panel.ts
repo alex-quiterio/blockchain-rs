@@ -1,6 +1,7 @@
 // The chain panel: the stats along the top, and the latest blocks, each with the story of why
 // it's valid, its Merkle root re-checked here.
 
+import { contentsMatch } from "@application/audit";
 import {
   SHOWN_BLOCKS,
   blockAt,
@@ -12,7 +13,6 @@ import {
 } from "@application/node_view";
 import type { Block } from "@domain/blocks";
 import { feesOf, type Transfer } from "@domain/transfers";
-import { root } from "@domain/verification/merkle";
 import { $, ago, el, fmt, short, type Child } from "@ui/dom";
 import { fmtWork, hashView, party, txView } from "@ui/node/components";
 
@@ -239,9 +239,9 @@ function breakdown(
     );
   }
   const check = el("span", { textContent: "checking…" });
-  root(block.transactions).then((r) =>
+  contentsMatch(block).then((matches) =>
     check.replaceWith(
-      r === block.merkle_root
+      matches
         ? yes("match the Merkle root")
         : el("span", { textContent: "✗ don't match the Merkle root" }),
     ),
