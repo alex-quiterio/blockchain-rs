@@ -4,5 +4,5 @@
 mod json;
 mod memory;
 
-pub use json::ChainJsonFileRepository;
+pub use json::ChainJsonRepository;
 pub use memory::ChainInMemoryRepository;

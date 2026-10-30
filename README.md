@@ -285,7 +285,7 @@ flowchart TB
     - `sync.rs`: pulling, checking in with every peer and catching up with any whose chain could beat ours, and `keep_in_sync`, which joins the configured peers and does that every few seconds for as long as the node runs
     - `gossip.rs`: pushing a new block or an accepted transaction as soon as there is one
     - `tests.rs`: a whole network in one process, and what goes over the wire
-- **`infrastructure/`** has the adapters: `ChainJsonFileRepository`, `ChainInMemoryRepository` and `HttpPeerClient` for the domain's ports, `log_event`, which listens to the node and logs what happened, and `Config`, a node's settings read from the environment. `main.rs` only wires them together.
+- **`infrastructure/`** has the adapters: `ChainJsonRepository`, `ChainInMemoryRepository` and `HttpPeerClient` for the domain's ports, `log_event`, which listens to the node and logs what happened, and `Config`, a node's settings read from the environment. `main.rs` only wires them together.
 - **`api/`** is the HTTP interface: `router.rs` has the routes, grouped as the handlers are, with the web UI for every other path; `mod.rs` the `AppState` every handler shares; and `handlers/` and `dto/` one file each per part of the API, the handlers and their request and response bodies, under the same names.
   - `chain.rs`: reading the chain and offering this node another's: blocks, headers, the tip, the work each block needed and a full replay
   - `transactions.rs`: signing, submitting, finding and proving transfers, what's waiting, and what fee gets one in

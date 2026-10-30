@@ -11,13 +11,13 @@ use crate::domain::chain::{ChainEvent, Snapshot};
 /// costs the same however long the chain gets; the file is only rewritten after a fork, or when
 /// what's on disk isn't known. Files from older versions, one JSON array, still load, and are
 /// rewritten line by line on the next save. Snapshots go in a file beside it, `<path>.snapshot`.
-pub struct ChainJsonFileRepository {
+pub struct ChainJsonRepository {
     path: PathBuf,
     /// How many blocks the file holds, one per line, when that's known for sure.
     lines: Mutex<Option<usize>>,
 }
 
-impl ChainJsonFileRepository {
+impl ChainJsonRepository {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into(), lines: Mutex::new(None) }
     }
@@ -35,7 +35,7 @@ impl ChainJsonFileRepository {
     }
 }
 
-impl ChainRepository for ChainJsonFileRepository {
+impl ChainRepository for ChainJsonRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
@@ -143,13 +143,13 @@ mod tests {
     #[test]
     fn load_is_none_before_anything_is_saved() {
         let path = TempPath::new("missing");
-        assert!(ChainJsonFileRepository::new(&path.0).load().unwrap().is_none());
+        assert!(ChainJsonRepository::new(&path.0).load().unwrap().is_none());
     }
 
     #[test]
     fn saved_blocks_load_back_identically() {
         let path = TempPath::new("round-trip");
-        let repo = ChainJsonFileRepository::new(&path.0);
+        let repo = ChainJsonRepository::new(&path.0);
         let rules = ChainRules::proof_of_work(2, 50);
         let mut chain = Blockchain::new(rules);
         chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap(), &[]).unwrap();
@@ -165,7 +165,7 @@ mod tests {
     fn garbage_file_is_an_error() {
         let path = TempPath::new("garbage");
         fs::write(&path.0, b"not json").unwrap();
-        assert!(ChainJsonFileRepository::new(&path.0).load().is_err());
+        assert!(ChainJsonRepository::new(&path.0).load().is_err());
     }
 
     fn chain_of(length: usize) -> Vec<Block> {
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn new_blocks_are_appended_and_a_fork_rewrites() {
         let path = TempPath::new("append");
-        let repo = ChainJsonFileRepository::new(&path.0);
+        let repo = ChainJsonRepository::new(&path.0);
         let blocks = chain_of(4);
         repo.save(&blocks[..2], &[ChainEvent::Started]).unwrap();
         repo.save(&blocks[..3], &[ChainEvent::Extended { from: 2, to: 2 }]).unwrap();
@@ -196,13 +196,13 @@ mod tests {
             &[ChainEvent::Reorganized { from: 2, dropped: 2, added: 2, returned: vec![] }],
         )
         .unwrap();
-        assert_eq!(ChainJsonFileRepository::new(&path.0).load().unwrap().unwrap(), forked);
+        assert_eq!(ChainJsonRepository::new(&path.0).load().unwrap().unwrap(), forked);
     }
 
     #[test]
     fn a_torn_last_line_is_dropped_and_the_next_save_repairs_it() {
         let path = TempPath::new("torn");
-        let repo = ChainJsonFileRepository::new(&path.0);
+        let repo = ChainJsonRepository::new(&path.0);
         let blocks = chain_of(3);
         repo.save(&blocks[..2], &[ChainEvent::Started]).unwrap();
         let line = serde_json::to_string(&blocks[2]).unwrap();
@@ -213,17 +213,17 @@ mod tests {
             .write_all(&line.as_bytes()[..40])
             .unwrap();
 
-        let repo = ChainJsonFileRepository::new(&path.0);
+        let repo = ChainJsonRepository::new(&path.0);
         assert_eq!(repo.load().unwrap().unwrap(), blocks[..2]);
         repo.save(&blocks, &[ChainEvent::Extended { from: 2, to: 2 }]).unwrap();
-        assert_eq!(ChainJsonFileRepository::new(&path.0).load().unwrap().unwrap(), blocks);
+        assert_eq!(ChainJsonRepository::new(&path.0).load().unwrap().unwrap(), blocks);
     }
 
     #[test]
     fn snapshots_are_kept_beside_the_chain() {
         let path = TempPath::new("snapshot");
         let snapshot_path = TempPath(PathBuf::from(format!("{}.snapshot", path.0.display())));
-        let repo = ChainJsonFileRepository::new(&path.0);
+        let repo = ChainJsonRepository::new(&path.0);
         assert!(repo.load_snapshot().unwrap().is_none());
 
         let (rules, limit) = (ChainRules::proof_of_work(2, 50), ReorgLimit::new(1));
@@ -234,7 +234,7 @@ mod tests {
         let snapshot = chain.snapshot().unwrap();
         repo.save_snapshot(&snapshot).unwrap();
         assert!(snapshot_path.0.exists());
-        let loaded = ChainJsonFileRepository::new(&path.0).load_snapshot().unwrap().unwrap();
+        let loaded = ChainJsonRepository::new(&path.0).load_snapshot().unwrap().unwrap();
         let (restored, from) =
             Blockchain::restore_from(chain.blocks().to_vec(), rules, limit, Some(loaded)).unwrap();
         assert_eq!((from, restored.weight()), (Some(snapshot.height), chain.weight()));
@@ -245,7 +245,7 @@ mod tests {
         let path = TempPath::new("legacy");
         let blocks = chain_of(4);
         fs::write(&path.0, serde_json::to_vec_pretty(&blocks[..3]).unwrap()).unwrap();
-        let repo = ChainJsonFileRepository::new(&path.0);
+        let repo = ChainJsonRepository::new(&path.0);
         assert_eq!(repo.load().unwrap().unwrap(), blocks[..3]);
 
         // What's on disk isn't in lines yet, so the next save rewrites it whole.

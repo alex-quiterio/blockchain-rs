@@ -9,4 +9,4 @@ mod repository;
 pub use config::Config;
 pub use event::log_event;
 pub use http::HttpPeerClient;
-pub use repository::{ChainInMemoryRepository, ChainJsonFileRepository};
+pub use repository::{ChainInMemoryRepository, ChainJsonRepository};
