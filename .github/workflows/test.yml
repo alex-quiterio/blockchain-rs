@@ -17,32 +17,25 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      # The tests write the API's bodies out as TypeScript for the web UI, whose types are checked
-      # against them. A change to a body has to come with the regenerated file, so the UI can't
-      # drift from the node unnoticed.
-      - name: The web UI's copy of the API types is up to date
-        run: |
-          wire=web/src/infrastructure/node_wire.ts
-          if [ -n "$(git status --porcelain -- "$wire")" ]; then
-            echo "$wire is out of date. Run cargo test and commit it:"
-            git diff -- "$wire"
-            exit 1
-          fi
 
-  # The web UI: TypeScript in web/, built into public/, which is build output only.
+  # The web UI: TypeScript in web/, built into public/, which is build output only. Its check
+  # generates the node's bodies from the Rust code first, so it needs Rust too.
   web:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
-      - name: public/ is build output, never committed
+      - name: public/ and the generated API types are never committed
         run: |
-          if [ -n "$(git ls-files public)" ]; then
-            echo "These are tracked under public/, which npm run build writes:"
-            git ls-files public
+          tracked=$(git ls-files public web/src/infrastructure/node_wire.ts)
+          if [ -n "$tracked" ]; then
+            echo "These are tracked, but npm run build or cargo test writes them:"
+            echo "$tracked"
             exit 1
           fi
       - run: npm ci

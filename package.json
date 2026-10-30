@@ -8,7 +8,8 @@
   },
   "scripts": {
     "build": "tsc -p web && node web/scripts/finish_build.ts",
-    "check": "tsc -p web --noEmit && tsc -p web/tsconfig.check.json",
+    "wire": "cargo test --quiet --lib api::dto::typescript",
+    "check": "npm run wire && tsc -p web --noEmit && tsc -p web/tsconfig.check.json",
     "test": "node --import ./web/scripts/aliases.ts --test \"web/test/**/*.test.ts\"",
     "e2e": "node --import ./web/scripts/aliases.ts web/e2e/run.ts",
     "format": "prettier --write \"web/**/*.{ts,css,json}\"",

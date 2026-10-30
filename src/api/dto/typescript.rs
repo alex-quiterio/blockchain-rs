@@ -1,7 +1,7 @@
 //! The bodies above, and the domain types the API sends as they are, written out as TypeScript
-//! for the web UI, which checks its own types against them. Running the tests rewrites
-//! `web/src/infrastructure/node_wire.ts`; CI fails if that leaves it different from what's
-//! committed, so a change to a body can't be merged without the UI seeing it.
+//! for the web UI, which checks its own types against them. Running the tests writes
+//! `web/src/infrastructure/node_wire.ts`, which is never committed: `npm run check` writes it
+//! afresh before type-checking, so a change to a body fails it until the UI follows.
 //!
 //! The types derive `TS` only under test, so `ts-rs` is a dev-dependency and never in the node.
 //! Nothing here touches serde: the JSON stays exactly as it was.

@@ -4,3 +4,5 @@
 /node_modules/
 # Built from web/src by `npm run build`: the pages, their scripts and their styles.
 /public/
+# Written by `cargo test` from the Rust bodies, and checked against by `npm run check`.
+/web/src/infrastructure/node_wire.ts
