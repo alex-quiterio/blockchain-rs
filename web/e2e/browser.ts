@@ -103,24 +103,34 @@ export async function drive(
   }
 
   try {
-    for (let i = 0; i < 50 && !ws; i++) {
+    // A cold Chrome on a CI runner can take well over ten seconds to open its DevTools port, so
+    // this waits on a deadline, and says what it last saw if Chrome never answers or exits.
+    let exited: string | null = null;
+    browser.once("exit", (code, signal) => {
+      exited = `Chrome exited (${signal ?? `code ${code}`})`;
+    });
+    let last = "no answer yet";
+    const deadline = Date.now() + 45_000;
+    while (!ws && !exited && Date.now() < deadline) {
       try {
         const targets = (await (
           await fetch(`http://127.0.0.1:${port}/json/list`)
         ).json()) as { type: string; webSocketDebuggerUrl: string }[];
-        const tab = targets.find((t) => t.type === "page")!;
+        const tab = targets.find((t) => t.type === "page");
+        if (!tab) throw new Error("no page open yet");
         const socket = new WebSocket(tab.webSocketDebuggerUrl);
         await new Promise((resolve, reject) => {
           socket.onopen = resolve;
-          socket.onerror = reject;
+          socket.onerror = () => reject(new Error("its socket refused"));
         });
         ws = socket;
-      } catch {
-        ws = null;
-        await sleep(200);
+      } catch (err) {
+        last = err instanceof Error ? err.message : String(err);
+        await sleep(250);
       }
     }
-    if (!ws) throw new Error("Chrome's DevTools never answered");
+    if (!ws)
+      throw new Error(`Chrome's DevTools never answered: ${exited ?? last}`);
     ws.onmessage = ({ data }) => {
       const msg = JSON.parse(String(data));
       if (msg.id && pending.has(msg.id)) {
