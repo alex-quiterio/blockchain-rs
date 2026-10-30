@@ -1,5 +1,5 @@
 //! The rules every block must follow, and replaying a chain by them: links, hashes, Merkle roots,
-//! the proof of work or the validator's signature, rewards, fees, nonces, balances and stakes.
+//! the proof of work or the validator's signature, size, rewards, fees, nonces, balances and stakes.
 
 use std::collections::VecDeque;
 
@@ -119,6 +119,7 @@ pub(super) fn apply_block(
         return false;
     };
     if !coinbase.is_coinbase()
+        || !rules.fits_in_block(transfers.len())
         || Some(coinbase.amount) != payout(rules.reward, transfers)
         || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index

@@ -19,6 +19,7 @@ use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 mod events;
+mod selection;
 mod tally;
 mod validation;
 
@@ -354,7 +355,8 @@ impl Blockchain {
 
     /// The next block's index and transactions: a payout of the reward plus fees to `producer`,
     /// then those of `pending` that apply on top of this chain, in order. A mempool may lag the
-    /// chain for a moment, so its candidates are checked here rather than trusted.
+    /// chain for a moment, so its candidates are checked here rather than trusted. When more
+    /// apply than a block may hold, the highest fees go in.
     fn next_contents(
         &self,
         producer: &Address,
@@ -362,11 +364,14 @@ impl Blockchain {
     ) -> (u64, Vec<Transaction>) {
         let index = self.blocks.len() as u64;
         let fitting = Mempool::rebuilt(pending.iter().cloned(), self.ledger());
-        let fitting = fitting.transactions();
+        let fitting = match self.rules.max_block_transfers {
+            Some(max) => selection::by_fee(fitting.transactions(), self.ledger(), max as usize),
+            None => fitting.transactions().to_vec(),
+        };
         // Only fees their senders can afford get this far, so they always add up.
-        let payout = payout(self.rules.reward, fitting).expect("affordable fees add up");
+        let payout = payout(self.rules.reward, &fitting).expect("affordable fees add up");
         let mut transactions = vec![Transaction::coinbase(producer, payout, index)];
-        transactions.extend(fitting.iter().cloned());
+        transactions.extend(fitting);
         (index, transactions)
     }
 
@@ -723,6 +728,52 @@ mod tests {
         assert_eq!(chain.balance(&bob), Coins::new(70));
         assert!(chain.pending().is_empty());
         assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn a_full_block_takes_the_highest_fees_and_leaves_the_rest_waiting() {
+        let mut chain = Pooled::new(RULES.with_max_block_transfers(Some(2)));
+        let (dave, _) = wallet();
+        let senders: Vec<_> = (0..3).map(|_| wallet()).collect();
+        for (address, _) in &senders {
+            chain.mine(address).unwrap();
+        }
+        for ((_, key), fee) in senders.iter().zip([1, 5, 3]) {
+            chain
+                .submit(Transaction::signed(key, &dave, Coins::new(10), 0, Coins::new(fee)))
+                .unwrap();
+        }
+
+        let block = chain.mine(&dave).unwrap();
+        let fees: Vec<_> = block.transactions[1..].iter().map(|tx| tx.fee().value()).collect();
+        assert_eq!(fees, [5, 3]);
+        assert_eq!(block.transactions[0].amount(), Coins::new(58), "the reward and both fees");
+        assert_eq!(chain.pending().len(), 1, "the lowest fee waits for the next block");
+
+        chain.mine(&dave).unwrap();
+        assert!(chain.pending().is_empty());
+        assert_eq!(chain.balance(&dave), Coins::new(30 + 58 + 51));
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn a_block_over_the_limit_is_refused() {
+        let mut chain = chain();
+        let (alice, key) = wallet();
+        chain.mine(&alice).unwrap();
+        for nonce in 0..3 {
+            chain.submit(transfer(&key, &alice, 1, nonce)).unwrap();
+        }
+        chain.mine(&alice).unwrap();
+
+        let limited = RULES.with_max_block_transfers(Some(2));
+        assert!(Blockchain::restore(chain.blocks().to_vec(), RULES).is_ok());
+        assert_eq!(
+            Blockchain::restore(chain.blocks().to_vec(), limited).err(),
+            Some(ChainError::InvalidChain)
+        );
+        let mut peer = Blockchain::restore(chain.blocks()[..2].to_vec(), limited).unwrap();
+        assert_eq!(peer.extend(chain.blocks()[2..].to_vec()), Err(ChainError::InvalidChain));
     }
 
     #[test]

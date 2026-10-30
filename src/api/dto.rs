@@ -56,6 +56,8 @@ pub struct ConsensusResponse {
     /// Proof of work only.
     pub difficulty: Option<usize>,
     pub reward: Coins,
+    /// The most transfers a block may hold. `null` means no limit.
+    pub max_block_transfers: Option<u64>,
     /// Proof of stake only: who must forge the next block. `null` means anyone may.
     pub next_validator: Option<String>,
     pub stakes: Vec<StakeEntry>,

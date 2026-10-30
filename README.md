@@ -24,7 +24,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ✍️ **Transactions** | Signed over `from \| to \| amount \| nonce` (plus the fee, when there is one). The nonce stops replays. |
 | ⛏️ **Proof of work** | Mine a block by finding a hash below a target. The difficulty adjusts every few blocks to keep them coming at a steady pace as miners join or leave. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
-| 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. |
+| 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. A block holds at most `MAX_BLOCK_TRANSFERS` transfers, so when more are waiting the highest fees go in first and the rest wait for the next block. |
 | 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own to every peer at once, sending the last few blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing, 500 blocks at a time, which is how a node far behind catches up. A node that hears from a peer it doesn't know adds it back, so links heal after a restart. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
 | 💾 **Storage** | The chain is saved as JSON, one block per line. A new block is appended, so saving costs the same however long the chain gets; only a fork rewrites the file, atomically. Every `SNAPSHOT_BLOCKS` blocks a snapshot of the balances is saved beside it, so a restart replays only the blocks since; the blocks before it must hash and link up to the snapshot's block, so changed ones are refused. `GET /chain/valid` still replays everything. |
@@ -129,6 +129,7 @@ The first run of it found a real bottleneck: every new transaction re-checked th
 | `PUBLIC_URL` | `http://$BIND_ADDR` | How peers should reach this node. |
 | `SYNC_SECS` | `5` | How often to pull from peers. |
 | `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. A fork is checked from where it splits off, not from genesis. |
+| `MAX_BLOCK_TRANSFERS` | `100` | The most transfers a block may hold, besides its payout. When more are waiting, the highest fees go first. `0` sets no limit. |
 | `SNAPSHOT_BLOCKS` | `100` | Blocks between snapshots of the balances, which spare a restart replaying the whole chain. `0` takes none. |
 
 A saved chain only loads under the rules it was made with. Delete the file to start over.
@@ -163,6 +164,15 @@ When forks compete, a node keeps the **heaviest** valid chain, not the longest:
 Exact ties go to the lower tip hash, so two nodes on equal forks always pick the same one. And no fork may undo more than `MAX_REORG_DEPTH` blocks, however heavy it is, so old history can't be rewritten.
 
 The first transaction in each block is the **payout**: the reward plus the block's fees, to whoever mined or forged it. Validation checks that sum.
+
+### 💸 Fees decide what gets in
+
+A block holds at most `MAX_BLOCK_TRANSFERS` transfers, and every node refuses one with more. When more are waiting, whoever adds the block picks them by fee, highest first, with two limits on the order:
+
+- **A sender's transfers keep their nonce order.** A sender is ranked by the fee of their *next* transfer, so a big fee stuck behind a small one waits for it.
+- **A payment goes in before what spends it.** A transfer paid for with coins that are still on their way waits until the payment that brings them is chosen.
+
+Among equal fees, whichever arrived first goes first. What's left stays in the mempool for the next block. While everything fits, a block takes it all in the order it arrived.
 
 ### ⏱️ Difficulty that follows the miners
 
@@ -209,6 +219,7 @@ flowchart TB
     - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`
     - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
     - `validation.rs`: the rules each block is checked by, and replaying a chain by them
+    - `selection.rs`: what goes in a full block: the highest fees first, keeping each sender's nonce order
     - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
   - `consensus/`: how the network agrees on one chain.
     - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
@@ -253,7 +264,7 @@ flowchart TB
 | POST | `/forge/proposal` | Proof of stake: `{validator, reveal?}` → the unsigned block that validator should sign next. The reveal is required once validators are being drawn. |
 | POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
 | POST | `/forge` | Proof of stake shortcut for scripts: `{secret_key}` of the selected validator. |
-| GET | `/consensus` | Rules, the next block's work and the next adjustment, stakes, the randomness beacon and whose turn it is next. |
+| GET | `/consensus` | Rules (including `max_block_transfers`), the next block's work and the next adjustment, stakes, the randomness beacon and whose turn it is next. |
 | GET | `/chain` | Every block, or with `?from=N` the blocks from height N on, and with `&limit=M` at most M of them. |
 | GET | `/chain/work` | Proof of work: the work each block required, by height. Takes `?from=N&limit=M` like `/chain`. |
 | GET | `/status` | `{height, tip, weight, pending}`, cheap enough to poll every second. |
@@ -274,10 +285,10 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 136 tests: unit, HTTP, property-based and doctests
+cargo test        # 142 tests: unit, HTTP, property-based and doctests
 ```
 
-- **Domain:** consensus rules, staking, fees, forks and tampering.
+- **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.
 - **Application:** a whole peer network simulated in one process.
 - **HTTP:** round trips through the API, including forging with a key that never leaves the client.
 - **Properties** (`tests/properties.rs`, [proptest](https://proptest-rs.github.io/proptest/)): hundreds of random scenarios per run.
@@ -302,7 +313,6 @@ Nothing here is built yet. Each would make a good next step.
 - **Skipping absent validators**: a selected validator who never forges stalls the chain. Time slots that pass the turn on after a timeout would fix it, and withholding a reveal would then cost a block reward.
 
 **💸 Fees and blocks**
-- **Block size limits**, so fees decide what gets in first.
 - **Fee estimates**: suggest a fee from what recent blocks accepted.
 
 **🔐 Wallets and privacy**

@@ -301,6 +301,7 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
         kind: kind.to_string(),
         difficulty,
         reward: consensus.rules.reward,
+        max_block_transfers: consensus.rules.max_block_transfers,
         next_validator: consensus.next_validator.map(|a| a.to_string()),
         // Stakes are coins people own, so together they're never more than all there are.
         total_stake: Coins::total(consensus.stakes.iter().map(|(_, n)| *n)).unwrap_or_default(),
