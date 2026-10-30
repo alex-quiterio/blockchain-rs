@@ -16,6 +16,13 @@ const POLL_MS = 4000;
 
 wire({ node: NodeHttpClient });
 
+/** Each route's page folder, which names the part its styles are scoped to. */
+const PAGE_FOLDERS: Record<string, string> = {
+  block: "block",
+  tx: "transaction",
+  address: "address",
+};
+
 const pages: Record<string, (id: string) => Promise<HTMLElement[]>> = {
   block: blockPage,
   tx: txPage,
@@ -26,6 +33,8 @@ async function render(): Promise<void> {
   const [, kind, id] =
     location.hash.match(/^#\/(block|tx|address)\/(.+)$/) ?? [];
   const view = $("view");
+  // Each page's styles apply only to it, through this: the page's folder under pages/.
+  view.dataset.part = (id && kind && PAGE_FOLDERS[kind]) || "home";
   try {
     const page = kind && id ? pages[kind] : undefined;
     const parts =

@@ -1,158 +1,157 @@
 /* The wallets panel: the vault's lock, and each wallet with what it holds. */
 
-button.icon {
-  background: none;
-  color: var(--muted);
-  padding: 0.15rem 0.35rem;
-  font-weight: 400;
-  font-size: 0.8rem;
-}
-button.icon:hover {
-  color: var(--ink);
-  transform: none;
-}
-
-.wallets {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.9rem;
-}
-.wallet {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.6rem 0.7rem;
-  border-radius: 11px;
-  background: var(--surface-2);
-  border: 1px solid transparent;
-  transition: border-color 0.15s;
-}
-.wallet:hover {
-  border-color: var(--line);
-}
-.wallet .who {
-  flex: 1;
-  min-width: 0;
-}
-.wallet .name {
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-.wallet .addr {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 0.1rem;
-}
-.wallet .money {
-  text-align: right;
-}
-.wallet .balance {
-  font-family: var(--mono);
-  font-size: 1.15rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.wallet .balance.zero {
-  color: var(--muted);
-}
-.wallet .nonce {
-  font-size: 0.68rem;
-  color: var(--muted);
-}
-.wallet .forget {
-  opacity: 0;
-}
-.wallet:hover .forget {
-  opacity: 1;
-}
-
-.wallet .staked {
-  display: inline-block;
-  margin-top: 0.15rem;
-  font-size: 0.66rem;
-  font-weight: 600;
-  color: var(--stake);
-  background: var(--stake-soft);
-  border-radius: 5px;
-  padding: 0.05rem 0.35rem;
-}
-
-.vault {
-  margin-bottom: 0.8rem;
-}
-.lockcard {
-  padding: 0.75rem 0.8rem;
-  border-radius: 11px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  font-size: 0.82rem;
-}
-.lockcard.locked {
-  border-color: var(--gold);
-  background: var(--gold-soft);
-}
-.lockcard .title {
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-.lockcard p {
-  margin: 0.3rem 0 0.6rem;
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.45;
-}
-.lockcard form {
-  display: grid;
-  gap: 0.45rem;
-}
-.lockcard .row {
-  display: flex;
-  gap: 0.45rem;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.lockcard .row .grow {
-  flex: 1;
-}
-.lockcard input {
-  width: 100%;
-}
-.unlocked {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-.unlocked .title {
-  color: var(--ok);
-  font-weight: 600;
-}
-.unlocked .actions {
-  margin-left: auto;
-  display: flex;
-  gap: 0.2rem;
-}
-button.small {
-  padding: 0.25rem 0.55rem;
-  font-size: 0.74rem;
-  font-weight: 500;
-  background: none;
-  color: var(--ink);
-  border: 1px solid var(--line);
-}
-button.small:hover {
-  border-color: var(--muted);
-  transform: none;
-}
-.unlocked-note {
-  font-size: 0.72rem;
-  color: var(--muted);
-  margin-top: 0.3rem;
+:where([data-part~="wallets"]) {
+  button.icon {
+    background: none;
+    color: var(--muted);
+    padding: 0.15rem 0.35rem;
+    font-weight: 400;
+    font-size: 0.8rem;
+  }
+  button.icon:hover {
+    color: var(--ink);
+    transform: none;
+  }
+  .wallets {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+  }
+  .wallet {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.7rem;
+    border-radius: 11px;
+    background: var(--surface-2);
+    border: 1px solid transparent;
+    transition: border-color 0.15s;
+  }
+  .wallet:hover {
+    border-color: var(--line);
+  }
+  .wallet .who {
+    flex: 1;
+    min-width: 0;
+  }
+  .wallet .name {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  .wallet .addr {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 0.1rem;
+  }
+  .wallet .money {
+    text-align: right;
+  }
+  .wallet .balance {
+    font-family: var(--mono);
+    font-size: 1.15rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .wallet .balance.zero {
+    color: var(--muted);
+  }
+  .wallet .nonce {
+    font-size: 0.68rem;
+    color: var(--muted);
+  }
+  .wallet .forget {
+    opacity: 0;
+  }
+  .wallet:hover .forget {
+    opacity: 1;
+  }
+  .wallet .staked {
+    display: inline-block;
+    margin-top: 0.15rem;
+    font-size: 0.66rem;
+    font-weight: 600;
+    color: var(--stake);
+    background: var(--stake-soft);
+    border-radius: 5px;
+    padding: 0.05rem 0.35rem;
+  }
+  .vault {
+    margin-bottom: 0.8rem;
+  }
+  .lockcard {
+    padding: 0.75rem 0.8rem;
+    border-radius: 11px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    font-size: 0.82rem;
+  }
+  .lockcard.locked {
+    border-color: var(--gold);
+    background: var(--gold-soft);
+  }
+  .lockcard .title {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .lockcard p {
+    margin: 0.3rem 0 0.6rem;
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.45;
+  }
+  .lockcard form {
+    display: grid;
+    gap: 0.45rem;
+  }
+  .lockcard .row {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .lockcard .row .grow {
+    flex: 1;
+  }
+  .lockcard input {
+    width: 100%;
+  }
+  .unlocked {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .unlocked .title {
+    color: var(--ok);
+    font-weight: 600;
+  }
+  .unlocked .actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.2rem;
+  }
+  button.small {
+    padding: 0.25rem 0.55rem;
+    font-size: 0.74rem;
+    font-weight: 500;
+    background: none;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  button.small:hover {
+    border-color: var(--muted);
+    transform: none;
+  }
+  .unlocked-note {
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+  }
 }

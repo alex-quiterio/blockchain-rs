@@ -213,6 +213,22 @@ export async function drive(
         () => document.querySelectorAll<any>("#wallets .wallet").length,
       )) === 2,
     );
+    // Each part's styles are scoped to it: the same class elsewhere on the page picks none up.
+    step(
+      "a part's styles stay inside it",
+      await page(() => {
+        const real = getComputedStyle(
+          document.querySelector<any>("#wallets .wallet"),
+        ).display;
+        const stray = Object.assign(document.createElement("div"), {
+          className: "wallet",
+        });
+        document.querySelector<any>("section.chain").append(stray);
+        const outside = getComputedStyle(stray).display;
+        stray.remove();
+        return real === "flex" && outside === "block";
+      }),
+    );
 
     const produce = async () => {
       const before = await page(

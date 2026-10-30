@@ -13,8 +13,8 @@
   <link rel="stylesheet" href="/js/ui/node/panels/producing/panel.css" />
   <link rel="stylesheet" href="/js/ui/node/panels/network/panel.css" />
 </head>
-<body>
-  <header class="top">
+<body data-page="node">
+  <header class="top" data-part="chain">
     <div class="brand">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <rect x="2" y="7" width="9" height="10" rx="2" />
@@ -38,7 +38,7 @@
 
   <main class="layout">
     <aside class="side">
-      <section class="panel">
+      <section class="panel" data-part="wallets">
         <h2>Wallets <span id="wallet-count" class="count"></span></h2>
         <div id="vault" class="vault"></div>
         <form id="wallet-form" class="inline">
@@ -59,7 +59,7 @@
         </details>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-part="sending">
         <h2>Send</h2>
         <form id="send-form" class="send">
           <label>From <select id="send-from"></select></label>
@@ -80,7 +80,7 @@
         </details>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-part="producing sending">
         <h2 id="producer-title">Add a block</h2>
         <div id="producer"></div>
         <div id="producing" class="producing" hidden></div>
@@ -88,7 +88,7 @@
         <ul id="pending" class="txs"></ul>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-part="network">
         <h2>Network <span id="peer-count" class="count"></span></h2>
         <form id="peer-form" class="inline">
           <input id="peer-url" placeholder="http://127.0.0.1:4000" autocomplete="off" />
@@ -107,7 +107,7 @@
       </section>
     </aside>
 
-    <section class="chain">
+    <section class="chain" data-part="chain">
       <div class="chain-head">
         <h2>Chain</h2>
         <span class="hint">Newest first. Each block carries the hash of the one below it. Open one for its breakdown.</span>
@@ -116,7 +116,7 @@
     </section>
   </main>
 
-  <footer id="footer" class="footer"></footer>
+  <footer id="footer" class="footer" data-part="network"></footer>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <script type="module" src="/js/ui/node/main.js"></script>
 </body>

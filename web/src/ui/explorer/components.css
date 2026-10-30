@@ -1,52 +1,53 @@
 /* What the explorer's pages share: muted and pending text, and tables. */
 
-.muted {
-  color: var(--muted);
-}
-.wrap {
-  overflow-wrap: anywhere;
-}
-.pending {
-  color: var(--gold);
-  font-weight: 600;
-}
-
-.grid-wrap {
-  overflow-x: auto;
-}
-.grid {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.82rem;
-}
-.grid th {
-  text-align: left;
-  color: var(--muted);
-  font-weight: 600;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 0.4rem 0.5rem;
-  border-bottom: 1px solid var(--line);
-}
-.grid td {
-  padding: 0.45rem 0.5rem;
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
-}
-.grid tr:last-child td {
-  border-bottom: 0;
-}
-.grid tbody tr:hover {
-  background: var(--surface-2);
-}
-.grid .num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.grid .ok {
-  color: var(--ok);
-}
-.grid .bad {
-  color: var(--bad);
+:where([data-page="explorer"]) {
+  .muted {
+    color: var(--muted);
+  }
+  .wrap {
+    overflow-wrap: anywhere;
+  }
+  .pending {
+    color: var(--gold);
+    font-weight: 600;
+  }
+  .grid-wrap {
+    overflow-x: auto;
+  }
+  .grid {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  .grid th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .grid td {
+    padding: 0.45rem 0.5rem;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .grid tr:last-child td {
+    border-bottom: 0;
+  }
+  .grid tbody tr:hover {
+    background: var(--surface-2);
+  }
+  .grid .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .grid .ok {
+    color: var(--ok);
+  }
+  .grid .bad {
+    color: var(--bad);
+  }
 }
