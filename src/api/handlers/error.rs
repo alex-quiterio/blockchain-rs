@@ -1,0 +1,83 @@
+//! How the domain's refusals and the node's failures reach a client: an HTTP status and a JSON
+//! body saying why.
+
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+
+use crate::api::dto::ErrorResponse;
+use crate::application::NodeError;
+use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError, ValueError};
+
+/// Maps domain and application errors onto HTTP status codes and JSON error bodies.
+pub struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    pub(super) fn bad_request(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: message.into() }
+    }
+
+    pub(super) fn not_found(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message: message.into() }
+    }
+}
+
+impl From<DomainError> for ApiError {
+    fn from(err: DomainError) -> Self {
+        let status = match &err {
+            DomainError::Value(_) => StatusCode::BAD_REQUEST,
+            DomainError::Transaction(TransactionError::BadSignature) => StatusCode::UNAUTHORIZED,
+            DomainError::Transaction(
+                TransactionError::ZeroAmount
+                | TransactionError::UnexpectedCoinbase
+                | TransactionError::AlreadyPending,
+            ) => StatusCode::BAD_REQUEST,
+            DomainError::Transaction(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            DomainError::Block(BlockError::NotYourTurn { .. }) => StatusCode::FORBIDDEN,
+            DomainError::Block(
+                BlockError::NotProofOfWork | BlockError::NotProofOfStake | BlockError::StaleBlock,
+            ) => StatusCode::CONFLICT,
+            DomainError::Block(_) => StatusCode::BAD_REQUEST,
+            DomainError::Chain(ChainError::ReorgTooDeep { .. }) => StatusCode::CONFLICT,
+            DomainError::Chain(ChainError::Empty | ChainError::InvalidBlock { .. }) => {
+                StatusCode::BAD_REQUEST
+            }
+        };
+        Self { status, message: err.to_string() }
+    }
+}
+
+/// Each kind of refusal maps the same way, through `DomainError`.
+macro_rules! via_domain_error {
+    ($($kind:ty),*) => {$(
+        impl From<$kind> for ApiError {
+            fn from(err: $kind) -> Self {
+                DomainError::from(err).into()
+            }
+        }
+    )*};
+}
+
+via_domain_error!(ValueError, TransactionError, BlockError, ChainError);
+
+impl From<NodeError> for ApiError {
+    fn from(err: NodeError) -> Self {
+        match err {
+            NodeError::Domain(e) => e.into(),
+            NodeError::Storage(_) => {
+                Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: err.to_string() }
+            }
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(ErrorResponse { message: self.message })).into_response()
+    }
+}

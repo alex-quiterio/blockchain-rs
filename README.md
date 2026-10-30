@@ -257,7 +257,14 @@ flowchart TB
   - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing. Questions only a reader asks, like an address's history or where a transfer landed, are worked out here from the blocks, so the aggregate keeps only what its rules need.
   - `Network` keeps the peers in step through the `PeerClient` port.
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
-- **`api/`** is the HTTP interface. **`public/`** is the web UI, plain HTML, CSS and JS with no build step.
+- **`api/`** is the HTTP interface: `mod.rs` has the routes, `dto.rs` the request and response bodies, and `handlers/` one file per part of the API.
+  - `chain.rs`: reading the chain and offering this node another's: blocks, headers, the tip, the work each block needed and a full replay
+  - `transactions.rs`: signing, submitting, finding and proving transfers, what's waiting, and what fee gets one in
+  - `wallets.rs`: keypairs and what an address holds
+  - `blocks.rs`: mining, forging, and who may add the next block
+  - `network.rs`: peers, syncing now, and which build the node runs
+  - `error.rs`: how each refusal reaches a client, as an HTTP status and a message
+- **`public/`** is the web UI, plain HTML, CSS and JS with no build step.
 - **`src/bin/loadgen.rs`** is the load generator, a separate client that only talks to nodes over HTTP.
 
 ## 📡 API
