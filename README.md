@@ -254,6 +254,12 @@ flowchart TB
   - `crypto.rs`, `repository.rs`: signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
+    - `mod.rs`: opening the node, and `commit`, the one path every change to the chain takes: applied to a copy, saved, then swapped in
+    - `blocks.rs`: mining and forging a block from what's waiting, and taking another node's blocks
+    - `transactions.rs`: submitting a transaction, from a client or a peer
+    - `events.rs`: `NodeEvent`, and telling whoever listens
+    - `snapshots.rs`: when to save a snapshot of the balances
+    - `error.rs`: `NodeError`, a rule refused the change or it couldn't be saved
   - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing. Questions only a reader asks, like an address's history or where a transfer landed, are worked out here from the blocks, so the aggregate keeps only what its rules need.
   - `Network` keeps the peers in step through the `PeerClient` port. It lives in `network/`, one file per concern:
     - `mod.rs`: `Network` and who its peers are, added both ways

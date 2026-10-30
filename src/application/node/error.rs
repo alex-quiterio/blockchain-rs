@@ -1,0 +1,31 @@
+//! Why a change to the node didn't happen: a domain rule refused it, or it couldn't be saved.
+
+use std::fmt;
+
+use crate::domain::error::DomainError;
+use crate::domain::repository::RepositoryError;
+
+#[derive(Debug)]
+pub enum NodeError {
+    /// A domain rule refused the change.
+    Domain(DomainError),
+    /// The change was valid but could not be saved, so it was not applied.
+    Storage(RepositoryError),
+}
+
+impl fmt::Display for NodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Domain(e) => e.fmt(f),
+            Self::Storage(e) => write!(f, "could not save the chain: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for NodeError {}
+
+impl<E: Into<DomainError>> From<E> for NodeError {
+    fn from(err: E) -> Self {
+        Self::Domain(err.into())
+    }
+}
