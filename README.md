@@ -35,7 +35,8 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 
 ```sh
 docker compose up --build     # three linked nodes on :3000, :3001 and :3002
-# or, for a single node:
+# or, for a single node, build the web UI first (it's TypeScript, compiled into public/js):
+npm ci && npm run build
 cargo run                     # http://127.0.0.1:3000
 ```
 
@@ -72,6 +73,7 @@ That starts nodes on **:3000**, **:3001** and **:3002**. C and A only know B, an
 <summary><b>Without Docker</b></summary>
 
 ```sh
+npm ci && npm run build
 cargo build
 BIND_ADDR=127.0.0.1:3000 CHAIN_FILE=a.json ./target/debug/blockchain &
 BIND_ADDR=127.0.0.1:3001 CHAIN_FILE=b.json PEERS=http://127.0.0.1:3000 ./target/debug/blockchain &
@@ -293,16 +295,19 @@ flowchart TB
   - `blocks.rs`: mining, forging, and who may add the next block
   - `network.rs`: peers, syncing now, and which build the node runs
   - `error.rs`: how each refusal reaches a client, as an HTTP status and a message
-- **`public/`** is the web UI, plain HTML, CSS and JS with no build step. Its scripts in `js/` are ES modules laid out with the same patterns as the node, but modelling the page's own concepts: layers with dependencies pointing inward, concepts inside the domain, ports and adapters, and each file naming its building block.
-  - `domain/`: no DOM and no network.
-    - `wallets/`: the `Wallets` **aggregate**, whose invariant is that nothing signs while it's locked, kept through a repository port; and the **domain services** it uses: `keys.js` (making keys and signing), `vault.js` (encrypting keys with the passphrase) and `reveals.js` (a wallet's reveal chain, for staking and forging)
+- **`web/`** is the web UI, in TypeScript. `npm run build` compiles `web/src` into `public/js`, which is build output and never committed, beside the two pages in `public/`. It's laid out with the same patterns as the node, but models the page's own concepts: layers with dependencies pointing inward, concepts inside the domain, ports and adapters, and each file naming its building block. Each layer is imported by name, `@domain`, `@application`, `@infra` and `@ui`, instead of climbing `../../..` to it; the build rewrites those to relative paths for the browser.
+  - `src/domain/`: no DOM and no network.
+    - `wallets/`: the `Wallets` **aggregate**, whose invariant is that nothing signs while it's locked, kept through `WalletsRepository`, a port it declares; and the **domain services** it uses: `keys.ts` (making keys and signing), `vault.ts` (encrypting keys with the passphrase) and `reveals.ts` (a wallet's reveal chain, for staking and forging)
     - `verification/` (**domain service**): re-checking what the node sends, so the page needn't trust it: Merkle roots and proofs, header hashes, work, signatures
-    - `transfers.js`: what a transfer is: its kinds, its fees and what its sender signs. `encoding.js`: hex and SHA-256
-  - `application/`: the use cases: the node as the page last saw it (`node_view.js`), sending, producing a block, the wallets, peers, and the explorer's lookups. They talk through `ports.js`, which each page's `main.js` wires, so no use case names an adapter
-  - `infrastructure/`: the **adapters**: `node_client.js`, the node's HTTP API, and `repository/local_storage.js`, where the wallets are kept
-  - `ui/`: `dom.js` and `base.css`, which both pages share, and the two pages, `node/` (`index.html`) and `explorer/` (`explorer.html`). Each page's folder has its `main.js` at the root, which wires the adapters, with its layout in `main.css` and what several of its parts draw in `components.js` and `components.css`. Beneath it, each part is a folder holding its own script and styles:
-    - `node/panels/`: `chain/`, `wallets/`, `sending/`, `producing/` and `network/`, each a `panel.js` and `panel.css`
-    - `explorer/pages/`: `home/`, `block/`, `transaction/` and `address/`, each a `page.js`, with a `page.css` where it has styles of its own
+    - `transfers.ts` and `blocks.ts`: what a transfer and a block are to the page (**value objects**). `encoding.ts`: hex and SHA-256
+  - `src/application/`: the use cases: the node as the page last saw it (`node_view.ts`), sending, producing a block, the wallets, peers, and the explorer's lookups. They talk through `ports.ts`, which declares `NodePort` and what each of its answers holds; each page's `main.ts` wires the adapters, so no use case names one
+  - `src/infrastructure/`: the **adapters**: `node_client.ts`, the node's HTTP API, implementing `NodePort`, and `repository/local_storage.ts`, implementing `WalletsRepository`
+  - `src/ui/`: `dom.ts` and `base.css`, which both pages share, and the two pages, `node/` (`index.html`) and `explorer/` (`explorer.html`). Each page's folder has its `main.ts` at the root, which wires the adapters, with its layout in `main.css` and what several of its parts draw in `components.ts` and `components.css`. Beneath it, each part is a folder holding its own script and styles:
+    - `node/panels/`: `chain/`, `wallets/`, `sending/`, `producing/` and `network/`, each a `panel.ts` and `panel.css`
+    - `explorer/pages/`: `home/`, `block/`, `transaction/` and `address/`, each a `page.ts`, with a `page.css` where it has styles of its own
+  - `test/`: unit tests, mirroring `src/`, run by Node as they are. The verification tests check against blocks, a Merkle proof and a forged block recorded from real nodes (`scripts/record_fixtures.ts`), so the page is tested against the node and not only against itself
+  - `e2e/`: drives both pages in headless Chrome against fresh nodes, under both consensus modes
+  - `scripts/`: finishing the build (`finish_build.ts`), resolving the layer aliases for Node (`aliases.ts`), and recording the fixtures
 - **`src/bin/loadgen.rs`** is the load generator, a separate client that only talks to nodes over HTTP.
 
 ## 📡 API
@@ -346,6 +351,10 @@ flowchart TB
 
 ```sh
 cargo test        # 158 tests: unit, HTTP, property-based and doctests
+npm test          # 40 tests of the web UI's domain and use cases
+npm run check     # TypeScript, sources and tests
+npm run e2e       # both pages in headless Chrome; needs Chrome, a release build and npm run build
+npm run format    # Prettier, for everything in web/
 ```
 
 - **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.
@@ -363,7 +372,7 @@ cargo test        # 158 tests: unit, HTTP, property-based and doctests
 
   Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
 
-CI runs `fmt`, `clippy -D warnings` and the tests on every push and pull request.
+CI runs `fmt`, `clippy -D warnings` and the Rust tests, and beside them Prettier, the TypeScript check, the web UI's unit tests and its build, on every push and pull request. It also fails if anything under `public/js` is ever committed. The browser test needs Chrome, so it runs locally.
 
 ## 💡 Ideas
 

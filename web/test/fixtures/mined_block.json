@@ -1,0 +1,42 @@
+{
+  "block": {
+    "index": 2,
+    "timestamp": "2026-10-30T10:18:04.803224Z",
+    "prev_hash": "009aadad6ba0cbaf15ca2ee7ac0a66cc127e3768af16109ea9c75d9e20943e58",
+    "transactions": [
+      {
+        "from": "coinbase",
+        "to": "d893f3c12e36f70cc86a3b223e0e375136a7fdc960ac8abd22ac2475a9e2c39b",
+        "amount": 53,
+        "nonce": 2,
+        "signature": ""
+      },
+      {
+        "from": "d893f3c12e36f70cc86a3b223e0e375136a7fdc960ac8abd22ac2475a9e2c39b",
+        "to": "aed3c480cf3f46137a9060d9ef3a98fd63a873825a9e76da64755f8aac2cb4b8",
+        "amount": 5,
+        "nonce": 0,
+        "signature": "55165f14bfeb46184553d64c9428b354257994839d544e8d1abe3fa192f00ed732771d1b362f0d462f7a5ac663ddbbb322f01adfd659b9036e666be636a7dd0b"
+      },
+      {
+        "from": "d893f3c12e36f70cc86a3b223e0e375136a7fdc960ac8abd22ac2475a9e2c39b",
+        "to": "45a960ec43967e9af06de0beaa4149d19e9d9548a7cb7726a2f2e3824240ff94",
+        "amount": 6,
+        "nonce": 1,
+        "signature": "59f12303e0a0dabea1003921467cd586d42efe3f941781ce6acc7a873ce87de290c773bb0d44d1579555bd479e3767d52c1d917674e2858501206d89fb8c160a",
+        "fee": 3
+      },
+      {
+        "from": "d893f3c12e36f70cc86a3b223e0e375136a7fdc960ac8abd22ac2475a9e2c39b",
+        "to": "513dee1b3861ff46f60766ed8bb307241a83c82f926c9623d41d56617a8b35f8",
+        "amount": 7,
+        "nonce": 2,
+        "signature": "ac0732ce282a2f6f42f55618ebb17c2b4427a498f63d9fe239c9d5bc550183eafa0957d956cdf052292e7b513977505a5ca23dd613ee40f441b0d7fa6fa6ef04"
+      }
+    ],
+    "merkle_root": "d4a899bf1457cf3c3564a86909396889be9d4e0aa255524b8c63803f3d399ff3",
+    "nonce": 125,
+    "hash": "007adf4d7dec29f686e474d612436fa07e4f7a3db471a1f4fbcedc45855ab070"
+  },
+  "work": 256
+}

@@ -1,0 +1,31 @@
+{
+  // Compiles web/src into public/js, which the node serves. Sources import each other with .ts
+  // extensions, so Node can run them as they are in tests; tsc rewrites those to .js here.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    // Each layer by name, instead of climbing ../../.. to it. The build rewrites these to relative
+    // paths for the browser, and web/scripts/aliases.ts resolves them for Node.
+    "paths": {
+      "@domain/*": ["./src/domain/*"],
+      "@application/*": ["./src/application/*"],
+      "@infra/*": ["./src/infrastructure/*"],
+      "@ui/*": ["./src/ui/*"]
+    },
+    "rootDir": "src",
+    "outDir": "../public/js",
+    "types": []
+  },
+  "include": ["src"]
+}

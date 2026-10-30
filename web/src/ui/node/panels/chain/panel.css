@@ -1,0 +1,261 @@
+/* The chain panel: the stats and validity pill in the header, and the block timeline, each block with its breakdown. */
+
+.stats {
+  display: flex;
+  gap: 1.6rem;
+  margin: 0 auto 0 1rem;
+}
+.stats div {
+  display: flex;
+  flex-direction: column;
+}
+.stats dt {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+.stats dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.pill i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.pill.ok i {
+  background: var(--ok);
+  box-shadow: 0 0 0 0 var(--ok);
+  animation: pulse 2.4s infinite;
+}
+.pill.bad {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.pill.bad i {
+  background: var(--bad);
+}
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+
+.chain-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin: 0.2rem 0 1rem;
+}
+.chain-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.chain-head .hint {
+  margin: 0;
+}
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+.block {
+  position: relative;
+  padding: 0 0 1rem 2.6rem;
+}
+.block::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 28px;
+  bottom: -4px;
+  width: 2px;
+  background: linear-gradient(var(--gold), var(--line));
+  opacity: 0.55;
+}
+.block:last-child::before {
+  display: none;
+}
+.block .marker {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  background: var(--surface);
+  border: 2px solid var(--gold);
+  color: var(--gold);
+}
+.block.genesis .marker {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+  box-shadow: var(--shadow);
+}
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+.card-head strong {
+  font-size: 0.95rem;
+}
+.card-head .when {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+.card-head .ntx {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.hash {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  word-break: break-all;
+  line-height: 1.45;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.hash .zeros {
+  color: var(--gold);
+  font-weight: 700;
+}
+.meta {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin: 0.45rem 0 0.7rem;
+}
+.meta .mono {
+  color: var(--ink);
+}
+.card .txs {
+  border-top: 1px solid var(--line);
+  padding-top: 0.6rem;
+}
+
+.block.fresh .card {
+  animation: arrive 1.6s ease-out;
+}
+.block.fresh .marker {
+  animation: pop 0.5s ease-out;
+}
+@keyframes arrive {
+  0% {
+    transform: translateY(-8px);
+    opacity: 0;
+    box-shadow: 0 0 0 0 var(--glow);
+  }
+  25% {
+    transform: none;
+    opacity: 1;
+    box-shadow: 0 0 0 6px var(--glow);
+  }
+  100% {
+    box-shadow: var(--shadow);
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.5);
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+.block .badge-kind {
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+}
+
+.breakdown {
+  margin-top: 0.7rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.5rem;
+}
+.breakdown summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--link);
+  font-weight: 500;
+}
+
+.more-txs summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--muted);
+  padding: 0.2rem 0;
+}
+.more-txs summary:hover {
+  color: var(--ink);
+}
+.more-txs .txs {
+  margin-top: 0.3rem;
+}
+
+.timeline .older {
+  list-style: none;
+  text-align: center;
+  padding: 0.6rem 0 0;
+  font-size: 0.85rem;
+}
+.timeline .older a {
+  color: var(--link);
+  text-decoration: none;
+}
+.timeline .older a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 900px) {
+  .stats {
+    order: 3;
+    width: 100%;
+    margin: 0;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+}

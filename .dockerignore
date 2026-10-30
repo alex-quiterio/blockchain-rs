@@ -1,7 +1,5 @@
-target
-.git
-.github
-docs
-tests
-chain*.json
+target/
+node_modules/
+# The image builds the UI itself; a local build must not leak in.
+public/js/
 *.json.tmp

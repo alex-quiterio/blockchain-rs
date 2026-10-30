@@ -1,3 +1,6 @@
 /target
 /chain*.json
 /chain*.json.tmp
+/node_modules/
+# Built from web/src by `npm run build`.
+/public/js/

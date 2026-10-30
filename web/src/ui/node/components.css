@@ -1,0 +1,69 @@
+/* What several node-page panels draw: avatars and parties, transfer rows, and empty lists. */
+
+.avatar {
+  display: inline-block;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+.avatar.sm {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+
+.txs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.tx {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+}
+.party {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  vertical-align: middle;
+}
+.party span:not(.avatar) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tx .arrow {
+  color: var(--muted);
+}
+.tx .amt {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tx.coinbase .amt {
+  color: var(--gold);
+}
+
+.tx .fee {
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.empty {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 1rem;
+  border: 1px dashed var(--line);
+  border-radius: 11px;
+}

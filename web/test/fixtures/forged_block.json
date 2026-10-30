@@ -1,0 +1,20 @@
+{
+  "index": 3,
+  "timestamp": "2026-10-30T10:18:04.807065Z",
+  "prev_hash": "00eeb75fed3348660f8585b82ea7e23694c79f98376bd92b11c246e8f7d1811b",
+  "transactions": [
+    {
+      "from": "coinbase",
+      "to": "a277f7d8a8449fa0125adf1f2d2974ee9d2a82d347c6493c3f3823ce95558e7f",
+      "amount": 50,
+      "nonce": 3,
+      "signature": ""
+    }
+  ],
+  "merkle_root": "7184a85ea457de27b8b014df63d9dcfaa4bdefef499c1a9939b37017ad639697",
+  "nonce": 0,
+  "hash": "829b9d833fad32586caac720e94dc614b1a1434a0fbe50341ca5f901f8f210d2",
+  "validator": "a277f7d8a8449fa0125adf1f2d2974ee9d2a82d347c6493c3f3823ce95558e7f",
+  "reveal": "8b3f24a0cf26603848613e7942ba6433b2e95b8719b990ccc0a6334d630882a0",
+  "signature": "76b9d58d05d64746bba1794243c98d3233387b205fb3fdac19bb78d8b86704ed17ca91d2111964742ae8cd9d9e75fe8b83ea0ad058a39d411abcf6776f565901"
+}

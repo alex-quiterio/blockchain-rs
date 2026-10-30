@@ -1,0 +1,43 @@
+// Sending from a wallet: a transfer to an address, or coins into or out of its stake. The page
+// signs; only the signed transfer goes to the node.
+
+import { STAKE, type Transfer } from "@domain/transfers";
+import { signTransfer } from "@domain/wallets/keys";
+import { commitment } from "@domain/wallets/reveals";
+import type { Wallet } from "@domain/wallets/wallets";
+import { ports } from "./ports.ts";
+import { wallets } from "./wallets.ts";
+
+export interface Sending {
+  from: Wallet;
+  /** An address, STAKE or UNSTAKE. */
+  to: string;
+  amount: number;
+  fee: number;
+}
+
+/** Signs and submits `amount` from `from` to `to`, with `fee`. */
+export async function send({
+  from,
+  to,
+  amount,
+  fee,
+}: Sending): Promise<Transfer> {
+  const secret = wallets().secretOf(from.address);
+  const { next_nonce, commitment_due } = await ports.node.balance(from.address);
+  // A first stake commits to the reveal chain this wallet will forge with.
+  const committed =
+    to === STAKE && commitment_due != null
+      ? await commitment(secret, commitment_due)
+      : undefined;
+  const tx = await signTransfer(secret, {
+    from: from.address,
+    to,
+    amount,
+    nonce: next_nonce,
+    fee,
+    commitment: committed,
+  });
+  await ports.node.submitTransaction(tx);
+  return tx;
+}

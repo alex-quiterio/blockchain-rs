@@ -1,0 +1,22 @@
+{
+  "name": "blockchain-rs-web",
+  "private": true,
+  "description": "The node's web UI: TypeScript in web/src, compiled into public/js.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p web && node web/scripts/finish_build.ts",
+    "check": "tsc -p web --noEmit && tsc -p web/tsconfig.check.json",
+    "test": "node --import ./web/scripts/aliases.ts --test \"web/test/**/*.test.ts\"",
+    "e2e": "node --import ./web/scripts/aliases.ts web/e2e/run.ts",
+    "format": "prettier --write \"web/**/*.{ts,css,json}\"",
+    "format:check": "prettier --check \"web/**/*.{ts,css,json}\""
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2"
+  }
+}

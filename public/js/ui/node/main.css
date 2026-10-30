@@ -1,8 +1,0 @@
-/* The node page's layout: the panels down the side, the chain beside them. */
-
-.layout { display: grid; grid-template-columns: minmax(320px, 400px) 1fr; gap: 1.25rem; padding: 1.25rem 1.5rem 3rem; max-width: 1400px; margin: 0 auto; }
-.side { display: flex; flex-direction: column; gap: 1.25rem; }
-
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; padding: 1rem; }
-}

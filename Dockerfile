@@ -1,5 +1,13 @@
 # Builds one node. docker-compose.yml runs three of them as a network.
 
+# The web UI: TypeScript in web/, compiled into public/js.
+FROM node:24-slim AS web
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY web web
+RUN npm run build
+
 FROM rust:1.88-slim AS build
 WORKDIR /app
 # There's no .git inside the build context, so the commit comes in as an argument.
@@ -8,6 +16,7 @@ ENV GIT_COMMIT=$GIT_COMMIT
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src src
 COPY public public
+COPY --from=web /app/public/js public/js
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
