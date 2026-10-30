@@ -59,7 +59,7 @@ impl From<ApplicationError> for ApiError {
 }
 
 /// Each kind of refusal maps the same way, through `ApplicationError`.
-macro_rules! via_domain_error {
+macro_rules! via_application_error {
     ($($kind:ty),*) => {$(
         impl From<$kind> for ApiError {
             fn from(err: $kind) -> Self {
@@ -69,7 +69,7 @@ macro_rules! via_domain_error {
     )*};
 }
 
-via_domain_error!(ValueError, TransactionError, BlockError, ChainError);
+via_application_error!(ValueError, TransactionError, BlockError, ChainError);
 
 impl From<NodeError> for ApiError {
     fn from(err: NodeError) -> Self {
