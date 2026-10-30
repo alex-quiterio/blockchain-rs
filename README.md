@@ -266,9 +266,9 @@ flowchart TB
     - `signature.rs`: `Signature` (**value object**), 128 hex characters; a block reward has none, which travels as `""`
     - `hash.rs`: `sha256_type!`, which every concept declares its own kinds of hash with, each 64 hex characters checked on the way in, so none can be passed for another
     - `error.rs`: `ValueError`, a string that isn't a valid address, hash or signature
-- **`application/`**
+- **`application/`**: `off_runtime` runs whatever changes or replays the chain on a thread set aside for blocking work, so the API and syncing never stall the async runtime with it
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
-    - `mod.rs`: opening the node, and `commit`, the one path every change to the chain takes: applied to a copy, saved, then swapped in
+    - `mod.rs`: opening the node, and `commit`, the one path every change to the chain takes: applied to a copy, saved, then swapped in. The chain keeps its blocks behind `Arc`s, since a block never changes once it's in, so the copy costs a pointer per block rather than the blocks
     - `blocks.rs`: mining and forging a block from what's waiting, and taking another node's blocks
     - `transactions.rs`: submitting a transaction, from a client or a peer
     - `events.rs`: `NodeEvent`, and telling whoever listens

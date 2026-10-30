@@ -1,7 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::domain::chain::block::Block;
 use crate::domain::chain::repository::{ChainRepository, ChainRepositoryError};
@@ -24,7 +24,7 @@ impl ChainJsonRepository {
 
     /// Writes every block to a temporary file and renames it over the real one, so a crash
     /// never leaves half a chain.
-    fn rewrite(&self, blocks: &[Block]) -> Result<(), ChainRepositoryError> {
+    fn rewrite(&self, blocks: &[Arc<Block>]) -> Result<(), ChainRepositoryError> {
         write_atomically(&self.path, &lines_of(blocks)?)
     }
 
@@ -63,7 +63,11 @@ impl ChainRepository for ChainJsonRepository {
 
     /// Appends the new blocks when the chain only grew from what the file holds; otherwise, after
     /// a fork or when what's on disk isn't known, rewrites the file.
-    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
+    fn save(
+        &self,
+        blocks: &[Arc<Block>],
+        events: &[ChainEvent],
+    ) -> Result<(), ChainRepositoryError> {
         let mut lines = self.lines.lock().unwrap();
         let grew_from = match events {
             [ChainEvent::Extended { from, .. }, rest @ ..]
@@ -105,10 +109,10 @@ fn write_atomically(path: &PathBuf, bytes: &[u8]) -> Result<(), ChainRepositoryE
     Ok(())
 }
 
-fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, ChainRepositoryError> {
+fn lines_of(blocks: &[Arc<Block>]) -> Result<Vec<u8>, ChainRepositoryError> {
     let mut out = Vec::new();
     for block in blocks {
-        serde_json::to_writer(&mut out, block)?;
+        serde_json::to_writer(&mut out, block.as_ref())?;
         out.push(b'\n');
     }
     Ok(out)
@@ -117,6 +121,7 @@ fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, ChainRepositoryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::chain::block::owned;
     use crate::domain::chain::{Blockchain, ReorgLimit};
     use crate::domain::consensus::rules::ChainRules;
     use crate::domain::crypto;
@@ -156,7 +161,7 @@ mod tests {
 
         repo.save(chain.blocks(), &[ChainEvent::Started]).unwrap();
         let loaded = repo.load().unwrap().unwrap();
-        assert_eq!(loaded, chain.blocks());
+        assert_eq!(loaded, owned(chain.blocks()));
         // Timestamps must survive to the nanosecond, or the block hashes stop matching.
         assert!(Blockchain::restore(loaded, rules).is_ok());
     }
@@ -168,7 +173,7 @@ mod tests {
         assert!(ChainJsonRepository::new(&path.0).load().is_err());
     }
 
-    fn chain_of(length: usize) -> Vec<Block> {
+    fn chain_of(length: usize) -> Vec<Arc<Block>> {
         let mut chain = Blockchain::new(ChainRules::proof_of_work(2, 50));
         for _ in 1..length {
             chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap(), &[]).unwrap();
@@ -186,7 +191,7 @@ mod tests {
         repo.save(&blocks, &[ChainEvent::Extended { from: 3, to: 3 }]).unwrap();
         let text = fs::read_to_string(&path.0).unwrap();
         assert_eq!(text.lines().count(), 4, "one block per line");
-        assert_eq!(repo.load().unwrap().unwrap(), blocks);
+        assert_eq!(repo.load().unwrap().unwrap(), owned(&blocks));
 
         // A fork replaces the last two blocks.
         let mut forked = blocks[..2].to_vec();
@@ -196,7 +201,7 @@ mod tests {
             &[ChainEvent::Reorganized { from: 2, dropped: 2, added: 2, returned: vec![] }],
         )
         .unwrap();
-        assert_eq!(ChainJsonRepository::new(&path.0).load().unwrap().unwrap(), forked);
+        assert_eq!(ChainJsonRepository::new(&path.0).load().unwrap().unwrap(), owned(&forked));
     }
 
     #[test]
@@ -205,7 +210,7 @@ mod tests {
         let repo = ChainJsonRepository::new(&path.0);
         let blocks = chain_of(3);
         repo.save(&blocks[..2], &[ChainEvent::Started]).unwrap();
-        let line = serde_json::to_string(&blocks[2]).unwrap();
+        let line = serde_json::to_string(blocks[2].as_ref()).unwrap();
         OpenOptions::new()
             .append(true)
             .open(&path.0)
@@ -214,9 +219,9 @@ mod tests {
             .unwrap();
 
         let repo = ChainJsonRepository::new(&path.0);
-        assert_eq!(repo.load().unwrap().unwrap(), blocks[..2]);
+        assert_eq!(repo.load().unwrap().unwrap(), owned(&blocks[..2]));
         repo.save(&blocks, &[ChainEvent::Extended { from: 2, to: 2 }]).unwrap();
-        assert_eq!(ChainJsonRepository::new(&path.0).load().unwrap().unwrap(), blocks);
+        assert_eq!(ChainJsonRepository::new(&path.0).load().unwrap().unwrap(), owned(&blocks));
     }
 
     #[test]
@@ -236,7 +241,7 @@ mod tests {
         assert!(snapshot_path.0.exists());
         let loaded = ChainJsonRepository::new(&path.0).load_snapshot().unwrap().unwrap();
         let (restored, from) =
-            Blockchain::restore_from(chain.blocks().to_vec(), rules, limit, Some(loaded)).unwrap();
+            Blockchain::restore_from(owned(chain.blocks()), rules, limit, Some(loaded)).unwrap();
         assert_eq!((from, restored.weight()), (Some(snapshot.height), chain.weight()));
     }
 
@@ -244,13 +249,13 @@ mod tests {
     fn an_older_file_with_a_json_array_still_loads() {
         let path = TempPath::new("legacy");
         let blocks = chain_of(4);
-        fs::write(&path.0, serde_json::to_vec_pretty(&blocks[..3]).unwrap()).unwrap();
+        fs::write(&path.0, serde_json::to_vec_pretty(&owned(&blocks[..3])).unwrap()).unwrap();
         let repo = ChainJsonRepository::new(&path.0);
-        assert_eq!(repo.load().unwrap().unwrap(), blocks[..3]);
+        assert_eq!(repo.load().unwrap().unwrap(), owned(&blocks[..3]));
 
         // What's on disk isn't in lines yet, so the next save rewrites it whole.
         repo.save(&blocks, &[ChainEvent::Extended { from: 3, to: 3 }]).unwrap();
         assert_eq!(fs::read_to_string(&path.0).unwrap().lines().count(), 4);
-        assert_eq!(repo.load().unwrap().unwrap(), blocks);
+        assert_eq!(repo.load().unwrap().unwrap(), owned(&blocks));
     }
 }

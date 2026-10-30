@@ -8,6 +8,7 @@ use chrono::Utc;
 use futures_util::future::join_all;
 
 use super::{Network, PeerStatus, PeerTip};
+use crate::application::off_runtime;
 use crate::domain::chain::Extension;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -80,7 +81,8 @@ impl Network {
             loop {
                 let page = self.client.chain_from(url, from, self.page).await?;
                 let fetched = page.len();
-                match self.node.extend(page) {
+                let node = self.node.clone();
+                match off_runtime(move || node.extend(page)).await {
                     Ok((Extension::Adopted, _)) => adopted = true,
                     Ok((Extension::Ignored, _)) => {}
                     // They fork off further back than we may undo, or sent a bad block.
@@ -93,9 +95,14 @@ impl Network {
             }
         }
         if theirs.pending > 0 {
-            for tx in self.client.pending(url).await.unwrap_or_default() {
-                let _ = self.node.submit_from(tx, Some(url));
-            }
+            let waiting = self.client.pending(url).await.unwrap_or_default();
+            let (node, from) = (self.node.clone(), url.to_owned());
+            off_runtime(move || {
+                for tx in waiting {
+                    let _ = node.submit_from(tx, Some(&from));
+                }
+            })
+            .await;
         }
         Ok((theirs, adopted))
     }

@@ -7,6 +7,8 @@
 //! could adjust read the same, but in between any value is possible: twice as hard, a third
 //! easier.
 
+use std::borrow::Borrow;
+
 use chrono::{DateTime, TimeDelta, Utc};
 
 use super::rules::Retarget;
@@ -33,7 +35,11 @@ pub fn meets_work(hash: &str, work: u128) -> bool {
 /// they should have taken, and the work is scaled by the difference, at most 4x either way. The
 /// first adjustment waits until there are `interval` blocks after genesis to measure, since
 /// genesis is stamped at the Unix epoch.
-pub fn next_work(blocks: &[Block], tip_work: u128, retarget: Option<Retarget>) -> u128 {
+pub fn next_work(
+    blocks: &[impl Borrow<Block>],
+    tip_work: u128,
+    retarget: Option<Retarget>,
+) -> u128 {
     let Some(r) = retarget.filter(|r| r.interval > 0 && r.target_block_secs > 0) else {
         return tip_work;
     };
@@ -41,8 +47,8 @@ pub fn next_work(blocks: &[Block], tip_work: u128, retarget: Option<Retarget>) -
     if height < 2 * r.interval || !height.is_multiple_of(r.interval) {
         return tip_work;
     }
-    let first = &blocks[(height - 1 - r.interval) as usize];
-    let last = &blocks[(height - 1) as usize];
+    let first = blocks[(height - 1 - r.interval) as usize].borrow();
+    let last = blocks[(height - 1) as usize].borrow();
     let expected = (r.target_block_secs * r.interval * 1000) as i64;
     let took = (last.timestamp - first.timestamp).num_milliseconds();
     let took = took.clamp((expected / MAX_STEP).max(1), expected * MAX_STEP);
@@ -56,11 +62,12 @@ pub fn next_work(blocks: &[Block], tip_work: u128, retarget: Option<Retarget>) -
 /// A block must come after the median of the ones before it, so a miner can't backdate it to
 /// fake a slow pace, and no more than two hours ahead of `now`, so they can't future-date it.
 pub fn check_timestamp(
-    before: &[Block],
+    before: &[impl Borrow<Block>],
     timestamp: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<(), BlockError> {
-    let mut recent: Vec<_> = before.iter().rev().take(MEDIAN_OF).map(|b| b.timestamp).collect();
+    let mut recent: Vec<_> =
+        before.iter().rev().take(MEDIAN_OF).map(|b| b.borrow().timestamp).collect();
     recent.sort();
     if recent.get(recent.len() / 2).is_some_and(|median| timestamp <= *median) {
         return Err(BlockError::TooEarly);

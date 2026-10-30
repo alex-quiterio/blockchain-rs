@@ -12,6 +12,7 @@ use crate::api::dto::blocks::{
     ConsensusResponse, ForgeRequest, MineRequest, ProposalRequest, StakeEntry,
 };
 use crate::api::AppState;
+use crate::application::off_runtime;
 use crate::domain::accounting::Coins;
 use crate::domain::chain::block::Block;
 use crate::domain::consensus::rules::Consensus;
@@ -27,9 +28,7 @@ pub async fn mine(
     // If the caller hangs up, this handler is dropped and the guard stops the search.
     let cancelled = Arc::new(AtomicBool::new(false));
     let _guard = CancelOnDrop(cancelled.clone());
-    let block = tokio::task::spawn_blocking(move || node.mine_unless(&miner, &cancelled))
-        .await
-        .expect("mining task panicked")?;
+    let block = off_runtime(move || node.mine_unless(&miner, &cancelled)).await?;
     gossip_chain(&state, None);
     Ok((StatusCode::CREATED, Json(block)))
 }
@@ -77,7 +76,8 @@ pub async fn submit_block(
     State(state): State<AppState>,
     Json(block): Json<Block>,
 ) -> Result<(StatusCode, Json<Block>), ApiError> {
-    let block = state.node.append_forged(block)?;
+    let node = state.node.clone();
+    let block = off_runtime(move || node.append_forged(block)).await?;
     gossip_chain(&state, None);
     Ok((StatusCode::CREATED, Json(block)))
 }
@@ -90,7 +90,8 @@ pub async fn forge(
 ) -> Result<(StatusCode, Json<Block>), ApiError> {
     let key = crypto::parse_secret_key(&req.secret_key)
         .ok_or_else(|| ApiError::bad_request("secret_key must be 32 bytes of hex"))?;
-    let block = state.node.forge(&key)?;
+    let node = state.node.clone();
+    let block = off_runtime(move || node.forge(&key)).await?;
     gossip_chain(&state, None);
     Ok((StatusCode::CREATED, Json(block)))
 }

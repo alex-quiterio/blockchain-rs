@@ -1,6 +1,8 @@
 //! Questions about transfers: where one is, an address's history, a proof that one is in its
 //! block, and what's waiting.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 
 use super::ChainQueries;
@@ -91,23 +93,24 @@ impl ChainQueries {
 /// Confirmed transactions to or from `address`, block rewards included, newest first: each with
 /// its block and its place there.
 fn history_of<'a>(
-    blocks: &'a [Block],
+    blocks: &'a [Arc<Block>],
     address: &'a Address,
 ) -> impl Iterator<Item = (&'a Block, usize)> {
     blocks.iter().rev().flat_map(move |block| {
         let positions = block.transactions().iter().enumerate();
+        let block: &Block = block;
         positions.filter(|(_, tx)| tx.involves(address)).map(move |(position, _)| (block, position))
     })
 }
 
 /// The confirmed block holding the transfer signed `signature`, and its place in the block.
-fn find_transaction<'a>(blocks: &'a [Block], signature: &str) -> Option<(&'a Block, usize)> {
+fn find_transaction<'a>(blocks: &'a [Arc<Block>], signature: &str) -> Option<(&'a Block, usize)> {
     if signature.is_empty() {
         return None;
     }
     blocks.iter().rev().find_map(|block| {
         let signed = |tx: &Transaction| tx.signature().is_some_and(|s| s.as_str() == signature);
-        Some((block, block.transactions().iter().position(signed)?))
+        Some((block.as_ref(), block.transactions().iter().position(signed)?))
     })
 }
 

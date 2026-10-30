@@ -6,6 +6,7 @@
 
 use std::cmp::Reverse;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
@@ -46,7 +47,9 @@ pub use validation::validate_blocks;
 /// of its own; producing a block takes them as candidates.
 #[derive(Clone)]
 pub struct Blockchain {
-    blocks: Vec<Block>,
+    /// Shared behind `Arc`s: a block never changes once it's in a chain, so copying the chain,
+    /// as every change in a node does, copies a pointer per block rather than the blocks.
+    blocks: Vec<Arc<Block>>,
     /// What the chain added up to after each of its last `reorg_limit + 1` blocks; the last is
     /// what the whole chain adds up to.
     tallies: TallyLog,
@@ -101,7 +104,8 @@ impl Blockchain {
         let genesis = Block::genesis(&rules);
         let tally = Tally::at_genesis(&genesis, &rules);
         let limit = ReorgLimit::DEFAULT;
-        let mut chain = Self::from_parts(vec![genesis], VecDeque::from([tally]), rules, limit);
+        let mut chain =
+            Self::from_parts(vec![Arc::new(genesis)], VecDeque::from([tally]), rules, limit);
         chain.events.push(ChainEvent::Started);
         chain
     }
@@ -139,11 +143,12 @@ impl Blockchain {
             Some(s) => (replay_from(&blocks, s.height + 1, s.tally, &rules, keep)?, Some(s.height)),
             None => (replay_kept(&blocks, &rules, keep)?, None),
         };
+        let blocks = blocks.into_iter().map(Arc::new).collect();
         Ok((Self::from_parts(blocks, kept, rules, limit), from))
     }
 
     fn from_parts(
-        blocks: Vec<Block>,
+        blocks: Vec<Arc<Block>>,
         kept: VecDeque<Tally>,
         rules: ChainRules,
         reorg_limit: ReorgLimit,
@@ -184,7 +189,7 @@ impl Blockchain {
         self.reorg_limit
     }
 
-    pub fn blocks(&self) -> &[Block] {
+    pub fn blocks(&self) -> &[Arc<Block>] {
         &self.blocks
     }
 
@@ -365,7 +370,7 @@ impl Blockchain {
         }
         let mut tally = self.tally().clone();
         apply_block(&self.blocks, &block, &mut tally, &self.rules)?;
-        self.blocks.push(block);
+        self.blocks.push(Arc::new(block));
         self.tallies.push(tally);
         self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
         Ok(self.tip())
@@ -421,7 +426,7 @@ impl Blockchain {
         let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
         let mut tally = self.tally().clone();
         apply_block(&self.blocks, &block, &mut tally, &self.rules)?;
-        self.blocks.push(block);
+        self.blocks.push(Arc::new(block));
         self.tallies.push(tally);
         self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
         Ok(self.tip())
@@ -450,13 +455,13 @@ impl Blockchain {
             Some(base) => {
                 let base = base.clone();
                 let mut chain = self.blocks[..shared].to_vec();
-                chain.extend(blocks.into_iter().skip(shared));
+                chain.extend(blocks.into_iter().skip(shared).map(Arc::new));
                 let kept = replay_from(&chain, shared, base, &self.rules, keep)?;
                 (chain, kept)
             }
             None => {
                 let kept = replay_kept(&blocks, &self.rules, keep)?;
-                (blocks, kept)
+                (blocks.into_iter().map(Arc::new).collect(), kept)
             }
         };
         let tally = kept.back().expect("replays keep at least the last").clone();
@@ -513,7 +518,8 @@ impl Blockchain {
             return Ok(Extension::Ignored);
         }
         if start + known < self.blocks.len() {
-            let mut candidate = self.blocks[..start].to_vec();
+            let mut candidate: Vec<Block> =
+                self.blocks[..start].iter().map(|block| Block::clone(block)).collect();
             candidate.extend(blocks);
             return self.adopt_if_heavier(candidate).map(Extension::from);
         }
@@ -527,7 +533,7 @@ impl Blockchain {
                 self.blocks.truncate(height);
                 return Err(ChainError::InvalidBlock { height: at, reason });
             }
-            self.blocks.push(block.clone());
+            self.blocks.push(Arc::new(block.clone()));
             tallies.push(tally.clone());
         }
         for tally in tallies {

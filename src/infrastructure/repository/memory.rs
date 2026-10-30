@@ -1,22 +1,28 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use crate::domain::chain::block::Block;
+use crate::domain::chain::block::{owned, Block};
 use crate::domain::chain::repository::{ChainRepository, ChainRepositoryError};
 use crate::domain::chain::{ChainEvent, Snapshot};
 
-/// Keeps the chain in memory only, for tests and throwaway nodes.
+/// Keeps the chain in memory only, for tests and throwaway nodes. It shares the chain's blocks
+/// rather than copying them.
 #[derive(Default)]
 pub struct ChainInMemoryRepository {
-    blocks: Mutex<Option<Vec<Block>>>,
+    blocks: Mutex<Option<Vec<Arc<Block>>>>,
     snapshot: Mutex<Option<Snapshot>>,
 }
 
 impl ChainRepository for ChainInMemoryRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
-        Ok(self.blocks.lock().unwrap().clone())
+        let blocks = self.blocks.lock().unwrap();
+        Ok(blocks.as_deref().map(owned))
     }
 
-    fn save(&self, blocks: &[Block], _events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
+    fn save(
+        &self,
+        blocks: &[Arc<Block>],
+        _events: &[ChainEvent],
+    ) -> Result<(), ChainRepositoryError> {
         *self.blocks.lock().unwrap() = Some(blocks.to_vec());
         Ok(())
     }

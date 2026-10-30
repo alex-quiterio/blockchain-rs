@@ -100,7 +100,7 @@ impl TallyLog {
 
     /// A snapshot after the oldest block kept, once the log is full: that block is as deep as
     /// any fork may reach, so no fork can undo it.
-    pub(super) fn snapshot(&self, blocks: &[Block], rules: ChainRules) -> Option<Snapshot> {
+    pub(super) fn snapshot(&self, blocks: &[Arc<Block>], rules: ChainRules) -> Option<Snapshot> {
         if self.tallies.len() < self.keep {
             return None;
         }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn a_snapshot_comes_once_the_log_is_full() {
         let rules = ChainRules::proof_of_work(1, 50);
-        let blocks: Vec<Block> = (0..3).map(|_| Block::genesis(&rules)).collect();
+        let blocks: Vec<Arc<Block>> = (0..3).map(|_| Arc::new(Block::genesis(&rules))).collect();
         let mut log = TallyLog::new(0, [after(0), after(1)], 3);
         assert!(log.snapshot(&blocks, rules).is_none());
         log.push(after(2));

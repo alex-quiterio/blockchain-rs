@@ -1,6 +1,7 @@
 //! The rules every block must follow, and replaying a chain by them: links, hashes, Merkle roots,
 //! the proof of work or the validator's signature, size, rewards, fees, nonces, balances and stakes.
 
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 
 use chrono::Utc;
@@ -17,22 +18,28 @@ use crate::domain::consensus::difficulty::{self, meets_work};
 use crate::domain::consensus::rules::{select_validator, ChainRules, Consensus};
 
 /// Replays `blocks` by every rule, or says which block first breaks one and how.
-pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> Result<(), ChainError> {
+pub fn validate_blocks(
+    blocks: &[impl Borrow<Block>],
+    rules: &ChainRules,
+) -> Result<(), ChainError> {
     replay(blocks, rules).map(|_| ())
 }
 
 /// Checks every block in order and returns what they add up to.
-pub(super) fn replay(blocks: &[Block], rules: &ChainRules) -> Result<Tally, ChainError> {
+pub(super) fn replay(
+    blocks: &[impl Borrow<Block>],
+    rules: &ChainRules,
+) -> Result<Tally, ChainError> {
     Ok(replay_kept(blocks, rules, 1)?.pop_back().expect("replays keep at least the last"))
 }
 
 /// Replays the whole chain, keeping what it added up to after each of its last `keep` blocks.
 pub(super) fn replay_kept(
-    blocks: &[Block],
+    blocks: &[impl Borrow<Block>],
     rules: &ChainRules,
     keep: usize,
 ) -> Result<VecDeque<Tally>, ChainError> {
-    let genesis = blocks.first().ok_or(ChainError::Empty)?;
+    let genesis = blocks.first().ok_or(ChainError::Empty)?.borrow();
     check_genesis(genesis, rules)
         .map_err(|reason| ChainError::InvalidBlock { height: 0, reason })?;
     replay_from(blocks, 1, Tally::at_genesis(genesis, rules), rules, keep)
@@ -42,7 +49,7 @@ pub(super) fn replay_kept(
 /// Returns what the chain added up to after each of its last `keep` blocks, the last one at
 /// least. `from` is at least 1: genesis is never replayed.
 pub(super) fn replay_from(
-    blocks: &[Block],
+    blocks: &[impl Borrow<Block>],
     from: usize,
     mut tally: Tally,
     rules: &ChainRules,
@@ -54,7 +61,7 @@ pub(super) fn replay_from(
         kept.push_back(tally.clone());
     }
     for height in from..blocks.len() {
-        apply_block(&blocks[..height], &blocks[height], &mut tally, rules)
+        apply_block(&blocks[..height], blocks[height].borrow(), &mut tally, rules)
             .map_err(|reason| ChainError::InvalidBlock { height: height as u64, reason })?;
         if height >= first_kept {
             kept.push_back(tally.clone());
@@ -97,23 +104,24 @@ fn check_hashes(block: &Block) -> Result<(), BlockError> {
 /// its header covers its transactions through the Merkle root, and it names the block before it.
 /// No signatures, work or balances are checked: that's for a snapshot taken after these very
 /// blocks, which already did.
-pub(super) fn links_up(blocks: &[Block], rules: &ChainRules) -> bool {
-    blocks.first().is_some_and(|genesis| check_genesis(genesis, rules).is_ok())
-        && blocks
-            .windows(2)
-            .all(|pair| pair[1].index == pair[0].index + 1 && pair[1].prev_hash == pair[0].hash)
-        && blocks.iter().all(|block| check_hashes(block).is_ok())
+pub(super) fn links_up(blocks: &[impl Borrow<Block>], rules: &ChainRules) -> bool {
+    blocks.first().is_some_and(|genesis| check_genesis(genesis.borrow(), rules).is_ok())
+        && blocks.windows(2).all(|pair| {
+            let (prev, next) = (pair[0].borrow(), pair[1].borrow());
+            next.index == prev.index + 1 && next.prev_hash == prev.hash
+        })
+        && blocks.iter().all(|block| check_hashes(block.borrow()).is_ok())
 }
 
 /// Checks that `block` validly follows the blocks `before` it and adds it to `tally`, or says
 /// which rule it breaks. On an error the tally may be half-updated, so callers check a copy.
 pub(super) fn apply_block(
-    before: &[Block],
+    before: &[impl Borrow<Block>],
     block: &Block,
     tally: &mut Tally,
     rules: &ChainRules,
 ) -> Result<(), BlockError> {
-    let prev = before.last().expect("genesis comes first");
+    let prev = before.last().expect("genesis comes first").borrow();
     let work = difficulty::next_work(before, tally.work, rules.retarget());
     if block.index != prev.index + 1 || block.prev_hash != prev.hash {
         return Err(BlockError::BrokenLink);

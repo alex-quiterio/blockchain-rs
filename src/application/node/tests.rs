@@ -30,7 +30,11 @@ impl ChainRepository for SharedRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         self.0.load()
     }
-    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
+    fn save(
+        &self,
+        blocks: &[Arc<Block>],
+        events: &[ChainEvent],
+    ) -> Result<(), ChainRepositoryError> {
         self.0.save(blocks, events)
     }
     fn load_snapshot(&self) -> Result<Option<Snapshot>, ChainRepositoryError> {
@@ -47,7 +51,11 @@ impl ChainRepository for FailingRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         Ok(None)
     }
-    fn save(&self, blocks: &[Block], _events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
+    fn save(
+        &self,
+        blocks: &[Arc<Block>],
+        _events: &[ChainEvent],
+    ) -> Result<(), ChainRepositoryError> {
         // Let the genesis block through so the node can start.
         if blocks.len() == 1 {
             Ok(())
@@ -119,6 +127,7 @@ fn a_tampered_store_refuses_to_start() {
     let mut json = serde_json::to_value(repo.load().unwrap().unwrap()).unwrap();
     json[1]["transactions"][0]["amount"] = 1_000.into();
     let blocks: Vec<Block> = serde_json::from_value(json).unwrap();
+    let blocks: Vec<Arc<Block>> = blocks.into_iter().map(Arc::new).collect();
     repo.save(&blocks, &[ChainEvent::Started]).unwrap();
 
     let err = NodeService::open(Box::new(repo), RULES, ReorgLimit::DEFAULT).err().unwrap();
@@ -249,7 +258,11 @@ impl ChainRepository for RecordingRepository {
     fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         Ok(None)
     }
-    fn save(&self, _blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
+    fn save(
+        &self,
+        _blocks: &[Arc<Block>],
+        events: &[ChainEvent],
+    ) -> Result<(), ChainRepositoryError> {
         self.0.lock().unwrap().push(events.to_vec());
         Ok(())
     }

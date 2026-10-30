@@ -1,6 +1,7 @@
 //! The chain aggregate's tests: mining, forging, forks, restoring and every rule a block is
 //! checked by.
 
+use super::block::owned;
 use super::validation::replay;
 use super::*;
 use crate::domain::accounting::TransactionError;
@@ -240,24 +241,24 @@ fn a_block_over_the_limit_is_refused() {
     chain.mine(&alice).unwrap();
 
     let limited = RULES.with_block_capacity(BlockCapacity::at_most(2));
-    assert!(Blockchain::restore(chain.blocks().to_vec(), RULES).is_ok());
+    assert!(Blockchain::restore(owned(chain.blocks()), RULES).is_ok());
     assert_eq!(
-        Blockchain::restore(chain.blocks().to_vec(), limited).err(),
+        Blockchain::restore(owned(chain.blocks()), limited).err(),
         Some(ChainError::InvalidBlock {
             height: 2,
             reason: BlockError::TooManyTransfers { max: 2, got: 3 }
         })
     );
-    let mut peer = Blockchain::restore(chain.blocks()[..2].to_vec(), limited).unwrap();
+    let mut peer = Blockchain::restore(owned(&chain.blocks()[..2]), limited).unwrap();
     assert_eq!(
-        peer.extend(chain.blocks()[2..].to_vec()),
+        peer.extend(owned(&chain.blocks()[2..])),
         Err(ChainError::InvalidBlock {
             height: 2,
             reason: BlockError::TooManyTransfers { max: 2, got: 3 }
         })
     );
     assert_eq!(
-        peer.append_mined(chain.blocks()[2].clone()).err(),
+        peer.append_mined(Block::clone(&chain.blocks()[2])).err(),
         Some(BlockError::TooManyTransfers { max: 2, got: 3 }),
         "a block made elsewhere is told why"
     );
@@ -314,14 +315,14 @@ fn tampering_breaks_validity() {
     chain.submit(transfer(&alice_key, &bob, 5, 0)).unwrap();
     chain.mine(&alice).unwrap();
 
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks[2].transactions[1].amount = Coins::new(50);
     assert_eq!(
         validate_blocks(&blocks, &RULES),
         Err(ChainError::InvalidBlock { height: 2, reason: BlockError::MerkleRootMismatch })
     );
 
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks[1].transactions[0].amount = Coins::new(1_000);
     blocks[1].hash = blocks[1].computed_hash();
     assert_eq!(
@@ -340,7 +341,7 @@ fn transactions_must_match_the_merkle_root() {
     chain.mine(&alice).unwrap();
 
     // The header, and so the hash and its proof of work, stays valid; the contents don't.
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks[2].transactions.pop();
     blocks[2].transactions[0].amount = Coins::new(50);
     assert_eq!(blocks[2].hash, blocks[2].computed_hash());
@@ -365,7 +366,7 @@ fn restore_rebuilds_balances() {
     chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
     chain.mine(&alice).unwrap();
 
-    let restored = Pooled::restore(chain.blocks().to_vec(), RULES).unwrap();
+    let restored = Pooled::restore(owned(chain.blocks()), RULES).unwrap();
     assert_eq!(restored.balance(&alice), Coins::new(80));
     assert_eq!(restored.balance(&bob), Coins::new(20));
     assert_eq!(restored.next_nonce(&alice), 1);
@@ -375,7 +376,7 @@ fn restore_rebuilds_balances() {
 fn restore_refuses_tampered_or_empty_blocks() {
     let mut chain = chain();
     chain.mine(&wallet().0).unwrap();
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks[1].transactions[0].amount = Coins::new(1_000);
     assert_eq!(
         Pooled::restore(blocks, RULES).err(),
@@ -389,8 +390,8 @@ fn restore_refuses_different_rules() {
     let mut chain = chain();
     chain.mine(&wallet().0).unwrap();
     // No SHA-256 hash is all zeros, so these blocks can't meet a difficulty of 64.
-    assert!(Pooled::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(64, 50)).is_err());
-    assert!(Pooled::restore(chain.blocks().to_vec(), ChainRules::proof_of_work(2, 25)).is_err());
+    assert!(Pooled::restore(owned(chain.blocks()), ChainRules::proof_of_work(64, 50)).is_err());
+    assert!(Pooled::restore(owned(chain.blocks()), ChainRules::proof_of_work(2, 25)).is_err());
 }
 
 #[test]
@@ -403,7 +404,7 @@ fn adopt_takes_a_heavier_valid_chain() {
     theirs.mine(&bob).unwrap();
     theirs.mine(&bob).unwrap();
 
-    assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+    assert_eq!(ours.adopt_if_heavier(owned(theirs.blocks())), Ok(true));
     assert_eq!(ours.blocks(), theirs.blocks());
     assert_eq!(ours.balance(&alice), Coins::new(0));
     assert_eq!(ours.balance(&bob), Coins::new(100));
@@ -415,11 +416,11 @@ fn adopt_keeps_ours_against_a_lighter_or_identical_chain() {
     let mut ours = chain();
     ours.mine(&wallet().0).unwrap();
     ours.mine(&wallet().0).unwrap();
-    let before = ours.blocks().to_vec();
+    let before = owned(ours.blocks());
 
     assert_eq!(ours.adopt_if_heavier(before[..2].to_vec()), Ok(false));
     assert_eq!(ours.adopt_if_heavier(before.clone()), Ok(false));
-    assert_eq!(ours.blocks(), before);
+    assert_eq!(owned(ours.blocks()), before);
 }
 
 #[test]
@@ -466,6 +467,19 @@ fn mining_stops_when_told_to() {
 }
 
 #[test]
+fn copying_a_chain_shares_its_blocks_and_changing_the_copy_leaves_the_original() {
+    let (alice, _) = wallet();
+    let mut chain = super::Blockchain::new(RULES);
+    chain.mine(&alice, &[]).unwrap();
+
+    // Every change in a node is made on a copy, so a copy mustn't cost a copy of every block.
+    let mut copy = chain.clone();
+    assert!(std::sync::Arc::ptr_eq(&copy.blocks()[1], &chain.blocks()[1]));
+    copy.mine(&alice, &[]).unwrap();
+    assert_eq!((chain.blocks().len(), copy.blocks().len()), (2, 3));
+}
+
+#[test]
 fn a_mempool_that_lags_the_chain_cannot_spoil_a_block() {
     let (alice, alice_key) = wallet();
     let (bob, _) = wallet();
@@ -492,30 +506,30 @@ fn every_change_says_what_happened() {
     assert_eq!(ours.take_events(), [ChainEvent::Extended { from: 1, to: 2 }], "merged");
 
     // A restored chain starts with nothing to tell.
-    let mut theirs = Pooled::restore(ours.blocks().to_vec(), rules).unwrap();
+    let mut theirs = Pooled::restore(owned(ours.blocks()), rules).unwrap();
     assert_eq!(theirs.take_events(), []);
     theirs.mine(&wallet().0).unwrap();
     theirs.mine(&wallet().0).unwrap();
 
     // Theirs is ours with more on top: an extension, however it arrives.
     let mut whole = ours.clone();
-    assert_eq!(whole.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+    assert_eq!(whole.adopt_if_heavier(owned(theirs.blocks())), Ok(true));
     assert_eq!(whole.take_events(), [ChainEvent::Extended { from: 3, to: 4 }]);
-    assert_eq!(ours.extend(theirs.blocks()[3..].to_vec()), Ok(Extension::Adopted));
+    assert_eq!(ours.extend(owned(&theirs.blocks()[3..])), Ok(Extension::Adopted));
     assert_eq!(ours.take_events(), [ChainEvent::Extended { from: 3, to: 4 }]);
 
     // A heavier fork from block 2 replaces three of ours with four of theirs.
-    let mut fork = Pooled::restore(ours.blocks()[..2].to_vec(), rules).unwrap();
+    let mut fork = Pooled::restore(owned(&ours.blocks()[..2]), rules).unwrap();
     for _ in 0..4 {
         fork.mine(&wallet().0).unwrap();
     }
-    assert_eq!(ours.adopt_if_heavier(fork.blocks().to_vec()), Ok(true));
+    assert_eq!(ours.adopt_if_heavier(owned(fork.blocks())), Ok(true));
     // Their blocks held only rewards, which never go back: nothing is returned.
     let replaced = ChainEvent::Reorganized { from: 2, dropped: 3, added: 4, returned: vec![] };
     assert_eq!(ours.take_events(), [replaced]);
 
     // Nothing adopted, nothing happened.
-    assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(false));
+    assert_eq!(ours.adopt_if_heavier(owned(theirs.blocks())), Ok(false));
     assert_eq!(ours.take_events(), []);
 }
 
@@ -533,11 +547,11 @@ fn extend_appends_new_blocks_on_our_tip() {
     theirs.mine(&bob).unwrap();
 
     // Overlapping blocks we already have are skipped.
-    assert_eq!(ours.extend(theirs.blocks()[1..].to_vec()), Ok(Extension::Adopted));
+    assert_eq!(ours.extend(owned(&theirs.blocks()[1..])), Ok(Extension::Adopted));
     assert_eq!(ours.blocks(), theirs.blocks());
     assert_eq!(ours.balance(&bob), Coins::new(120));
     assert!(ours.pending().is_empty(), "the confirmed payment left the mempool");
-    assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::Ignored));
+    assert_eq!(ours.extend(owned(&theirs.blocks()[2..])), Ok(Extension::Ignored));
     assert!(ours.is_valid());
 }
 
@@ -548,8 +562,8 @@ fn extend_asks_for_more_when_the_parent_is_missing() {
     theirs.mine(&wallet().0).unwrap();
     theirs.mine(&wallet().0).unwrap();
 
-    assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::MissingParent));
-    assert_eq!(ours.extend(theirs.blocks()[1..].to_vec()), Ok(Extension::Adopted));
+    assert_eq!(ours.extend(owned(&theirs.blocks()[2..])), Ok(Extension::MissingParent));
+    assert_eq!(ours.extend(owned(&theirs.blocks()[1..])), Ok(Extension::Adopted));
     assert_eq!(ours.blocks(), theirs.blocks());
 }
 
@@ -564,7 +578,7 @@ fn extend_weighs_a_fork_like_a_whole_chain() {
     theirs.mine(&bob).unwrap();
     theirs.mine(&bob).unwrap();
 
-    assert_eq!(ours.extend(theirs.blocks()[2..].to_vec()), Ok(Extension::Adopted));
+    assert_eq!(ours.extend(owned(&theirs.blocks()[2..])), Ok(Extension::Adopted));
     assert_eq!(ours.blocks(), theirs.blocks());
     assert_eq!(ours.balance(&alice), Coins::new(50));
 }
@@ -574,7 +588,7 @@ fn extend_refuses_a_bad_block_and_keeps_ours() {
     let mut ours = chain();
     let mut theirs = chain();
     theirs.mine(&wallet().0).unwrap();
-    let mut block = theirs.blocks()[1].clone();
+    let mut block = Block::clone(&theirs.blocks()[1]);
     block.transactions[0].amount = Coins::new(1_000);
     block.hash = block.computed_hash();
 
@@ -614,12 +628,12 @@ fn forks_are_checked_from_where_they_split() {
     assert_remembers_correctly(&ours, &[alice.clone(), bob.clone()]);
 
     // Their fork splits two blocks back and carries a payment ours never saw.
-    let mut theirs = Pooled::restore(ours.blocks()[..5].to_vec(), rules).unwrap();
+    let mut theirs = Pooled::restore(owned(&ours.blocks()[..5]), rules).unwrap();
     theirs.submit(transfer(&alice_key, &bob, 30, 0)).unwrap();
     for _ in 0..3 {
         theirs.mine(&bob).unwrap();
     }
-    assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+    assert_eq!(ours.adopt_if_heavier(owned(theirs.blocks())), Ok(true));
     assert_eq!(ours.blocks(), theirs.blocks());
     assert_eq!((ours.balance(&alice), ours.balance(&bob)), (Coins::new(170), Coins::new(180)));
     assert_remembers_correctly(&ours, &[alice.clone(), bob.clone()]);
@@ -628,7 +642,7 @@ fn forks_are_checked_from_where_they_split() {
     let mut longer = theirs.clone();
     longer.mine(&alice).unwrap();
     longer.mine(&alice).unwrap();
-    assert_eq!(ours.extend(longer.blocks()[8..].to_vec()), Ok(Extension::Adopted));
+    assert_eq!(ours.extend(owned(&longer.blocks()[8..])), Ok(Extension::Adopted));
     assert_remembers_correctly(&ours, &[alice, bob]);
 }
 
@@ -647,8 +661,7 @@ fn a_restart_from_a_snapshot_replays_only_what_came_after() {
     assert_eq!(snapshot.height, chain.blocks().len() - 3, "the oldest block no fork may undo");
 
     let (restored, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, limit, Some(snapshot.clone()))
-            .unwrap();
+        Pooled::restore_from(owned(chain.blocks()), rules, limit, Some(snapshot.clone())).unwrap();
     assert_eq!(from, Some(snapshot.height));
     assert_eq!(
         (restored.balance(&alice), restored.balance(&bob)),
@@ -661,30 +674,28 @@ fn a_restart_from_a_snapshot_replays_only_what_came_after() {
     let mut generous = snapshot.clone();
     generous.tally.ledger.credit(&bob, Coins::new(1_000));
     let (trusting, _) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, limit, Some(generous)).unwrap();
+        Pooled::restore_from(owned(chain.blocks()), rules, limit, Some(generous)).unwrap();
     assert_eq!(trusting.balance(&bob), Coins::new(1_020));
 
     // Blocks it covers that were changed don't lead to its block, so it isn't used.
-    let mut tampered = chain.blocks().to_vec();
+    let mut tampered = owned(chain.blocks());
     tampered[2].transactions[1].amount = Coins::new(25);
     assert!(Pooled::restore_from(tampered, rules, limit, Some(snapshot.clone())).is_err());
 
     // A node's own reorg limit isn't one of the rules: changing it keeps the snapshot.
     let wider = ReorgLimit::new(9);
     let (_, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, wider, Some(snapshot.clone()))
-            .unwrap();
+        Pooled::restore_from(owned(chain.blocks()), rules, wider, Some(snapshot.clone())).unwrap();
     assert_eq!(from, Some(snapshot.height));
 
     // But it isn't used under other rules, or for a chain where its block was replaced.
     let other = rules.with_block_capacity(BlockCapacity::at_most(9));
     let (_, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), other, limit, Some(snapshot.clone()))
-            .unwrap();
+        Pooled::restore_from(owned(chain.blocks()), other, limit, Some(snapshot.clone())).unwrap();
     assert_eq!(from, None);
     let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot };
     let (full, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, limit, Some(replaced)).unwrap();
+        Pooled::restore_from(owned(chain.blocks()), rules, limit, Some(replaced)).unwrap();
     assert_eq!((from, full.balance(&bob)), (None, Coins::new(20)));
 }
 
@@ -702,7 +713,7 @@ fn weight_grows_with_every_block() {
     chain.mine(&wallet().0).unwrap();
     chain.mine(&wallet().0).unwrap();
     assert_eq!(chain.weight().value(), 2 * 256);
-    let restored = Pooled::restore(chain.blocks().to_vec(), RULES).unwrap();
+    let restored = Pooled::restore(owned(chain.blocks()), RULES).unwrap();
     assert_eq!(restored.weight(), chain.weight());
 }
 
@@ -714,12 +725,12 @@ fn equal_forks_settle_on_the_lower_tip_hash_from_either_side() {
     b.mine(&wallet().0).unwrap();
     assert_eq!(a.weight(), b.weight());
 
-    let winner = if a.tip().hash < b.tip().hash { a.blocks() } else { b.blocks() }.to_vec();
-    let a_switched = a.adopt_if_heavier(b.blocks().to_vec()).unwrap();
+    let winner = owned(if a.tip().hash < b.tip().hash { a.blocks() } else { b.blocks() });
+    let a_switched = a.adopt_if_heavier(owned(b.blocks())).unwrap();
     let b_switched = b.adopt_if_heavier(winner.clone()).unwrap();
     assert_ne!(a_switched, b_switched, "exactly one side gives way");
-    assert_eq!(a.blocks(), winner);
-    assert_eq!(b.blocks(), winner);
+    assert_eq!(owned(a.blocks()), winner);
+    assert_eq!(owned(b.blocks()), winner);
 }
 
 #[test]
@@ -734,16 +745,16 @@ fn a_deep_reorg_is_refused_however_heavy() {
         theirs.mine(&wallet().0).unwrap();
     }
     assert_eq!(
-        ours.adopt_if_heavier(theirs.blocks().to_vec()),
+        ours.adopt_if_heavier(owned(theirs.blocks())),
         Err(ChainError::ReorgTooDeep { depth: 3, max: 2 })
     );
 
     let mut shallow = Pooled::limited(rules, limit);
-    shallow.adopt_if_heavier(ours.blocks()[..2].to_vec()).unwrap();
+    shallow.adopt_if_heavier(owned(&ours.blocks()[..2])).unwrap();
     shallow.mine(&wallet().0).unwrap();
     shallow.mine(&wallet().0).unwrap();
     shallow.mine(&wallet().0).unwrap();
-    assert_eq!(ours.adopt_if_heavier(shallow.blocks().to_vec()), Ok(true), "undoes only 2");
+    assert_eq!(ours.adopt_if_heavier(owned(shallow.blocks())), Ok(true), "undoes only 2");
 }
 
 #[test]
@@ -754,7 +765,7 @@ fn adopt_refuses_an_invalid_longer_chain() {
     ours.mine(&alice).unwrap();
     theirs.mine(&wallet().0).unwrap();
     theirs.mine(&wallet().0).unwrap();
-    let mut forged = theirs.blocks().to_vec();
+    let mut forged = owned(theirs.blocks());
     forged[2].transactions[0].amount = Coins::new(1_000);
 
     assert_eq!(
@@ -779,7 +790,7 @@ fn adopt_returns_dropped_transfers_to_the_mempool() {
     theirs.mine(&bob).unwrap();
     theirs.mine(&bob).unwrap();
 
-    assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+    assert_eq!(ours.adopt_if_heavier(owned(theirs.blocks())), Ok(true));
     assert_eq!(ours.pending(), [payment]);
     assert_eq!(ours.balance(&alice), Coins::new(50));
     assert_eq!(ours.next_nonce(&alice), 1);
@@ -799,7 +810,7 @@ fn adopt_drops_transfers_the_new_chain_already_confirmed() {
     theirs.mine(&bob).unwrap();
     theirs.mine(&bob).unwrap();
 
-    assert_eq!(ours.adopt_if_heavier(theirs.blocks().to_vec()), Ok(true));
+    assert_eq!(ours.adopt_if_heavier(owned(theirs.blocks())), Ok(true));
     assert!(ours.pending().is_empty());
     assert_eq!(ours.balance(&bob), Coins::new(120));
 }
@@ -900,10 +911,10 @@ fn each_consensus_refuses_the_other_ones_blocks() {
 
     let mut pos = Pooled::new(POS);
     pos.forge(&alice_key).unwrap();
-    assert!(Pooled::restore(pos.blocks().to_vec(), RULES).is_err());
+    assert!(Pooled::restore(owned(pos.blocks()), RULES).is_err());
     let mut pow = chain();
     pow.mine(&alice).unwrap();
-    assert!(Pooled::restore(pow.blocks().to_vec(), POS).is_err());
+    assert!(Pooled::restore(owned(pow.blocks()), POS).is_err());
 }
 
 #[test]
@@ -913,7 +924,7 @@ fn forged_blocks_cannot_be_tampered_with_or_reassigned() {
     let (mallory, _) = wallet();
     chain.forge(&alice_key).unwrap();
 
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks[1].validator = Some(mallory.clone());
     blocks[1].hash = blocks[1].computed_hash();
     assert_eq!(
@@ -922,7 +933,7 @@ fn forged_blocks_cannot_be_tampered_with_or_reassigned() {
         "signature no longer matches the validator"
     );
 
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks[1].signature = None;
     assert_eq!(
         validate_blocks(&blocks, &POS),
@@ -941,7 +952,7 @@ fn only_the_selected_validator_may_forge_on_a_replayed_chain() {
     assert_eq!(chain.next_validator(), Some(alice.clone()));
 
     // Bob forges a block out of turn by going around `forge`.
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     let reward = Transaction::coinbase(&Address::of(&bob_key), Coins::new(50), 3);
     let bob_block =
         Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key, None);
@@ -975,7 +986,7 @@ fn a_short_fork_backed_by_stake_beats_a_long_one_nobody_staked() {
 
     assert_eq!(unstaked.weight().value(), 4);
     assert_eq!(staked.weight().value(), 32);
-    assert_eq!(unstaked.adopt_if_heavier(staked.blocks().to_vec()), Ok(true));
+    assert_eq!(unstaked.adopt_if_heavier(owned(staked.blocks())), Ok(true));
     assert_eq!(unstaked.blocks().len(), 4, "the shorter chain won");
 }
 
@@ -1228,7 +1239,7 @@ fn fees_are_signed_and_counted_in_the_payout() {
 
     // A peer rewrites the block and does all the work again, so only the rules can catch it.
     let remined = |change: fn(&mut Vec<Transaction>)| {
-        let mut blocks = chain.blocks().to_vec();
+        let mut blocks = owned(chain.blocks());
         let mut txs = blocks[2].transactions.clone();
         change(&mut txs);
         let (prev, at) = (blocks[1].hash.clone(), blocks[2].timestamp);
@@ -1293,7 +1304,7 @@ fn blocks_that_come_too_fast_make_mining_harder_and_too_slow_easier() {
     assert_eq!(history[10..15], [64; 5]);
     let total: u128 = history[1..].iter().sum();
     assert_eq!(chain.weight().value(), total, "weight is the work each block required");
-    let restored = Pooled::restore(chain.blocks().to_vec(), ADJUSTING).unwrap();
+    let restored = Pooled::restore(owned(chain.blocks()), ADJUSTING).unwrap();
     assert_eq!(restored.next_work(), chain.next_work());
 }
 
@@ -1328,7 +1339,7 @@ fn a_block_below_the_required_work_is_rejected() {
         })
         .find(|b| !meets_work(b.hash.as_str(), 64))
         .unwrap();
-    let mut blocks = chain.blocks().to_vec();
+    let mut blocks = owned(chain.blocks());
     blocks.push(easy);
     assert_eq!(
         validate_blocks(&blocks, &ADJUSTING),
@@ -1359,5 +1370,5 @@ fn a_shorter_but_harder_fork_beats_a_longer_easier_one() {
 
     assert!(hard.blocks().len() < easy.blocks().len());
     assert!(hard.weight() > easy.weight());
-    assert_eq!(easy.adopt_if_heavier(hard.blocks().to_vec()), Ok(true));
+    assert_eq!(easy.adopt_if_heavier(owned(hard.blocks())), Ok(true));
 }

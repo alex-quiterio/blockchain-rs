@@ -9,6 +9,8 @@ pub mod merkle;
 mod proof;
 mod sealing;
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -141,4 +143,10 @@ impl Block {
             _ => false,
         }
     }
+}
+
+/// Copies of a chain's shared blocks, for whoever needs blocks of their own: an answer that
+/// outlives the chain's lock, or a store.
+pub fn owned(blocks: &[Arc<Block>]) -> Vec<Block> {
+    blocks.iter().map(|block| Block::clone(block)).collect()
 }

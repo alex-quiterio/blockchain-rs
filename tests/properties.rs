@@ -1,6 +1,8 @@
 //! Property-based tests: random transaction orderings and random forks, checked against the
 //! invariants every node relies on.
 
+use std::sync::Arc;
+
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
@@ -11,9 +13,9 @@ use proptest::test_runner::FileFailurePersistence;
 use blockchain::domain::accounting::transaction::Transaction;
 use blockchain::domain::accounting::TransactionError;
 use blockchain::domain::accounting::{Coins, Destination};
-use blockchain::domain::chain::block::Block;
 use blockchain::domain::chain::block::BlockError;
 use blockchain::domain::chain::block::BlockHash;
+use blockchain::domain::chain::block::{owned, Block};
 use blockchain::domain::chain::ChainError;
 use blockchain::domain::chain::{validate_blocks, Blockchain, ChainEvent};
 use blockchain::domain::consensus::randao;
@@ -263,8 +265,8 @@ fn run(rules: ChainRules, ops: &[Op]) -> Pooled {
 }
 
 /// Whatever order transactions arrive in, a node retries until nothing more fits, as gossip would.
-fn deliver(rules: ChainRules, funding: &[Block], batch: &[Transaction]) -> Pooled {
-    let mut chain = Pooled::restore(funding.to_vec(), rules).unwrap();
+fn deliver(rules: ChainRules, funding: &[Arc<Block>], batch: &[Transaction]) -> Pooled {
+    let mut chain = Pooled::restore(owned(funding), rules).unwrap();
     let mut waiting = batch.to_vec();
     loop {
         let before = waiting.len();
@@ -291,7 +293,7 @@ proptest! {
     fn random_operations_never_break_the_ledger_under_proof_of_work(ops in prop::collection::vec(op(), 0..40)) {
         let chain = run(POW, &ops);
         prop_assert!(chain.is_valid());
-        let restored = Pooled::restore(chain.blocks().to_vec(), POW).unwrap();
+        let restored = Pooled::restore(owned(chain.blocks()), POW).unwrap();
         for i in 0..WALLETS {
             prop_assert_eq!(restored.balance(&address(i)), chain.balance(&address(i)));
             prop_assert_eq!(restored.staked(&address(i)), chain.staked(&address(i)));
@@ -303,7 +305,7 @@ proptest! {
     fn random_operations_never_break_the_ledger_under_proof_of_stake(ops in prop::collection::vec(op(), 0..40)) {
         let chain = run(POS, &ops);
         prop_assert!(chain.is_valid());
-        let restored = Pooled::restore(chain.blocks().to_vec(), POS).unwrap();
+        let restored = Pooled::restore(owned(chain.blocks()), POS).unwrap();
         prop_assert_eq!(restored.stakes(), chain.stakes());
         prop_assert_eq!(restored.next_validator(), chain.next_validator());
     }
@@ -360,7 +362,7 @@ proptest! {
         // Each fork branches off the base at some height and mines its own blocks on top.
         let mut candidates = vec![base.clone()];
         for &(height, extra, miner) in &forks {
-            let mut fork = Pooled::restore(base.blocks()[..=height].to_vec(), POW).unwrap();
+            let mut fork = Pooled::restore(owned(&base.blocks()[..=height]), POW).unwrap();
             for _ in 0..extra {
                 fork.mine(&address(miner)).unwrap();
             }
@@ -373,11 +375,11 @@ proptest! {
 
         let mut node = Pooled::new(POW);
         for &i in &order {
-            node.adopt_if_heavier(candidates[i].blocks().to_vec()).unwrap();
+            node.adopt_if_heavier(owned(candidates[i].blocks())).unwrap();
         }
         prop_assert_eq!(&node.tip().hash(), &winner.tip().hash());
         for candidate in &candidates {
-            prop_assert_eq!(node.adopt_if_heavier(candidate.blocks().to_vec()), Ok(false), "settled for good");
+            prop_assert_eq!(node.adopt_if_heavier(owned(candidate.blocks())), Ok(false), "settled for good");
         }
         node.mine(&address(0)).unwrap();
         prop_assert!(node.is_valid());
@@ -428,7 +430,7 @@ proptest! {
             let work = chain.next_work();
             let (index, prev) = (chain.blocks().len() as u64, chain.tip().hash().clone());
             let payout = vec![Transaction::coinbase(&address(i % WALLETS), Coins::new(REWARD), index)];
-            let mut blocks = chain.blocks().to_vec();
+            let mut blocks = owned(chain.blocks());
             blocks.push(Block::mine(index, at, prev, payout, work));
             chain = Pooled::restore(blocks, rules).expect("every honestly mined block is valid");
         }
@@ -453,7 +455,7 @@ proptest! {
             theirs.mine(&address(i % WALLETS)).unwrap();
         }
         // Outside the domain a block can't be changed, only rewritten as JSON, as a peer would.
-        let mut forged = theirs.blocks().to_vec();
+        let mut forged = owned(theirs.blocks());
         let mut json = serde_json::to_value(&forged[block]).unwrap();
         let bump = |value: &serde_json::Value| serde_json::Value::from(value.as_u64().unwrap() + 1);
         match field {
@@ -474,13 +476,13 @@ proptest! {
         }
         forged[block] = serde_json::from_value(json).unwrap();
 
-        let before = ours.blocks().to_vec();
+        let before = owned(ours.blocks());
         // Refused at the altered block, or at the next one whose link it broke, and said so.
         let refused = validate_blocks(&forged, &POW).unwrap_err();
         let at = |height: u64| height == block as u64 || height == block as u64 + 1;
         prop_assert!(matches!(refused, ChainError::InvalidBlock { height, .. } if at(height)), "{}", refused);
         prop_assert_eq!(ours.adopt_if_heavier(forged), Err(refused));
-        prop_assert_eq!(ours.blocks(), &before[..]);
+        prop_assert_eq!(owned(ours.blocks()), before);
     }
 
     #[test]

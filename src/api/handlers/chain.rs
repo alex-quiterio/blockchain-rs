@@ -11,6 +11,7 @@ use super::error::ApiError;
 use super::{gossip_chain, sender};
 use crate::api::dto::chain::{ChainQuery, ReplaceResponse, StatusResponse, ValidityResponse};
 use crate::api::AppState;
+use crate::application::off_runtime;
 use crate::domain::chain::block::{Block, BlockHeader};
 use crate::domain::chain::Extension;
 
@@ -66,9 +67,7 @@ pub async fn replace_chain(
     Json(blocks): Json<Vec<Block>>,
 ) -> Result<Json<ReplaceResponse>, ApiError> {
     let node = state.node.clone();
-    let (extension, length) = tokio::task::spawn_blocking(move || node.extend(blocks))
-        .await
-        .expect("replace task panicked")?;
+    let (extension, length) = off_runtime(move || node.extend(blocks)).await?;
     let from = sender(&state, &headers);
     let replaced = extension == Extension::Adopted;
     if replaced {
@@ -79,7 +78,8 @@ pub async fn replace_chain(
 }
 
 pub async fn get_validity(State(state): State<AppState>) -> Json<ValidityResponse> {
-    let status = state.queries.status();
+    let queries = state.queries.clone();
+    let status = off_runtime(move || queries.status()).await;
     Json(ValidityResponse {
         valid: status.problem.is_none(),
         problem: status.problem.map(|e| e.to_string()),

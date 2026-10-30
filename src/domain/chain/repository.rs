@@ -2,6 +2,8 @@
 //! infrastructure implements. One per aggregate, and only the chain has one: the mempool isn't
 //! stored.
 
+use std::sync::Arc;
+
 use super::block::Block;
 use super::{ChainEvent, Snapshot};
 
@@ -14,7 +16,11 @@ pub trait ChainRepository: Send + Sync {
 
     /// Saves the chain as `blocks`, after `events`, what happened to it since the last save, so a
     /// store can write only what's new.
-    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError>;
+    fn save(
+        &self,
+        blocks: &[Arc<Block>],
+        events: &[ChainEvent],
+    ) -> Result<(), ChainRepositoryError>;
 
     /// The last snapshot saved, if this store keeps them. A store that doesn't returns `None`,
     /// and every start replays the whole chain.
