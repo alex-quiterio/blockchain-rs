@@ -1,10 +1,10 @@
 // The network panel: this node's peers and whether they're ahead, behind or in step, adding one
 // and syncing now; and the footer, saying which build the node runs.
 
-import { addPeer, syncNow } from "../../application/peers.js";
-import { state } from "../../application/node_view.js";
-import { $, ago, el, toast } from "../dom.js";
-import { busy } from "./actions.js";
+import { addPeer, syncNow } from "../../../../application/peers.js";
+import { state } from "../../../../application/node_view.js";
+import { $, ago, el, toast } from "../../../dom.js";
+import { busy } from "../../actions.js";
 
 export function renderPeers() {
   $("peer-count").textContent = state.peers.length || "";

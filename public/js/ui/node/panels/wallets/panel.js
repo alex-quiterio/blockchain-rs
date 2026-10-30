@@ -1,12 +1,12 @@
 // The wallets panel: the vault's lock, the wallets and what each holds, making one, and backing
 // them up or restoring them.
 
-import { isStake, state } from "../../application/node_view.js";
-import { createWallet, wallets } from "../../application/wallets.js";
-import { $, el, fmt, short, toast } from "../dom.js";
-import { busy, fail, refreshPage } from "./actions.js";
-import { avatar } from "./components.js";
-import { updateSendSummary } from "./sending.js";
+import { isStake, state } from "../../../../application/node_view.js";
+import { createWallet, wallets } from "../../../../application/wallets.js";
+import { $, el, fmt, short, toast } from "../../../dom.js";
+import { busy, fail, refreshPage } from "../../actions.js";
+import { avatar } from "../../components.js";
+import { updateSendSummary } from "../sending/panel.js";
 
 const lockIcon = (open) => el("span", { textContent: open ? "🔓" : "🔒", ariaHidden: "true" });
 

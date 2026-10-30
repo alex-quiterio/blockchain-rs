@@ -1,0 +1,18 @@
+/* The network panel and the footer: this node's peers, and the build it runs. */
+
+.peers { list-style: none; margin: .9rem 0 .7rem; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
+.peer { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .15rem .6rem; padding: .55rem .7rem; border-radius: 10px; background: var(--surface-2); font-size: .8rem; }
+.peer .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.peer .dot.up { background: var(--ok); }
+.peer .dot.down { background: var(--bad); }
+.peer .url { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peer .rel { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+.peer .rel.ahead { color: var(--gold); font-weight: 600; }
+.peer .note { grid-column: 2 / -1; color: var(--muted); font-size: .7rem; }
+.peer .note.err { color: var(--bad); }
+button.ghost { width: 100%; background: none; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
+button.ghost:hover { border-color: var(--muted); }
+
+.footer { max-width: 1400px; margin: 0 auto; padding: 0 1.5rem 2rem; font-size: .74rem; color: var(--muted); display: flex; gap: .5rem; flex-wrap: wrap; }
+.footer .mono { color: var(--ink); }
+.footer .dirty { color: var(--gold); }

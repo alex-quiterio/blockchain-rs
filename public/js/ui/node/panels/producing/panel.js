@@ -1,13 +1,13 @@
 // The producer panel: mining a block under proof of work, or forging one under proof of stake,
 // with whose turn it is and how the stake is split.
 
-import { isStake, state } from "../../application/node_view.js";
-import { forge, mine } from "../../application/producing.js";
-import { wallets } from "../../application/wallets.js";
-import { $, el, explain, fmt, toast } from "../dom.js";
-import { busy, requireUnlocked } from "./actions.js";
-import { avatar, fmtWork, hues, nameOf, party, pct } from "./components.js";
-import { fillSelect } from "./wallets.js";
+import { isStake, state } from "../../../../application/node_view.js";
+import { forge, mine } from "../../../../application/producing.js";
+import { wallets } from "../../../../application/wallets.js";
+import { $, el, explain, fmt, toast } from "../../../dom.js";
+import { busy, requireUnlocked } from "../../actions.js";
+import { avatar, fmtWork, hues, nameOf, party, pct } from "../../components.js";
+import { fillSelect } from "../wallets/panel.js";
 
 export function renderProducer() {
   if (isStake()) return renderForge();

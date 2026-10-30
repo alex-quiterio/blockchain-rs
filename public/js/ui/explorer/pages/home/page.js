@@ -1,9 +1,9 @@
 // The explorer's home: where the network stands, the latest blocks and what's waiting.
 
-import { context, latest } from "../../application/lookup.js";
-import { feesOf } from "../../domain/transfers.js";
-import { ago, el, fmt, short } from "../dom.js";
-import { factRow, href, link, panel, table, txTable, who } from "./components.js";
+import { context, latest } from "../../../../application/lookup.js";
+import { feesOf } from "../../../../domain/transfers.js";
+import { ago, el, fmt, short } from "../../../dom.js";
+import { factRow, href, link, panel, table, txTable, who } from "../../components.js";
 
 const LATEST = 20;
 

@@ -1,13 +1,13 @@
 // The send panel and what's waiting: sending from a wallet, staking or unstaking, with what it
 // costs and whether the fee gets it into the next block; and the mempool.
 
-import { state } from "../../application/node_view.js";
-import { send } from "../../application/sending.js";
-import { wallets } from "../../application/wallets.js";
-import { STAKE, UNSTAKE, feesOf } from "../../domain/transfers.js";
-import { $, el, fmt, toast } from "../dom.js";
-import { busy, requireUnlocked } from "./actions.js";
-import { txView } from "./components.js";
+import { state } from "../../../../application/node_view.js";
+import { send } from "../../../../application/sending.js";
+import { wallets } from "../../../../application/wallets.js";
+import { STAKE, UNSTAKE, feesOf } from "../../../../domain/transfers.js";
+import { $, el, fmt, toast } from "../../../dom.js";
+import { busy, requireUnlocked } from "../../actions.js";
+import { txView } from "../../components.js";
 
 export function renderPending() {
   const fees = feesOf(state.pending);

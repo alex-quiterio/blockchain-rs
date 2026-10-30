@@ -1,0 +1,15 @@
+/* What the explorer's pages share: muted and pending text, and tables. */
+
+.muted { color: var(--muted); }
+.wrap { overflow-wrap: anywhere; }
+.pending { color: var(--gold); font-weight: 600; }
+
+.grid-wrap { overflow-x: auto; }
+.grid { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.grid th { text-align: left; color: var(--muted); font-weight: 600; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
+.grid td { padding: .45rem .5rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.grid tr:last-child td { border-bottom: 0; }
+.grid tbody tr:hover { background: var(--surface-2); }
+.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
+.grid .ok { color: var(--ok); }
+.grid .bad { color: var(--bad); }

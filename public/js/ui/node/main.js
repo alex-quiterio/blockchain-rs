@@ -8,11 +8,11 @@ import { NodeHttpClient } from "../../infrastructure/node_client.js";
 import { WalletsLocalStorageRepository } from "../../infrastructure/repository/local_storage.js";
 import { toast } from "../dom.js";
 import { isWorking, onRefresh } from "./actions.js";
-import { renderChain, renderStats } from "./chain.js";
-import { installNetwork, renderFooter, renderPeers } from "./network.js";
-import { renderProducer } from "./producing.js";
-import { installSending, renderPending } from "./sending.js";
-import { installWallets, renderWallets } from "./wallets.js";
+import { renderChain, renderStats } from "./panels/chain/panel.js";
+import { installNetwork, renderFooter, renderPeers } from "./panels/network/panel.js";
+import { renderProducer } from "./panels/producing/panel.js";
+import { installSending, renderPending } from "./panels/sending/panel.js";
+import { installWallets, renderWallets } from "./panels/wallets/panel.js";
 
 const POLL_MS = 4000;
 

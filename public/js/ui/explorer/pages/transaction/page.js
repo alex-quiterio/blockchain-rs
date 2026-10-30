@@ -1,13 +1,13 @@
 // A transaction's page: what it is, who signed it, what it changes, and, once confirmed, the
 // Merkle proof that it's in its block, each hash redone here.
 
-import { transaction as lookUpTransaction } from "../../application/lookup.js";
-import { kindOf, signingPayload } from "../../domain/transfers.js";
-import { headerHash } from "../../domain/verification/blocks.js";
-import { climb, leaf } from "../../domain/verification/merkle.js";
-import { transferIsSigned } from "../../domain/verification/signatures.js";
-import { ago, el, fmt, short } from "../dom.js";
-import { checkRow, factRow, formula, href, link, panel, who } from "./components.js";
+import { transaction as lookUpTransaction } from "../../../../application/lookup.js";
+import { kindOf, signingPayload } from "../../../../domain/transfers.js";
+import { headerHash } from "../../../../domain/verification/blocks.js";
+import { climb, leaf } from "../../../../domain/verification/merkle.js";
+import { transferIsSigned } from "../../../../domain/verification/signatures.js";
+import { ago, el, fmt, short } from "../../../dom.js";
+import { checkRow, factRow, formula, href, link, panel, who } from "../../components.js";
 
 export async function txPage(signature) {
   const { transaction: tx, placed, block, proof } = await lookUpTransaction(signature);

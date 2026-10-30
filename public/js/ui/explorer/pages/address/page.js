@@ -1,9 +1,9 @@
 // An address's page: what it holds, its history, and whether that history adds up to it.
 
-import { address as lookUpAddress } from "../../application/lookup.js";
-import { COINBASE, STAKE, UNSTAKE, kindOf } from "../../domain/transfers.js";
-import { el, fmt, short } from "../dom.js";
-import { checkRow, factRow, panel, txTable } from "./components.js";
+import { address as lookUpAddress } from "../../../../application/lookup.js";
+import { COINBASE, STAKE, UNSTAKE, kindOf } from "../../../../domain/transfers.js";
+import { el, fmt, short } from "../../../dom.js";
+import { checkRow, factRow, panel, txTable } from "../../components.js";
 
 export async function addressPage(address) {
   const { account, history } = await lookUpAddress(address);

@@ -1,12 +1,12 @@
 // A block's page: why it's valid, each of the node's checks redone here, and what it holds.
 
-import { block as lookUpBlock, context } from "../../application/lookup.js";
-import { feesOf } from "../../domain/transfers.js";
-import { headerHash, meetsWork } from "../../domain/verification/blocks.js";
-import { root } from "../../domain/verification/merkle.js";
-import { blockIsSigned, transferIsSigned } from "../../domain/verification/signatures.js";
-import { ago, el, fmt, short } from "../dom.js";
-import { checkRow, factRow, formula, href, link, panel, txTable, who } from "./components.js";
+import { block as lookUpBlock, context } from "../../../../application/lookup.js";
+import { feesOf } from "../../../../domain/transfers.js";
+import { headerHash, meetsWork } from "../../../../domain/verification/blocks.js";
+import { root } from "../../../../domain/verification/merkle.js";
+import { blockIsSigned, transferIsSigned } from "../../../../domain/verification/signatures.js";
+import { ago, el, fmt, short } from "../../../dom.js";
+import { checkRow, factRow, formula, href, link, panel, txTable, who } from "../../components.js";
 
 export async function blockPage(id) {
   const { block, prev, work } = await lookUpBlock(id);

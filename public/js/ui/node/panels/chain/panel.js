@@ -1,11 +1,11 @@
 // The chain panel: the stats along the top, and the latest blocks, each with the story of why
 // it's valid, its Merkle root re-checked here.
 
-import { SHOWN_BLOCKS, blockAt, isStake, state, supply, tip } from "../../application/node_view.js";
-import { feesOf } from "../../domain/transfers.js";
-import { root } from "../../domain/verification/merkle.js";
-import { $, ago, el, fmt, short } from "../dom.js";
-import { fmtWork, hashView, party, txView } from "./components.js";
+import { SHOWN_BLOCKS, blockAt, isStake, state, supply, tip } from "../../../../application/node_view.js";
+import { feesOf } from "../../../../domain/transfers.js";
+import { root } from "../../../../domain/verification/merkle.js";
+import { $, ago, el, fmt, short } from "../../../dom.js";
+import { fmtWork, hashView, party, txView } from "../../components.js";
 
 const SHOWN_TXS = 6;
 let seenTip = null;

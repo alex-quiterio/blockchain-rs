@@ -6,11 +6,11 @@ import { refreshContext, search } from "../../application/lookup.js";
 import { wire } from "../../application/ports.js";
 import { NodeHttpClient } from "../../infrastructure/node_client.js";
 import { $, el, toast } from "../dom.js";
-import { addressPage } from "./address.js";
-import { blockPage } from "./block.js";
+import { addressPage } from "./pages/address/page.js";
+import { blockPage } from "./pages/block/page.js";
 import { href, link, panel } from "./components.js";
-import { home } from "./home.js";
-import { txPage } from "./transaction.js";
+import { home } from "./pages/home/page.js";
+import { txPage } from "./pages/transaction/page.js";
 
 const POLL_MS = 4000;
 

@@ -300,7 +300,9 @@ flowchart TB
     - `transfers.js`: what a transfer is: its kinds, its fees and what its sender signs. `encoding.js`: hex and SHA-256
   - `application/`: the use cases: the node as the page last saw it (`node_view.js`), sending, producing a block, the wallets, peers, and the explorer's lookups. They talk through `ports.js`, which each page's `main.js` wires, so no use case names an adapter
   - `infrastructure/`: the **adapters**: `node_client.js`, the node's HTTP API, and `repository/local_storage.js`, where the wallets are kept
-  - `ui/`: the two pages, `node/` (`index.html`) and `explorer/` (`explorer.html`), each a `main.js` that wires the adapters and installs its panels, split by area: chain, wallets, sending, producing, network; and the explorer's home, block, transaction and address pages
+  - `ui/`: `dom.js` and `base.css`, which both pages share, and the two pages, `node/` (`index.html`) and `explorer/` (`explorer.html`). Each page's folder has its `main.js` at the root, which wires the adapters, with its layout in `main.css` and what several of its parts draw in `components.js` and `components.css`. Beneath it, each part is a folder holding its own script and styles:
+    - `node/panels/`: `chain/`, `wallets/`, `sending/`, `producing/` and `network/`, each a `panel.js` and `panel.css`
+    - `explorer/pages/`: `home/`, `block/`, `transaction/` and `address/`, each a `page.js`, with a `page.css` where it has styles of its own
 - **`src/bin/loadgen.rs`** is the load generator, a separate client that only talks to nodes over HTTP.
 
 ## 📡 API
