@@ -16,7 +16,7 @@ use blockchain::domain::block::BlockHeader;
 use blockchain::domain::chain::ReorgLimit;
 use blockchain::domain::merkle;
 use blockchain::domain::rules::ChainRules;
-use blockchain::domain::values::Coins;
+use blockchain::domain::values::{BlockCapacity, Coins};
 use blockchain::infrastructure::{HttpPeerClient, InMemoryRepository};
 
 fn app() -> Router {
@@ -351,4 +351,35 @@ async fn the_explorer_finds_blocks_transactions_and_addresses() {
     assert_eq!(history[0]["transaction"]["amount"], 4);
     let (status, _) = call(&app, "GET", "/addresses/not-hex/transactions", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn fees_say_what_wins_a_place_in_a_full_block() {
+    let rules = ChainRules::proof_of_work(2, 50).with_block_capacity(BlockCapacity::at_most(2));
+    let app = app_with(rules);
+    let mut wallets = Vec::new();
+    for _ in 0..3 {
+        let (_, wallet) = call(&app, "POST", "/wallets", None).await;
+        call(&app, "POST", "/mine", Some(json!({ "miner": wallet["address"] }))).await;
+        wallets.push(wallet);
+    }
+    let (_, fees) = call(&app, "GET", "/fees", None).await;
+    assert_eq!((&fees["fee"], &fees["room"], &fees["capacity"]), (&json!(0), &json!(2), &json!(2)));
+    assert_eq!(fees["recent"][0]["height"], 3, "newest first");
+    assert_eq!(fees["recent"][0]["full"], false);
+
+    // Two pay 3 and 5: the block is full, and beating it takes one more than the 3.
+    for (wallet, fee) in wallets.iter().zip([3, 5]) {
+        let sign = json!({ "secret_key": wallet["secret_key"], "to": wallets[2]["address"], "amount": 1, "fee": fee });
+        let (_, tx) = call(&app, "POST", "/transactions/sign", Some(sign)).await;
+        call(&app, "POST", "/transactions", Some(tx)).await;
+    }
+    let (_, fees) = call(&app, "GET", "/fees", None).await;
+    assert_eq!((&fees["fee"], &fees["room"], &fees["waiting"]), (&json!(4), &json!(0), &json!(2)));
+
+    call(&app, "POST", "/mine", Some(json!({ "miner": wallets[2]["address"] }))).await;
+    let (_, fees) = call(&app, "GET", "/fees", None).await;
+    let newest = &fees["recent"][0];
+    assert_eq!((&newest["full"], &newest["lowest_fee"]), (&json!(true), &json!(3)));
+    assert_eq!(fees["fee"], 0, "the mempool is empty again");
 }

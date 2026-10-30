@@ -123,15 +123,20 @@ fn transfer() -> impl Strategy<Value = (usize, usize, u64, u64)> {
     (0..WALLETS, 0..=WALLETS, 1..40u64, 0..10u64)
 }
 
-/// A chain whose blocks hold at most `capacity` transfers, with a block mined for each of
-/// `funded`, and `transfers` queued on top. Those that don't apply are turned away, as a node
-/// would; those that spend coins still on their way wait behind the payment bringing them.
+/// Someone with a block's reward to spend and nothing waiting, who arrives after the rest.
+const NEWCOMER: usize = WALLETS + 3;
+
+/// A chain whose blocks hold at most `capacity` transfers, with a block mined for the newcomer
+/// and one for each of `funded`, and `transfers` queued on top. Those that don't apply are
+/// turned away, as a node would; those that spend coins still on their way wait behind the
+/// payment bringing them.
 fn queued(
     capacity: BlockCapacity,
     funded: &[usize],
     transfers: &[(usize, usize, u64, u64)],
 ) -> Pooled {
     let mut chain = Pooled::new(POW.with_block_capacity(capacity));
+    chain.mine(&address(NEWCOMER)).unwrap();
     for &wallet in funded {
         chain.mine(&address(wallet)).unwrap();
     }
@@ -517,5 +522,27 @@ proptest! {
         let block = chain.mine(&address(0)).unwrap();
         prop_assert_eq!(&block.transactions()[1..], &chosen[..]);
         prop_assert_eq!(block.transactions()[0].amount(), Coins::new(REWARD).checked_add(fees).unwrap());
+    }
+
+    #[test]
+    fn paying_the_estimated_fee_is_exactly_enough_for_the_next_block(
+        funded in prop::collection::vec(0..WALLETS, 1..6),
+        transfers in prop::collection::vec(transfer(), 0..30),
+        capacity in 1..32u64,
+    ) {
+        let capacity = BlockCapacity::at_most(capacity);
+        let chain = queued(capacity, &funded, &transfers);
+        let estimate = chain.pool.fee_estimate(capacity);
+        let newcomer_pays = |fee: Coins| {
+            let mut chain = chain.clone();
+            let tx = Transaction::signed(&key(NEWCOMER), address(0), Coins::new(1), 0, fee);
+            chain.submit(tx.clone()).unwrap();
+            chain.mine(&address(0)).unwrap().transactions().contains(&tx)
+        };
+        prop_assert!(newcomer_pays(estimate.fee), "paying {} didn't get in", estimate.fee);
+        if let Some(less) = estimate.fee.checked_sub(Coins::new(1)) {
+            prop_assert_eq!(estimate.room, 0, "a fee is only asked for once the block is full");
+            prop_assert!(!newcomer_pays(less), "{} was enough, but {} was asked for", less, estimate.fee);
+        }
     }
 }

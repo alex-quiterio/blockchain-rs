@@ -365,6 +365,9 @@ else
   done
   rm -rf "$queued"
   printf '  ✉️  the %ss queue %s%s free transfers%s of 1 coin\n' "$MINER" "$B" "$free" "$R"
+  quote=$(curl -s -m 5 "${NODES[0]}/fees")
+  printf '  💬 %s/fees: %s places left, so a transfer now needs a fee of %s%s%s\n' "$(node_label 0)" \
+    "$(jq -r .room <<< "$quote")" "$B" "$(jq -r .fee <<< "$quote")" "$R"
   # ...then, last in line, a few people pay to jump the queue.
   paid=()
   for p in Alice Bob Carol Dave; do

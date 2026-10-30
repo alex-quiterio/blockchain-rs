@@ -50,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .route("/transactions", post(handlers::submit_transaction))
         .route("/transactions/sign", post(handlers::sign_transaction))
         .route("/transactions/pending", get(handlers::get_pending))
+        .route("/fees", get(handlers::get_fees))
         .route("/transactions/:signature", get(handlers::get_transaction))
         .route("/transactions/:signature/proof", get(handlers::get_proof))
         .route("/blocks/:id", get(handlers::get_block))

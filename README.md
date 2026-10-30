@@ -24,7 +24,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ✍️ **Transactions** | Signed over `from \| to \| amount \| nonce` (plus the fee, when there is one). The nonce stops replays. |
 | ⛏️ **Proof of work** | Mine a block by finding a hash below a target. The difficulty adjusts every few blocks to keep them coming at a steady pace as miners join or leave. |
 | 🪙 **Proof of stake** | Lock coins with a transaction to `stake`. Each block's validator is drawn at random, weighted by stake, from a commit-reveal randomness beacon that forgers can't steer, then signs the block. |
-| 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. A block holds at most `MAX_BLOCK_TRANSFERS` transfers, so when more are waiting the highest fees go in first and the rest wait for the next block. |
+| 💸 **Fees** | Optional per transaction. Whoever adds the block gets the reward plus every fee in it. A block holds at most `MAX_BLOCK_TRANSFERS` transfers, so when more are waiting the highest fees go in first and the rest wait for the next block. `GET /fees` says what fee gets in now, and the Send panel suggests it. |
 | 🌐 **Peers & sync** | Nodes introduce themselves both ways and gossip each new block on its own to every peer at once, sending the last few blocks only to a peer that lacks them. Every few seconds they compare tips and pull only what they're missing, 500 blocks at a time, which is how a node far behind catches up. A node that hears from a peer it doesn't know adds it back, so links heal after a restart. |
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
 | 💾 **Storage** | The chain is saved as JSON, one block per line. A new block is appended, so saving costs the same however long the chain gets; only a fork rewrites the file, atomically. Every `SNAPSHOT_BLOCKS` blocks a snapshot of the balances is saved beside it, so a restart replays only the blocks since; the blocks before it must hash and link up to the snapshot's block, so changed ones are refused. `GET /chain/valid` still replays everything. |
@@ -182,6 +182,8 @@ A block holds at most `MAX_BLOCK_TRANSFERS` transfers, and every node refuses on
 
 Among equal fees, whichever arrived first goes first. What's left stays in the mempool for the next block. While everything fits, a block takes it all in the order it arrived.
 
+**What fee to pay.** `GET /fees` answers from the mempool's own choice. While the next block has room, any fee gets in, so it suggests none. Once it's full, it suggests one coin more than the lowest fee the block would take: when the selection reached that one, a transfer paying more would have been taken first. Paying the same isn't enough, since the other arrived earlier. So the suggestion is exactly the least that's sure, for a sender with nothing else waiting and if nothing else arrives first. It also lists what the last 10 blocks took, and whether they were full.
+
 ### ⏱️ Difficulty that follows the miners
 
 Proof of work counts difficulty as **work**: how many hashes a block takes to find on average. A block is accepted when its hash, read as a number, is at most `MAX / work`. For a work of 16ᵈ that's exactly "starts with d zeros", but any value in between works too, so the difficulty can move in small steps.
@@ -267,6 +269,7 @@ flowchart TB
 | POST | `/transactions/sign` | `{secret_key, to, amount, fee?, nonce?, commitment?}` → a signed transaction. `to` may be `stake` or `unstake`. A first stake's commitment is worked out from the key if left out. |
 | POST | `/transactions` | Submit a signed transaction. It's gossiped to peers. |
 | GET | `/transactions/pending` | The mempool. |
+| GET | `/fees` | `{fee, room, capacity, waiting, recent}`: the fee sure to get a transfer into the next block (0 while it has `room`), and for the last 10 blocks, newest first, how many transfers each took, whether it was full and its lowest fee. |
 | GET | `/transactions/:signature/proof` | A Merkle proof that a confirmed transfer is in its block: `{transaction, leaf, proof, header, confirmations}`. Hash `leaf\|` + the transaction's JSON, combine it with each step's hash on the step's `side` as `node\|left\|right`, and you reach `header.merkle_root`. `404` while it's unconfirmed. |
 | GET | `/headers` | Every block without its transactions, or with `?from=N` from height N on: what a light client keeps. |
 | GET | `/blocks/:id` | A block, by height or hash. |
@@ -297,7 +300,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 153 tests: unit, HTTP, property-based and doctests
+cargo test        # 156 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.
@@ -310,6 +313,7 @@ cargo test        # 153 tests: unit, HTTP, property-based and doctests
   - No version of a block, whatever its timestamp, contents or fees, changes who forges next.
   - Whatever the pace of blocks, the difficulty changes only at adjustment heights, by at most 4×, and the chain's weight is exactly the work its blocks required. This one caught a rounding bug that let an adjustment exceed 4×.
   - Tampered forks are never adopted, and the refusal names the altered block.
+  - Paying the fee `/fees` suggests always gets a newcomer into the next block, and paying one coin less never does once it's full.
   - A full block takes the highest fees it can: whatever is waiting, every transfer it holds applies, and none left out could have gone in instead while paying more. Breaking the selection on purpose, by putting the lowest fees first or by never letting a sender spend coins paid to them in the same block, fails it at once.
 
   Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
@@ -324,9 +328,6 @@ Nothing here is built yet. Each would make a good next step.
 - **Slashing**: burn the stake of a validator caught signing two blocks at the same height.
 - **Finality checkpoints**: stakers vote to make a block permanent, instead of relying only on the reorg limit.
 - **Skipping absent validators**: a selected validator who never forges stalls the chain. Time slots that pass the turn on after a timeout would fix it, and withholding a reveal would then cost a block reward.
-
-**💸 Fees and blocks**
-- **Fee estimates**: suggest a fee from what recent blocks accepted.
 
 **🔐 Wallets and privacy**
 - **HD wallets**: many addresses from one seed phrase.

@@ -99,6 +99,8 @@ form { margin: 0; }
 .send label, .send select, .send input { min-width: 0; width: 100%; }
 .summary { margin: 0; font-size: .78rem; color: var(--muted); min-height: 1.1em; }
 .summary b { color: var(--ink); font-family: var(--mono); }
+.summary .ok { color: var(--ok); }
+.summary .bad { color: var(--bad); }
 label { display: flex; flex-direction: column; gap: .25rem; font-size: .72rem; color: var(--muted); }
 input, select, button {
   font: inherit; font-size: .88rem; padding: .5rem .7rem; border-radius: 9px;

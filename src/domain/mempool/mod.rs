@@ -4,7 +4,7 @@ use super::address::Address;
 use super::block::Transaction;
 use super::error::TransactionError;
 use super::ledger::Ledger;
-use super::values::{BlockCapacity, Signature};
+use super::values::{BlockCapacity, Coins, Signature};
 
 mod selection;
 
@@ -43,6 +43,17 @@ pub enum MempoolEvent {
     Rebased { kept: usize, dropped: usize, returned: usize },
 }
 
+/// What a new transfer has to pay to be sure of a place in the next block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeEstimate {
+    /// Places left in the next block once what's waiting is in it. While there are any, the
+    /// fee doesn't matter.
+    pub room: usize,
+    /// The fee that's sure to win a place: nothing while there's room, or else one coin more
+    /// than the lowest fee the block would take.
+    pub fee: Coins,
+}
+
 impl Mempool {
     /// An empty mempool on top of `confirmed`.
     pub fn on(confirmed: &Ledger) -> Self {
@@ -77,6 +88,23 @@ impl Mempool {
     /// order on top of the confirmed ledger.
     pub fn candidates(&self, capacity: BlockCapacity) -> Vec<Transaction> {
         selection::by_fee(&self.waiting, &self.confirmed, capacity)
+    }
+
+    /// The fee a new transfer needs to be sure of a place in the next block, which holds
+    /// `capacity`, if nothing else arrives first. It holds for a sender with nothing else
+    /// waiting, whose transfer can go in at once.
+    ///
+    /// When the block is full, the selection took its lowest fee only once nothing better was
+    /// left to take. A transfer paying more would have been taken before it, so it's in, and the
+    /// lowest one waits instead. Paying the same isn't enough: it arrived later.
+    pub fn fee_estimate(&self, capacity: BlockCapacity) -> FeeEstimate {
+        let chosen = self.candidates(capacity);
+        let room = capacity.limit().saturating_sub(chosen.len());
+        let fee = match chosen.iter().map(Transaction::fee).min() {
+            Some(lowest) if room == 0 => lowest.saturating_add(Coins::new(1)),
+            _ => Coins::ZERO,
+        };
+        FeeEstimate { room, fee }
     }
 
     /// After the chain changed: keeps what still applies on top of its new `confirmed` ledger,
@@ -206,6 +234,34 @@ mod tests {
         assert_eq!(pool.candidates(BlockCapacity::ANY), [cheap.clone(), dear.clone()]);
         assert_eq!(pool.candidates(BlockCapacity::at_most(1)), [dear]);
         assert_eq!(pool.transactions().len(), 2, "offering takes nothing out");
+    }
+
+    #[test]
+    fn a_fee_is_only_needed_once_the_next_block_is_full() {
+        let (mut ledger, key, to) = funded();
+        let (_, other, _) = funded();
+        ledger.credit(&Address::of(&other), Coins::new(50));
+        let mut pool = Mempool::on(&ledger);
+        assert_eq!(
+            pool.fee_estimate(BlockCapacity::at_most(2)),
+            FeeEstimate { room: 2, fee: Coins::ZERO }
+        );
+        pool.admit(Transaction::signed(&key, &to, Coins::new(1), 0, Coins::new(3))).unwrap();
+        pool.admit(Transaction::signed(&other, &to, Coins::new(1), 0, Coins::new(5))).unwrap();
+        assert_eq!(
+            pool.fee_estimate(BlockCapacity::at_most(3)),
+            FeeEstimate { room: 1, fee: Coins::ZERO }
+        );
+        assert_eq!(
+            pool.fee_estimate(BlockCapacity::at_most(2)),
+            FeeEstimate { room: 0, fee: Coins::new(4) },
+            "one more than the 3 it would take last"
+        );
+        assert_eq!(
+            pool.fee_estimate(BlockCapacity::at_most(1)),
+            FeeEstimate { room: 0, fee: Coins::new(6) }
+        );
+        assert_eq!(pool.fee_estimate(BlockCapacity::ANY).room, usize::MAX - 2);
     }
 
     #[test]

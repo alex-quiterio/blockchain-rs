@@ -9,10 +9,10 @@ use axum::{
 };
 
 use super::dto::{
-    AddPeerResponse, BalanceResponse, ChainQuery, ConsensusResponse, ErrorResponse, ForgeRequest,
-    MineRequest, NodeResponse, PeerRequest, PeerResponse, PlacementResponse, ProofResponse,
-    ProposalRequest, ReplaceResponse, SignRequest, StakeEntry, StatusResponse, SyncResponse,
-    TransactionResponse, ValidityResponse, WalletResponse,
+    AddPeerResponse, BalanceResponse, BlockFeesEntry, ChainQuery, ConsensusResponse, ErrorResponse,
+    FeesResponse, ForgeRequest, MineRequest, NodeResponse, PeerRequest, PeerResponse,
+    PlacementResponse, ProofResponse, ProposalRequest, ReplaceResponse, SignRequest, StakeEntry,
+    StatusResponse, SyncResponse, TransactionResponse, ValidityResponse, WalletResponse,
 };
 use super::AppState;
 use super::PEER_HEADER;
@@ -274,6 +274,27 @@ pub async fn submit_transaction(
 
 pub async fn get_pending(State(state): State<AppState>) -> Json<Vec<Transaction>> {
     Json(state.queries.pending())
+}
+
+pub async fn get_fees(State(state): State<AppState>) -> Json<FeesResponse> {
+    let report = state.queries.fees();
+    Json(FeesResponse {
+        fee: report.next_block.fee,
+        // Without a limit there's always room, and no number to give for it.
+        room: report.capacity.max().map(|_| report.next_block.room),
+        capacity: report.capacity.max(),
+        waiting: report.waiting,
+        recent: report
+            .recent
+            .into_iter()
+            .map(|b| BlockFeesEntry {
+                height: b.height,
+                transfers: b.transfers,
+                full: b.full,
+                lowest_fee: b.lowest_fee,
+            })
+            .collect(),
+    })
 }
 
 pub async fn mine(

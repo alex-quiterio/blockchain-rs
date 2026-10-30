@@ -228,11 +228,11 @@ const blockAt = (height) => state.blocks[height - (state.blocks[0]?.index ?? 0)]
 const kept = () => SHOWN_BLOCKS + 1 + (state.consensus?.retarget_interval ?? 0);
 
 async function load() {
-  const [status, pending, consensus, peers, node] = await Promise.all([
+  const [status, pending, consensus, peers, node, fees] = await Promise.all([
     api("GET", "/status"), api("GET", "/transactions/pending"), api("GET", "/consensus"),
-    api("GET", "/peers"), state.node || api("GET", "/node"),
+    api("GET", "/peers"), state.node || api("GET", "/node"), api("GET", "/fees"),
   ]);
-  Object.assign(state, { pending, consensus, peers, node });
+  Object.assign(state, { pending, consensus, peers, node, fees });
   const forked = await loadBlocks(status);
   // A full replay of the chain: once on opening, and again only if a fork replaced our tip.
   if (state.valid === null || forked) {
@@ -690,7 +690,21 @@ function updateSendSummary() {
   const parts = [`${what} `, el("b", { textContent: fmt(amount) })];
   if (fee) parts.push(" + ", el("b", { textContent: fmt(fee) }), " fee");
   parts.push(` · costs ${fmt(cost)} of `, el("b", { textContent: fmt(from?.balance ?? 0) }));
-  $("send-summary").replaceChildren(...parts);
+  $("send-summary").replaceChildren(...parts, ...feeAdvice(fee));
+  const needed = state.fees?.fee ?? 0;
+  $("send-fee").placeholder = needed ? `${fmt(needed)} gets in now` : "optional";
+}
+
+/**
+ * Whether `fee` wins a place in the next block. Only said once it's full: while there's room,
+ * any fee gets in. The node's estimate is sure for a sender with nothing else waiting.
+ */
+function feeAdvice(fee) {
+  const needed = state.fees?.room === 0 ? state.fees.fee : 0;
+  if (!needed) return [];
+  return fee >= needed
+    ? [" · ", el("span", { className: "ok", textContent: "enough for the next block" })]
+    : [" · ", el("span", { className: "bad" }, "the next block is full: ", el("b", { textContent: fmt(needed) }), " gets in")];
 }
 
 function renderPeers() {

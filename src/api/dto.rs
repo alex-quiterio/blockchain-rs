@@ -8,6 +8,27 @@ use crate::domain::block::{BlockHeader, Transaction};
 use crate::domain::merkle::Step;
 use crate::domain::values::{BlockHash, Coins, Commitment, Reveal};
 
+/// What fee to pay: `fee` is sure to win a place in the next block, if nothing else arrives
+/// first; `recent` is what the last few blocks took, newest first.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeesResponse {
+    pub fee: Coins,
+    /// Places left in the next block. While there are any, no fee is needed.
+    pub room: Option<usize>,
+    /// The most transfers a block may hold. `null` means no limit.
+    pub capacity: Option<u64>,
+    pub waiting: usize,
+    pub recent: Vec<BlockFeesEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlockFeesEntry {
+    pub height: u64,
+    pub transfers: usize,
+    pub full: bool,
+    pub lowest_fee: Option<Coins>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
     pub address: String,

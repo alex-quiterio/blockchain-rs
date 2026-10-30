@@ -9,11 +9,11 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::{Blockchain, ReorgLimit};
 use crate::domain::error::{BlockError, ChainError};
-use crate::domain::mempool::Mempool;
+use crate::domain::mempool::{FeeEstimate, Mempool};
 use crate::domain::merkle;
 use crate::domain::rules::ChainRules;
 use crate::domain::validators::ValidatorState;
-use crate::domain::values::{BlockHash, Coins, Reveal};
+use crate::domain::values::{BlockCapacity, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 pub struct TipStatus {
@@ -66,6 +66,30 @@ pub struct Placement {
     /// Blocks on top of it, counting its own.
     pub confirmations: u64,
 }
+
+/// What fee to pay: what's sure to win a place in the next block now, and what recent blocks
+/// took.
+pub struct FeeReport {
+    pub capacity: BlockCapacity,
+    /// Transfers waiting for a block.
+    pub waiting: usize,
+    pub next_block: FeeEstimate,
+    /// The last few blocks, newest first.
+    pub recent: Vec<BlockFees>,
+}
+
+/// What a block took, in fees.
+pub struct BlockFees {
+    pub height: u64,
+    pub transfers: usize,
+    /// It held as many transfers as a block may, so fees decided what got in.
+    pub full: bool,
+    /// The lowest fee among its transfers, if it had any.
+    pub lowest_fee: Option<Coins>,
+}
+
+/// How many recent blocks a fee report looks back over.
+pub const RECENT_BLOCKS: usize = 10;
 
 /// How the chain picks its next block, as of now.
 pub struct ConsensusState {
@@ -209,6 +233,36 @@ impl ChainQueries {
 
     pub fn pending(&self) -> Vec<Transaction> {
         self.mempool.lock().unwrap().transactions().to_vec()
+    }
+
+    /// What fee to pay to get into the next block, and what the last `RECENT_BLOCKS` took.
+    pub fn fees(&self) -> FeeReport {
+        let (capacity, recent) = {
+            let chain = self.chain.lock().unwrap();
+            let capacity = chain.rules().block_capacity;
+            let recent = chain.blocks()[1..]
+                .iter()
+                .rev()
+                .take(RECENT_BLOCKS)
+                .map(|block| {
+                    let transfers = &block.transactions()[1..];
+                    BlockFees {
+                        height: block.index(),
+                        transfers: transfers.len(),
+                        full: !capacity.holds(transfers.len() + 1),
+                        lowest_fee: transfers.iter().map(Transaction::fee).min(),
+                    }
+                })
+                .collect();
+            (capacity, recent)
+        };
+        let mempool = self.mempool.lock().unwrap();
+        FeeReport {
+            capacity,
+            waiting: mempool.transactions().len(),
+            next_block: mempool.fee_estimate(capacity),
+            recent,
+        }
     }
 
     pub fn consensus(&self) -> ConsensusState {
