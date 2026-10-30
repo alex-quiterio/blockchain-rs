@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::domain::accounting::transaction::Transaction;
-use crate::domain::chain::block::Block;
+use crate::domain::chain::block::{Block, BlockHeader};
 use crate::domain::chain::Extension;
 use crate::domain::chain::ReorgLimit;
 use crate::domain::consensus::rules::ChainRules;
@@ -22,6 +22,8 @@ struct Mesh {
     log: Arc<Mutex<Vec<String>>>,
     /// Peers that take a second to answer anything.
     slow: Arc<Mutex<HashSet<String>>>,
+    /// Peers that claim far more weight than their chain has.
+    boasting: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Mesh {
@@ -34,14 +36,19 @@ impl Mesh {
     }
 
     fn join(&self, url: &str) -> Arc<Network> {
+        self.join_fetching(url, SYNC_PAGE)
+    }
+
+    /// A node that fetches `page` blocks per request when catching up.
+    fn join_fetching(&self, url: &str, page: usize) -> Arc<Network> {
         let node = NodeService::open(
             Box::new(ChainInMemoryRepository::default()),
             ChainRules::proof_of_work(2, 50),
             ReorgLimit::new(3),
         )
         .unwrap();
-        let network =
-            Arc::new(Network::new(Arc::new(node), Box::new(self.clone()), Some(url.into())));
+        let network = Network::new(Arc::new(node), Box::new(self.clone()), Some(url.into()));
+        let network = Arc::new(network.with_sync_page(page));
         self.nodes.lock().unwrap().insert(url.to_string(), network.clone());
         network
     }
@@ -61,12 +68,24 @@ impl PeerClient for Mesh {
                 network.add_peer(me).await?;
             }
             let tip = network.queries().tip();
+            let boast = if self.boasting.lock().unwrap().contains(peer) { 1_000_000 } else { 0 };
             Ok(PeerTip {
                 height: tip.height,
                 tip: tip.hash,
-                weight: tip.weight.value(),
+                weight: tip.weight.value() + boast,
                 pending: tip.pending,
             })
+        })
+    }
+    fn headers_from<'a>(
+        &'a self,
+        peer: &'a str,
+        height: usize,
+        limit: usize,
+    ) -> PeerResult<'a, Vec<BlockHeader>> {
+        Box::pin(async move {
+            let network = self.reach(peer, format!("headers from {height}")).await?;
+            Ok(network.queries().headers_between(height, limit))
         })
     }
     fn chain_from<'a>(
@@ -257,8 +276,12 @@ async fn a_peer_behind_gets_recent_blocks_and_pulls_the_rest() {
     assert_eq!(mesh.sent(), ["http://b offered 1 block(s)", "http://b offered 4 block(s)"]);
     assert_eq!(b.queries().blocks().len(), 3);
 
+    // Its headers show b already has blocks 1 and 2, so only the rest are fetched.
     b.sync().await;
-    assert_eq!(mesh.sent(), ["http://a status", "http://a chain from 1"]);
+    assert_eq!(
+        mesh.sent(),
+        ["http://a status", "http://a headers from 1", "http://a chain from 3"]
+    );
     assert_eq!(b.queries().blocks(), a.queries().blocks());
 }
 
@@ -295,9 +318,60 @@ async fn a_node_far_behind_catches_up_a_page_at_a_time() {
         mesh.sent(),
         [
             "http://a status",
+            "http://a headers from 1",
             "http://a chain from 1",
             "http://a chain from 4",
             "http://a chain from 7"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_peer_claiming_more_weight_than_its_headers_show_sends_no_blocks() {
+    let mesh = Mesh::default();
+    let a = mesh.join("http://a");
+    let b = mesh.join("http://b");
+    for _ in 0..3 {
+        a.node().mine(&miner()).unwrap();
+    }
+    b.node().mine(&miner()).unwrap();
+    a.add_peer("http://b").await.unwrap();
+    mesh.boasting.lock().unwrap().insert("http://b".into());
+    let before = a.queries().blocks();
+    mesh.sent();
+
+    let report = a.sync().await;
+    assert_eq!(mesh.sent(), ["http://b status", "http://b headers from 1"], "no blocks fetched");
+    assert_eq!((report.adopted_from, a.queries().blocks()), (None, before));
+}
+
+#[tokio::test]
+async fn a_heavier_fork_longer_than_a_page_is_fetched_whole() {
+    let mesh = Mesh::default();
+    // A page of b's fork weighs less than a's three blocks, so offered a page at a time, a
+    // would refuse the first and the next wouldn't build on anything it has.
+    let a = mesh.join_fetching("http://a", 2);
+    let b = mesh.join("http://b");
+    for _ in 0..3 {
+        a.node().mine(&miner()).unwrap();
+    }
+    for _ in 0..5 {
+        b.node().mine(&miner()).unwrap();
+    }
+    a.add_peer("http://b").await.unwrap();
+    mesh.sent();
+
+    let report = a.sync().await;
+    assert_eq!(report.adopted_from.as_deref(), Some("http://b"));
+    assert_eq!(a.queries().blocks(), b.queries().blocks());
+    assert_eq!(
+        mesh.sent(),
+        [
+            "http://b status",
+            "http://b headers from 1",
+            "http://b chain from 1",
+            "http://b chain from 3",
+            "http://b chain from 5"
         ]
     );
 }

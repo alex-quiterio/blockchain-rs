@@ -8,7 +8,7 @@ use crate::api::PEER_HEADER;
 use crate::application::network::{PeerClient, PeerResult, PeerTip};
 use crate::domain::accounting::transaction::Transaction;
 use crate::domain::chain::block::Block;
-use crate::domain::chain::block::BlockHash;
+use crate::domain::chain::block::{BlockHash, BlockHeader};
 use crate::domain::chain::Extension;
 
 /// Talks to other nodes over their REST API.
@@ -80,6 +80,15 @@ impl PeerClient for HttpPeerClient {
                 pending: status.pending,
             })
         })
+    }
+
+    fn headers_from<'a>(
+        &'a self,
+        peer: &'a str,
+        height: usize,
+        limit: usize,
+    ) -> PeerResult<'a, Vec<BlockHeader>> {
+        Box::pin(self.get(format!("{peer}/headers?from={height}&limit={limit}")))
     }
 
     fn chain_from<'a>(

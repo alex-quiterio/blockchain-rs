@@ -42,6 +42,9 @@ pub struct Network {
 /// large enough that a node far behind needs few of them.
 pub const SYNC_PAGE: usize = 500;
 
+/// Headers per request when catching up. A header is a fraction of a block, so more fit.
+pub const HEADER_PAGE: usize = 2000;
+
 impl Network {
     pub fn new(node: Arc<NodeService>, client: Box<dyn PeerClient>, me: Option<String>) -> Self {
         let me = me.map(|url| normalize(&url));

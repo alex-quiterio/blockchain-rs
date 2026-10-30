@@ -31,7 +31,8 @@ pub async fn get_headers(
     State(state): State<AppState>,
     Query(query): Query<ChainQuery>,
 ) -> Json<Vec<BlockHeader>> {
-    Json(state.queries.headers_from(query.from.unwrap_or(0)))
+    let (from, limit) = (query.from.unwrap_or(0), query.limit.unwrap_or(usize::MAX));
+    Json(state.queries.headers_between(from, limit))
 }
 
 /// A block by height or hash.

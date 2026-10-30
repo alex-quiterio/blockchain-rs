@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 use crate::domain::accounting::transaction::Transaction;
 use crate::domain::chain::block::Block;
-use crate::domain::chain::block::BlockHash;
+use crate::domain::chain::block::{BlockHash, BlockHeader};
 use crate::domain::chain::Extension;
 
 pub type PeerResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
@@ -16,6 +16,13 @@ pub trait PeerClient: Send + Sync {
     /// Where the peer's chain stands. `me` tells the peer who's asking, so it can add us back if
     /// it forgot us.
     fn status<'a>(&'a self, peer: &'a str, me: Option<&'a str>) -> PeerResult<'a, PeerTip>;
+    /// Up to `limit` of the peer's headers, from `height` on.
+    fn headers_from<'a>(
+        &'a self,
+        peer: &'a str,
+        height: usize,
+        limit: usize,
+    ) -> PeerResult<'a, Vec<BlockHeader>>;
     /// Up to `limit` of the peer's blocks, from `height` on.
     fn chain_from<'a>(
         &'a self,

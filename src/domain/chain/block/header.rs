@@ -3,7 +3,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::Block;
+use super::{signed_by_validator, Block};
 use crate::domain::chain::block::{BlockHash, MerkleRoot};
 use crate::domain::consensus::Reveal;
 use crate::domain::crypto::address::Address;
@@ -49,6 +49,11 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
+    /// Whether `signature` is the named validator's signature over `hash`.
+    pub fn is_signed_by_validator(&self) -> bool {
+        signed_by_validator(self.validator.as_ref(), self.signature.as_ref(), &self.hash)
+    }
+
     pub fn computed_hash(&self) -> BlockHash {
         header_hash(
             self.index,

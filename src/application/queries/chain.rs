@@ -4,7 +4,7 @@
 use super::ChainQueries;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::block::{owned, Block, BlockHeader};
-use crate::domain::chain::ChainError;
+use crate::domain::chain::{ChainError, HeaderVerdict};
 use crate::domain::consensus::weight::ChainWeight;
 
 pub struct TipStatus {
@@ -39,11 +39,19 @@ impl ChainQueries {
         owned(&blocks[..limit.min(blocks.len())])
     }
 
-    /// The headers from `height` on: everything a light client needs to follow the chain.
-    pub fn headers_from(&self, height: usize) -> Vec<BlockHeader> {
+    /// Up to `limit` headers from `height` on: everything a light client needs to follow the
+    /// chain, and what a peer checks before fetching our blocks.
+    pub fn headers_between(&self, height: usize, limit: usize) -> Vec<BlockHeader> {
         let chain = self.chain.lock().unwrap();
         let blocks = chain.blocks().get(height..).unwrap_or_default();
-        blocks.iter().map(|block| block.header()).collect()
+        blocks.iter().take(limit).map(|block| block.header()).collect()
+    }
+
+    /// Whether a peer's `headers` make a chain worth fetching, and from where. Weighed on a
+    /// copy, which shares the blocks, so the chain isn't held while they're checked.
+    pub fn weigh_headers(&self, headers: &[BlockHeader]) -> Result<HeaderVerdict, ChainError> {
+        let chain = self.chain.lock().unwrap().clone();
+        chain.weigh_headers(headers)
     }
 
     /// The block at a height, given as digits, or with a hash.

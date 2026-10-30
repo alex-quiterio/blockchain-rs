@@ -301,6 +301,10 @@ async fn a_light_client_checks_a_transfer_from_headers_and_a_proof() {
     assert!(headers.iter().all(|h| h.hash == h.computed_hash()));
     assert!(headers.windows(2).all(|pair| pair[1].prev_hash == pair[0].hash));
     assert_eq!(headers[2], proof.header);
+    // A peer catching up asks for them a page at a time.
+    let (_, page) = call(&app, "GET", "/headers?from=1&limit=1", None).await;
+    let page: Vec<BlockHeader> = serde_json::from_value(page).unwrap();
+    assert_eq!(page, headers[1..2]);
 }
 
 #[tokio::test]

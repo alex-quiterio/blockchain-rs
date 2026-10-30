@@ -136,12 +136,20 @@ impl Block {
 
     /// Whether `signature` is the named validator's signature over `hash`.
     pub fn is_signed_by_validator(&self) -> bool {
-        match (&self.validator, &self.signature) {
-            (Some(validator), Some(signature)) => {
-                signature.is_by(validator, self.hash.as_str().as_bytes())
-            }
-            _ => false,
-        }
+        signed_by_validator(self.validator.as_ref(), self.signature.as_ref(), &self.hash)
+    }
+}
+
+/// Whether `signature` is `validator`'s over `hash`: what seals a proof-of-stake block, checked
+/// the same on a block and on its header.
+fn signed_by_validator(
+    validator: Option<&Address>,
+    signature: Option<&Signature>,
+    hash: &BlockHash,
+) -> bool {
+    match (validator, signature) {
+        (Some(validator), Some(signature)) => signature.is_by(validator, hash.as_str().as_bytes()),
+        _ => false,
     }
 }
 

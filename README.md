@@ -24,7 +24,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | ⛏️ **Proof of work** | Find a hash below a target. The difficulty adjusts to keep blocks coming at a steady pace. |
 | 🪙 **Proof of stake** | Stake coins; each block's validator is drawn by stake from a randomness beacon nobody can steer. |
 | 💸 **Fees** | Blocks have a size limit, so the highest fees go in first. `GET /fees` says what fee gets in now. |
-| 🌐 **Peers** | Nodes gossip new blocks and transactions, pull what they miss, and heal links after a restart. |
+| 🌐 **Peers** | Nodes gossip new blocks and transactions, catch up headers first, and heal links after a restart. |
 | 🏆 **Forks** | The heaviest valid chain wins (most work or most stake), never undoing more than `MAX_REORG_DEPTH` blocks. |
 | 🌳 **Merkle proofs** | A light client can check a payment is in a block with a few hashes. |
 | 🔍 **Validation** | Every rule is replayed, and a refusal names the block and the rule it broke. |
@@ -108,6 +108,7 @@ Each block names the hash of the one before it, so changing an old block breaks 
 - **Fees.** When more is waiting than a block holds, the highest fees go first, each sender's transfers staying in nonce order. Only the size limit is a consensus rule; which transfers fill a block is the producer's choice.
 - **Difficulty.** Every `RETARGET_BLOCKS` blocks, the work is scaled by how far the last ones were from the target pace, by at most 4×. As in Bitcoin, a block's time must be after the median of the last 11 and at most 2 hours ahead, so miners can't fake the pace.
 - **Validator turns.** Like Ethereum's RANDAO, a validator commits to the end of a secret hash chain when they first stake, and each block they forge reveals the next link back. Reveals are fixed in advance and mixed into the beacon that picks the next validator, so no choice of timestamp or contents can steer the draw.
+- **Catching up.** A node behind a peer fetches its headers first and checks them: hashes, links, times, and the work or the validator's signature. It fetches blocks only if they hold up, only from where the peer's chain leaves its own, and under proof of work only if they're heavier, so a peer that claims more than it has costs just its headers.
 - **Storage.** One block of JSON per line, appended as the chain grows and rewritten atomically after a fork, with a snapshot of the balances every `SNAPSHOT_BLOCKS` blocks.
 
 ## 🏛️ Architecture
@@ -140,7 +141,7 @@ Each file's doc comment says what it holds and which building block it is.
 | POST | `/chain` | Offer blocks; adopted if they make a valid, heavier chain. |
 | GET | `/chain/valid` | A full replay: `{valid, problem, length, weight}`. |
 | GET | `/chain/work` | Proof of work: the work each block required. |
-| GET | `/headers` | Blocks without their transactions, for light clients. |
+| GET | `/headers` | Blocks without their transactions, `?from=N&limit=M` for a range: what light clients keep and peers check first. |
 | GET | `/blocks/:id` | A block, by height or hash. |
 | POST | `/blocks` | Proof of stake: submit a proposal signed by its validator. |
 | GET | `/balances/:address` | Balance, stake, next nonce, and what a stake or forge needs next. |
@@ -178,5 +179,5 @@ Nothing here is built yet:
 
 - **Consensus:** slashing for double-signing, finality checkpoints, skipping absent validators.
 - **Wallets:** HD wallets from a seed phrase, multisig addresses.
-- **Network:** headers-first sync, peer discovery, banning peers that keep sending invalid chains.
+- **Network:** peer discovery, banning peers that keep sending invalid chains.
 - **Load generator:** partition a node mid-run, or add miners part way, and watch forks and retargeting react.

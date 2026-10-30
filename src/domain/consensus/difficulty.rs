@@ -22,6 +22,25 @@ pub const MEDIAN_OF: usize = 11;
 /// How far ahead of this node's clock a block's timestamp may be.
 pub const MAX_FUTURE: TimeDelta = TimeDelta::hours(2);
 
+/// When each block in a run of them was made, by height from genesis: all the difficulty rules
+/// look at. A chain's blocks are one; so is the start of our chain followed by a peer's headers,
+/// which can then be checked before their blocks are fetched.
+pub trait Timeline {
+    /// How many blocks the run holds, genesis included.
+    fn count(&self) -> usize;
+    /// When the block at `height` was made.
+    fn time(&self, height: usize) -> DateTime<Utc>;
+}
+
+impl<B: Borrow<Block>> Timeline for [B] {
+    fn count(&self) -> usize {
+        self.len()
+    }
+    fn time(&self, height: usize) -> DateTime<Utc> {
+        self[height].borrow().timestamp
+    }
+}
+
 pub fn meets_work(hash: &str, work: u128) -> bool {
     let Some(prefix) = hash.get(..32).and_then(|h| u128::from_str_radix(h, 16).ok()) else {
         return false;
@@ -36,21 +55,21 @@ pub fn meets_work(hash: &str, work: u128) -> bool {
 /// first adjustment waits until there are `interval` blocks after genesis to measure, since
 /// genesis is stamped at the Unix epoch.
 pub fn next_work(
-    blocks: &[impl Borrow<Block>],
+    blocks: &(impl Timeline + ?Sized),
     tip_work: u128,
     retarget: Option<Retarget>,
 ) -> u128 {
     let Some(r) = retarget.filter(|r| r.interval > 0 && r.target_block_secs > 0) else {
         return tip_work;
     };
-    let height = blocks.len() as u64;
+    let height = blocks.count() as u64;
     if height < 2 * r.interval || !height.is_multiple_of(r.interval) {
         return tip_work;
     }
-    let first = blocks[(height - 1 - r.interval) as usize].borrow();
-    let last = blocks[(height - 1) as usize].borrow();
+    let first = blocks.time((height - 1 - r.interval) as usize);
+    let last = blocks.time((height - 1) as usize);
     let expected = (r.target_block_secs * r.interval * 1000) as i64;
-    let took = (last.timestamp - first.timestamp).num_milliseconds();
+    let took = (last - first).num_milliseconds();
     let took = took.clamp((expected / MAX_STEP).max(1), expected * MAX_STEP);
     let scaled = tip_work.saturating_mul(expected as u128) / took as u128;
     // Clamping the time keeps the step within 4x, but rounding down could still overshoot on
@@ -62,12 +81,12 @@ pub fn next_work(
 /// A block must come after the median of the ones before it, so a miner can't backdate it to
 /// fake a slow pace, and no more than two hours ahead of `now`, so they can't future-date it.
 pub fn check_timestamp(
-    before: &[impl Borrow<Block>],
+    before: &(impl Timeline + ?Sized),
     timestamp: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<(), BlockError> {
     let mut recent: Vec<_> =
-        before.iter().rev().take(MEDIAN_OF).map(|b| b.borrow().timestamp).collect();
+        (0..before.count()).rev().take(MEDIAN_OF).map(|height| before.time(height)).collect();
     recent.sort();
     if recent.get(recent.len() / 2).is_some_and(|median| timestamp <= *median) {
         return Err(BlockError::TooEarly);
@@ -110,7 +129,7 @@ mod tests {
                 block.clone()
             })
             .collect();
-        assert_eq!(next_work(&blocks, 5, retarget), 2, "not 1: that would be 5x easier");
+        assert_eq!(next_work(&blocks[..], 5, retarget), 2, "not 1: that would be 5x easier");
     }
 
     #[test]

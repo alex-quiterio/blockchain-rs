@@ -28,6 +28,7 @@ use crate::domain::crypto::address::Address;
 pub mod block;
 mod error;
 mod events;
+mod headers;
 mod reorg;
 pub mod repository;
 mod tally;
@@ -38,6 +39,7 @@ use validation::{apply_block, links_up, payout, replay_from, replay_kept};
 
 pub use error::ChainError;
 pub use events::ChainEvent;
+pub use headers::HeaderVerdict;
 pub use reorg::ReorgLimit;
 pub use tally::Snapshot;
 pub use validation::validate_blocks;
@@ -199,7 +201,7 @@ impl Blockchain {
 
     /// Proof of work: the hashes the next block should take to find, on average.
     pub fn next_work(&self) -> u128 {
-        difficulty::next_work(&self.blocks, self.tally().work, self.rules.retarget())
+        difficulty::next_work(&self.blocks[..], self.tally().work, self.rules.retarget())
     }
 
     /// Proof of work: the work each block required, by height. Genesis needs the starting work.

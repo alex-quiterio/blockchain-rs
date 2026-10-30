@@ -216,7 +216,7 @@ fn a_confirmed_transfer_can_be_proven_from_its_header() {
     assert_eq!(proof.transaction, payments[3]);
     assert_eq!((proof.header.index, proof.confirmations), (2, 2));
     assert_eq!(proof.header.hash, proof.header.computed_hash());
-    assert_eq!(proof.header, node.queries().headers_from(2)[0]);
+    assert_eq!(proof.header, node.queries().headers_between(2, 1)[0]);
     assert_eq!(proof.leaf, merkle::leaf(&payments[3]));
     assert!(merkle::verify(&proof.leaf, &proof.steps, &proof.header.merkle_root));
     assert!(node.queries().prove("").is_none(), "block rewards have no signature to look up");
