@@ -255,7 +255,12 @@ flowchart TB
 - **`application/`**
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
   - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing. Questions only a reader asks, like an address's history or where a transfer landed, are worked out here from the blocks, so the aggregate keeps only what its rules need.
-  - `Network` keeps the peers in step through the `PeerClient` port.
+  - `Network` keeps the peers in step through the `PeerClient` port. It lives in `network/`, one file per concern:
+    - `mod.rs`: `Network` and who its peers are, added both ways
+    - `client.rs`: the `PeerClient` port, what this node asks of a peer and offers it
+    - `sync.rs`: pulling, checking in with every peer and catching up with any whose chain could beat ours
+    - `gossip.rs`: pushing a new block or an accepted transaction as soon as there is one
+    - `tests.rs`: a whole network in one process, and what goes over the wire
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
 - **`api/`** is the HTTP interface: `mod.rs` has the routes, and `handlers/` and `dto/` one file each per part of the API, the handlers and their request and response bodies, under the same names.
   - `chain.rs`: reading the chain and offering this node another's: blocks, headers, the tip, the work each block needed and a full replay
