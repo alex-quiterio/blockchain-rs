@@ -219,6 +219,7 @@ flowchart TB
     - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`
     - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
     - `validation.rs`: the rules each block is checked by, and replaying a chain by them
+    - `tests.rs`: the aggregate's tests, kept apart so `mod.rs` holds only what changes the chain
     - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
   - `consensus/`: how the network agrees on one chain.
     - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
@@ -241,7 +242,7 @@ flowchart TB
   - `crypto.rs`, `repository.rs`: signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
-  - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing.
+  - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing. Questions only a reader asks, like an address's history or where a transfer landed, are worked out here from the blocks, so the aggregate keeps only what its rules need.
   - `Network` keeps the peers in step through the `PeerClient` port.
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
 - **`api/`** is the HTTP interface. **`public/`** is the web UI, plain HTML, CSS and JS with no build step.
