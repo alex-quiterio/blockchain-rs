@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::*;
 use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockError;
-use crate::domain::chain::repository::RepositoryError;
+use crate::domain::chain::repository::ChainRepositoryError;
 use crate::domain::chain::ChainError;
 use crate::domain::chain::Snapshot;
 use crate::domain::crypto;
@@ -27,16 +27,16 @@ fn new_address() -> Address {
 struct SharedRepository(Arc<InMemoryRepository>);
 
 impl ChainRepository for SharedRepository {
-    fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
+    fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         self.0.load()
     }
-    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), RepositoryError> {
+    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
         self.0.save(blocks, events)
     }
-    fn load_snapshot(&self) -> Result<Option<Snapshot>, RepositoryError> {
+    fn load_snapshot(&self) -> Result<Option<Snapshot>, ChainRepositoryError> {
         self.0.load_snapshot()
     }
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), RepositoryError> {
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), ChainRepositoryError> {
         self.0.save_snapshot(snapshot)
     }
 }
@@ -44,10 +44,10 @@ impl ChainRepository for SharedRepository {
 struct FailingRepository;
 
 impl ChainRepository for FailingRepository {
-    fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
+    fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         Ok(None)
     }
-    fn save(&self, blocks: &[Block], _events: &[ChainEvent]) -> Result<(), RepositoryError> {
+    fn save(&self, blocks: &[Block], _events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
         // Let the genesis block through so the node can start.
         if blocks.len() == 1 {
             Ok(())
@@ -246,10 +246,10 @@ fn transactions_are_found_pending_then_confirmed_and_in_histories() {
 struct RecordingRepository(Arc<Mutex<Vec<Vec<ChainEvent>>>>);
 
 impl ChainRepository for RecordingRepository {
-    fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
+    fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         Ok(None)
     }
-    fn save(&self, _blocks: &[Block], events: &[ChainEvent]) -> Result<(), RepositoryError> {
+    fn save(&self, _blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
         self.0.lock().unwrap().push(events.to_vec());
         Ok(())
     }

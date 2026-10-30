@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::domain::chain::block::Block;
-use crate::domain::chain::repository::{ChainRepository, RepositoryError};
+use crate::domain::chain::repository::{ChainRepository, ChainRepositoryError};
 use crate::domain::chain::{ChainEvent, Snapshot};
 
 /// Keeps the chain in one file, one block of JSON per line. A new block is appended, so saving
@@ -24,7 +24,7 @@ impl JsonFileRepository {
 
     /// Writes every block to a temporary file and renames it over the real one, so a crash
     /// never leaves half a chain.
-    fn rewrite(&self, blocks: &[Block]) -> Result<(), RepositoryError> {
+    fn rewrite(&self, blocks: &[Block]) -> Result<(), ChainRepositoryError> {
         write_atomically(&self.path, &lines_of(blocks)?)
     }
 
@@ -36,7 +36,7 @@ impl JsonFileRepository {
 }
 
 impl ChainRepository for JsonFileRepository {
-    fn load(&self) -> Result<Option<Vec<Block>>, RepositoryError> {
+    fn load(&self) -> Result<Option<Vec<Block>>, ChainRepositoryError> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -63,7 +63,7 @@ impl ChainRepository for JsonFileRepository {
 
     /// Appends the new blocks when the chain only grew from what the file holds; otherwise, after
     /// a fork or when what's on disk isn't known, rewrites the file.
-    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), RepositoryError> {
+    fn save(&self, blocks: &[Block], events: &[ChainEvent]) -> Result<(), ChainRepositoryError> {
         let mut lines = self.lines.lock().unwrap();
         let grew_from = match events {
             [ChainEvent::Extended { from, .. }, rest @ ..]
@@ -84,7 +84,7 @@ impl ChainRepository for JsonFileRepository {
         Ok(())
     }
 
-    fn load_snapshot(&self) -> Result<Option<Snapshot>, RepositoryError> {
+    fn load_snapshot(&self) -> Result<Option<Snapshot>, ChainRepositoryError> {
         match fs::read(self.snapshot_path()) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -92,12 +92,12 @@ impl ChainRepository for JsonFileRepository {
         }
     }
 
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), RepositoryError> {
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(), ChainRepositoryError> {
         write_atomically(&self.snapshot_path(), &serde_json::to_vec(snapshot)?)
     }
 }
 
-fn write_atomically(path: &PathBuf, bytes: &[u8]) -> Result<(), RepositoryError> {
+fn write_atomically(path: &PathBuf, bytes: &[u8]) -> Result<(), ChainRepositoryError> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     fs::write(&tmp, bytes)?;
@@ -105,7 +105,7 @@ fn write_atomically(path: &PathBuf, bytes: &[u8]) -> Result<(), RepositoryError>
     Ok(())
 }
 
-fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, RepositoryError> {
+fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, ChainRepositoryError> {
     let mut out = Vec::new();
     for block in blocks {
         serde_json::to_writer(&mut out, block)?;

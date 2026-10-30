@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::domain::accounting::TransactionError;
 use crate::domain::chain::block::BlockError;
-use crate::domain::chain::repository::RepositoryError;
+use crate::domain::chain::repository::ChainRepositoryError;
 use crate::domain::chain::ChainError;
 use crate::domain::crypto::ValueError;
 
@@ -13,7 +13,7 @@ pub enum NodeError {
     /// A domain rule refused the change.
     Domain(ApplicationError),
     /// The change was valid but could not be saved, so it was not applied.
-    Storage(RepositoryError),
+    Storage(ChainRepositoryError),
 }
 
 impl fmt::Display for NodeError {
