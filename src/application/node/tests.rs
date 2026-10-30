@@ -124,7 +124,7 @@ fn a_tampered_store_refuses_to_start() {
     let err = NodeService::open(Box::new(repo), RULES, ReorgLimit::DEFAULT).err().unwrap();
     assert!(matches!(
         err,
-        NodeError::Domain(DomainError::Chain(ChainError::InvalidBlock {
+        NodeError::Domain(ApplicationError::Chain(ChainError::InvalidBlock {
             height: 1,
             reason: BlockError::MerkleRootMismatch
         }))
@@ -163,7 +163,7 @@ fn mining_gives_up_when_a_peer_takes_the_tip() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     ours.extend(vec![theirs_block.clone()]).unwrap();
     match mining.join().unwrap() {
-        Err(NodeError::Domain(DomainError::Block(BlockError::StaleBlock))) => {
+        Err(NodeError::Domain(ApplicationError::Block(BlockError::StaleBlock))) => {
             assert_eq!(ours.queries().blocks()[1], theirs_block);
             assert_eq!(ours.queries().account(&miner).balance, Coins::new(0));
         }
@@ -179,7 +179,7 @@ fn mining_stops_when_cancelled() {
     let cancelled = AtomicBool::new(true);
     assert!(matches!(
         node.mine_unless(&new_address(), &cancelled),
-        Err(NodeError::Domain(DomainError::Block(BlockError::StaleBlock)))
+        Err(NodeError::Domain(ApplicationError::Block(BlockError::StaleBlock)))
     ));
     assert_eq!(node.queries().blocks().len(), 1);
 }
@@ -334,6 +334,6 @@ fn adopting_a_heavier_chain_saves_it() {
     assert_eq!(ours.adopt_if_heavier(theirs.queries().blocks()[..1].to_vec()).unwrap(), (false, 2));
     assert!(matches!(
         ours.adopt_if_heavier(vec![]),
-        Err(NodeError::Domain(DomainError::Chain(ChainError::Empty)))
+        Err(NodeError::Domain(ApplicationError::Chain(ChainError::Empty)))
     ));
 }

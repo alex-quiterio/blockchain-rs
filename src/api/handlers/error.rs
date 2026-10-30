@@ -8,7 +8,7 @@ use axum::{
 };
 
 use crate::api::dto::error::ErrorResponse;
-use crate::application::DomainError;
+use crate::application::ApplicationError;
 use crate::application::NodeError;
 use crate::domain::accounting::TransactionError;
 use crate::domain::chain::block::BlockError;
@@ -31,24 +31,26 @@ impl ApiError {
     }
 }
 
-impl From<DomainError> for ApiError {
-    fn from(err: DomainError) -> Self {
+impl From<ApplicationError> for ApiError {
+    fn from(err: ApplicationError) -> Self {
         let status = match &err {
-            DomainError::Value(_) => StatusCode::BAD_REQUEST,
-            DomainError::Transaction(TransactionError::BadSignature) => StatusCode::UNAUTHORIZED,
-            DomainError::Transaction(
+            ApplicationError::Value(_) => StatusCode::BAD_REQUEST,
+            ApplicationError::Transaction(TransactionError::BadSignature) => {
+                StatusCode::UNAUTHORIZED
+            }
+            ApplicationError::Transaction(
                 TransactionError::ZeroAmount
                 | TransactionError::UnexpectedCoinbase
                 | TransactionError::AlreadyPending,
             ) => StatusCode::BAD_REQUEST,
-            DomainError::Transaction(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            DomainError::Block(BlockError::NotYourTurn { .. }) => StatusCode::FORBIDDEN,
-            DomainError::Block(
+            ApplicationError::Transaction(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ApplicationError::Block(BlockError::NotYourTurn { .. }) => StatusCode::FORBIDDEN,
+            ApplicationError::Block(
                 BlockError::NotProofOfWork | BlockError::NotProofOfStake | BlockError::StaleBlock,
             ) => StatusCode::CONFLICT,
-            DomainError::Block(_) => StatusCode::BAD_REQUEST,
-            DomainError::Chain(ChainError::ReorgTooDeep { .. }) => StatusCode::CONFLICT,
-            DomainError::Chain(ChainError::Empty | ChainError::InvalidBlock { .. }) => {
+            ApplicationError::Block(_) => StatusCode::BAD_REQUEST,
+            ApplicationError::Chain(ChainError::ReorgTooDeep { .. }) => StatusCode::CONFLICT,
+            ApplicationError::Chain(ChainError::Empty | ChainError::InvalidBlock { .. }) => {
                 StatusCode::BAD_REQUEST
             }
         };
@@ -56,12 +58,12 @@ impl From<DomainError> for ApiError {
     }
 }
 
-/// Each kind of refusal maps the same way, through `DomainError`.
+/// Each kind of refusal maps the same way, through `ApplicationError`.
 macro_rules! via_domain_error {
     ($($kind:ty),*) => {$(
         impl From<$kind> for ApiError {
             fn from(err: $kind) -> Self {
-                DomainError::from(err).into()
+                ApplicationError::from(err).into()
             }
         }
     )*};

@@ -271,7 +271,7 @@ flowchart TB
     - `transactions.rs`: submitting a transaction, from a client or a peer
     - `events.rs`: `NodeEvent`, and telling whoever listens
     - `snapshots.rs`: when to save a snapshot of the balances
-    - `error.rs`: `NodeError`, a rule refused the change or it couldn't be saved, and `DomainError`, a refusal of whichever kind, for use cases that can fail in several ways. The domain itself never needs one
+    - `error.rs`: `NodeError`, a rule refused the change or it couldn't be saved, and `ApplicationError`, a refusal of whichever kind, for use cases that can fail in several ways. The domain itself never needs one
   - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing. Questions only a reader asks, like an address's history or where a transfer landed, are worked out here from the blocks, so the aggregate keeps only what its rules need.
     - `mod.rs`: `ChainQueries` itself, reading the same chain and mempool the node changes
     - `chain.rs`: blocks, headers, where the tip stands, a full replay and the work each block needed

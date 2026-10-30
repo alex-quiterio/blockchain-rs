@@ -19,7 +19,7 @@ use crate::domain::mempool::Mempool;
 
 use super::queries::ChainQueries;
 
-pub use error::{DomainError, NodeError};
+pub use error::{ApplicationError, NodeError};
 use events::Listener;
 pub use events::NodeEvent;
 
@@ -96,7 +96,7 @@ impl NodeService {
     /// saved, so memory and storage never disagree.
     /// The chain's events are what's saved and, once the chain is free again, what listeners
     /// hear.
-    fn commit<T, E: Into<DomainError>>(
+    fn commit<T, E: Into<ApplicationError>>(
         &self,
         change: impl FnOnce(&mut Blockchain) -> Result<T, E>,
     ) -> Result<T, NodeError> {
