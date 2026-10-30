@@ -135,7 +135,7 @@ export class NodeView {
     this.#state.accounts = Object.fromEntries(
       accounts.map((a) => [a.address, a]),
     );
-    for (const listener of this.#listeners) listener();
+    tell(this.#listeners);
   }
 
   /**
@@ -186,7 +186,23 @@ export class NodeView {
     )
       return true;
     this.#state.peers = peers;
-    for (const listener of this.#peerListeners) listener();
+    tell(this.#peerListeners);
     return false;
   }
+}
+
+/**
+ * Calls every listener, even after one throws, so one part failing to draw doesn't stop the
+ * rest; then throws the first failure, for the caller to show.
+ */
+function tell(listeners: Iterable<Listener>): void {
+  const failures: unknown[] = [];
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch (err) {
+      failures.push(err);
+    }
+  }
+  if (failures.length) throw failures[0];
 }

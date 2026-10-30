@@ -57,6 +57,25 @@ export function toast(
   setTimeout(() => note.remove(), ms);
 }
 
+/**
+ * Fills `container` from `build`, but only when `key` differs from what it was last built for:
+ * a redraw that changes nothing it shows leaves it alone, with what's typed, chosen, focused or
+ * open in it.
+ */
+export function rebuildOn(
+  container: HTMLElement,
+  key: string,
+  build: () => Node[],
+): void {
+  if (container.dataset.builtFor === key) return;
+  container.dataset.builtFor = key;
+  container.replaceChildren(...build());
+}
+
+/** Whether the first `<details>` in `container` is open, to keep it so across a redraw. */
+export const isOpen = (container: HTMLElement): boolean =>
+  container.querySelector("details")?.open ?? false;
+
 /** What a refusal or failure says. */
 export const messageOf = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);

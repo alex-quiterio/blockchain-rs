@@ -272,6 +272,25 @@ export async function drive(
           document.querySelector<any>("#wallets .balance").textContent !== "0",
       ),
     );
+    // The whole page redraws after any action; a wallet chosen in the producer stays chosen. Syncing
+    // with no peers changes nothing but still redraws, and its button is enabled again once it has.
+    const pick = (i: number) =>
+      page((n) => {
+        const select = document.querySelector<any>("#producer select");
+        select.value = select.options[n].value;
+        return select.value as string;
+      }, i);
+    const chosen = await pick(1);
+    await page(() => document.querySelector<any>("#sync").click());
+    step(
+      "a chosen wallet stays chosen across a redraw",
+      (await until(() => !document.querySelector<any>("#sync").disabled)) &&
+        (await page(
+          (b) => document.querySelector<any>("#producer select")?.value === b,
+          chosen,
+        )),
+    );
+    await pick(0);
 
     // Send Bob 5 with a fee of 1.
     await page(() => {

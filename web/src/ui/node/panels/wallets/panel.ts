@@ -1,9 +1,8 @@
 // The wallets panel: the vault's lock, the wallets and what each holds, making one, and backing
 // them up or restoring them.
 
-import { createWallet } from "@application/wallets";
 import type { Wallet } from "@domain/wallets/wallets";
-import { $, el, fmt, short, showError, toast } from "@ui/dom";
+import { $, el, fmt, rebuildOn, short, showError, toast } from "@ui/dom";
 import type { NodePage } from "@ui/node/page";
 import { avatar } from "@ui/node/parties";
 
@@ -111,11 +110,23 @@ function walletView(
   );
 }
 
+/**
+ * The vault's lock: setting a passphrase, unlocking, or what an unlocked vault offers. Rebuilt
+ * only when which of those it is changes, so a passphrase being typed survives a redraw.
+ */
 function renderVault(page: NodePage): void {
-  const { wallets: w, actions } = page;
+  const w = page.wallets;
   $("wallet-form").hidden = w.locked;
-  if (w.needsPassphrase) return renderSetUp(page);
-  if (w.locked) return renderUnlock(page);
+  const [key, build] = w.needsPassphrase
+    ? [`set-up:${w.legacy.length}`, () => setUpView(page)]
+    : w.locked
+      ? ["locked", () => unlockView(page)]
+      : ["unlocked", () => unlockedView(page)];
+  rebuildOn($("vault"), key, build);
+}
+
+function unlockedView(page: NodePage): HTMLElement[] {
+  const { wallets: w, actions } = page;
 
   const lock = el("button", {
     className: "small",
@@ -139,7 +150,7 @@ function renderVault(page: NodePage): void {
     textContent: "Restore",
   });
   restore.onclick = () => restoreBackup(page);
-  $("vault").replaceChildren(
+  return [
     el(
       "div",
       { className: "unlocked" },
@@ -152,10 +163,10 @@ function renderVault(page: NodePage): void {
       textContent:
         "Keys are in this tab's memory until you lock, close the tab or stay idle for 15 minutes.",
     }),
-  );
+  ];
 }
 
-function renderSetUp({ wallets, actions }: NodePage): void {
+function setUpView({ wallets, actions }: NodePage): HTMLElement[] {
   const first = passphraseInput("Passphrase, 8+ characters", "new-password");
   const again = passphraseInput("Type it again", "new-password");
   const button = el("button", { textContent: "Set passphrase" });
@@ -166,12 +177,14 @@ function renderSetUp({ wallets, actions }: NodePage): void {
       return toast("The passphrases don't match", { error: true });
     void actions.busy(button, async () => {
       button.textContent = "Encrypting…";
-      await wallets.setUp(first.value);
+      await wallets
+        .setUp(first.value)
+        .finally(() => (button.textContent = "Set passphrase"));
       toast("Your keys are now encrypted with your passphrase");
     });
   };
   const n = wallets.legacy.length;
-  $("vault").replaceChildren(
+  return [
     el(
       "div",
       { className: "lockcard locked" },
@@ -190,10 +203,10 @@ function renderSetUp({ wallets, actions }: NodePage): void {
       }),
       form,
     ),
-  );
+  ];
 }
 
-function renderUnlock({ wallets, actions }: NodePage): void {
+function unlockView({ wallets, actions }: NodePage): HTMLElement[] {
   const input = passphraseInput("Passphrase", "current-password");
   input.id = "unlock-passphrase";
   const button = el("button", { textContent: "Unlock" });
@@ -211,11 +224,13 @@ function renderUnlock({ wallets, actions }: NodePage): void {
     e.preventDefault();
     void actions.busy(button, async () => {
       button.textContent = "Unlocking…";
-      await wallets.unlock(input.value);
+      await wallets
+        .unlock(input.value)
+        .finally(() => (button.textContent = "Unlock"));
       toast("Unlocked");
     });
   };
-  $("vault").replaceChildren(
+  return [
     el(
       "div",
       { className: "lockcard locked" },
@@ -226,7 +241,7 @@ function renderUnlock({ wallets, actions }: NodePage): void {
       }),
       form,
     ),
-  );
+  ];
 }
 
 function downloadBackup({ wallets }: NodePage): void {
@@ -274,13 +289,12 @@ function restoreBackup({ wallets, actions }: NodePage): void {
  * the wallets each time the view changes.
  */
 export function installWallets(page: NodePage): void {
-  const { wallets, actions } = page;
+  const { wallets, commands, actions } = page;
   page.view.onChange(() => renderWallets(page));
   $<HTMLFormElement>("wallet-form").onsubmit = (e) => {
     e.preventDefault();
     void actions.busy($<HTMLButtonElement>("create-wallet"), async () => {
-      const name = await createWallet(
-        wallets,
+      const name = await commands.createWallet(
         $<HTMLInputElement>("wallet-name").value.trim(),
       );
       $<HTMLInputElement>("wallet-name").value = "";

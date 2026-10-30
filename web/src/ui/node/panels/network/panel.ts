@@ -2,7 +2,6 @@
 // and syncing now; and the footer, saying which build the node runs.
 
 import type { NodeState } from "@application/node_view";
-import { addPeer, syncNow } from "@application/peers";
 import { $, ago, el, toast } from "@ui/dom";
 import type { NodePage } from "@ui/node/page";
 
@@ -86,7 +85,7 @@ function renderFooter(state: Readonly<NodeState>): void {
  * Wires up adding a peer and syncing; and draws the peers each time they or the view change, and
  * the footer each time the view does.
  */
-export function installNetwork({ node, view, actions }: NodePage): void {
+export function installNetwork({ view, commands, actions }: NodePage): void {
   view.onChange(() => {
     renderPeers(view.state);
     renderFooter(view.state);
@@ -97,7 +96,7 @@ export function installNetwork({ node, view, actions }: NodePage): void {
     void actions.busy($<HTMLButtonElement>("add-peer"), async () => {
       const url = $<HTMLInputElement>("peer-url").value.trim();
       if (!url) return;
-      const { added } = await addPeer(node, url);
+      const { added } = await commands.addPeer(url);
       $<HTMLInputElement>("peer-url").value = "";
       toast(
         added
@@ -109,7 +108,7 @@ export function installNetwork({ node, view, actions }: NodePage): void {
   const sync = $<HTMLButtonElement>("sync");
   sync.onclick = () =>
     actions.busy(sync, async () => {
-      const report = await syncNow(node);
+      const report = await commands.syncNow();
       toast(
         report.adopted_from
           ? `Adopted the heavier chain from ${report.adopted_from}`

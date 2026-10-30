@@ -1,7 +1,6 @@
 // The send panel and what's waiting: sending from a wallet, staking or unstaking, with what it
 // costs and whether the fee gets it into the next block; and the mempool.
 
-import { send } from "@application/sending";
 import type { Fees } from "@application/ports";
 import { STAKE, UNSTAKE, feesOf } from "@domain/transfers";
 import { $, el, fmt, toast, type Child } from "@ui/dom";
@@ -111,7 +110,7 @@ function recipient(choice: string): string {
 
 /** Wires up sending, and draws the choices, their cost and what's waiting each time the view changes. */
 export function installSending(page: NodePage): void {
-  const { node, wallets, actions } = page;
+  const { wallets, commands, actions } = page;
   page.view.onChange(() => {
     renderChoices(page);
     updateSendSummary(page);
@@ -127,7 +126,7 @@ export function installSending(page: NodePage): void {
       actions.requireUnlocked();
       const to = recipient(select("send-to").value);
       if (!to) return;
-      await send(node, wallets, {
+      await commands.send({
         from,
         to,
         amount: Number(input("send-amount").value),
