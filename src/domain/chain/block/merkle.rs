@@ -12,8 +12,8 @@
 //! instead of being paired with itself, so `[a, b, c]` and `[a, b, c, c]` don't share a root, as
 //! they do in Bitcoin (CVE-2012-2459).
 
+use crate::domain::chain::block::{MerkleNode, MerkleRoot, Side, Step};
 use crate::domain::transaction::Transaction;
-use crate::domain::values::{MerkleNode, MerkleRoot, Side, Step};
 
 /// A transaction's leaf: the hash of its JSON, as blocks store it.
 pub fn leaf(tx: &Transaction) -> MerkleNode {
@@ -79,9 +79,9 @@ fn node(left: &MerkleNode, right: &MerkleNode) -> MerkleNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::accounting::Coins;
     use crate::domain::address::Address;
     use crate::domain::crypto;
-    use crate::domain::values::Coins;
 
     fn txs(n: u64) -> Vec<Transaction> {
         let to = Address::parse(&crypto::generate_keypair().0).unwrap();

@@ -12,11 +12,12 @@ use std::sync::Arc;
 
 use blockchain::api::dto::ProofResponse;
 use blockchain::application::{Network, NodeService};
+use blockchain::domain::accounting::Coins;
 use blockchain::domain::block::BlockHeader;
 use blockchain::domain::chain::ReorgLimit;
+use blockchain::domain::consensus::BlockCapacity;
 use blockchain::domain::merkle;
 use blockchain::domain::rules::ChainRules;
-use blockchain::domain::values::{BlockCapacity, Coins};
 use blockchain::infrastructure::{HttpPeerClient, InMemoryRepository};
 
 fn app() -> Router {

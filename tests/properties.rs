@@ -8,15 +8,18 @@ use ed25519_dalek::SigningKey;
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 
+use blockchain::domain::accounting::TransactionError;
+use blockchain::domain::accounting::{Coins, Destination};
 use blockchain::domain::address::Address;
 use blockchain::domain::block::{Block, Transaction};
+use blockchain::domain::chain::block::BlockError;
+use blockchain::domain::chain::block::BlockHash;
+use blockchain::domain::chain::ChainError;
 use blockchain::domain::chain::{validate_blocks, Blockchain, ChainEvent};
-use blockchain::domain::error::ChainError;
-use blockchain::domain::error::{BlockError, TransactionError};
+use blockchain::domain::consensus::BlockCapacity;
 use blockchain::domain::mempool::Mempool;
 use blockchain::domain::randao;
 use blockchain::domain::rules::ChainRules;
-use blockchain::domain::values::{BlockCapacity, BlockHash, Coins, Destination};
 
 /// A chain with a mempool beside it, coordinated as a node does, so a property can submit and
 /// mine in one place. Reads go to the chain itself; what touches what's waiting is here.

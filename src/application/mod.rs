@@ -6,7 +6,7 @@ mod node;
 mod queries;
 
 pub use network::{Network, PeerClient, PeerStatus, PeerTip, SyncReport, SYNC_PAGE};
-pub use node::{NodeError, NodeEvent, NodeService, SNAPSHOT_BLOCKS};
+pub use node::{DomainError, NodeError, NodeEvent, NodeService, SNAPSHOT_BLOCKS};
 pub use queries::{
     Account, BlockFees, ChainQueries, ChainStatus, ConsensusState, FeeReport, Located, Placement,
     TipStatus, TransactionProof, RECENT_BLOCKS,

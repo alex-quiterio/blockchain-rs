@@ -6,8 +6,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::domain::address::Address;
 use crate::domain::block::Transaction;
+use crate::domain::consensus::BlockCapacity;
 use crate::domain::ledger::Ledger;
-use crate::domain::values::BlockCapacity;
 
 /// As many of `fitting` as a block of `capacity` holds, highest fees first, in an order that applies on top of
 /// `confirmed`. `fitting` must already apply in order there, as a rebuilt mempool's do.
@@ -68,8 +68,8 @@ pub(super) fn by_fee(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::accounting::Coins;
     use crate::domain::crypto;
-    use crate::domain::values::Coins;
     use ed25519_dalek::SigningKey;
 
     fn wallet() -> (SigningKey, Address) {

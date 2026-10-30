@@ -6,9 +6,11 @@ use ed25519_dalek::SigningKey;
 
 use super::{merkle, Block, Transaction};
 use crate::domain::address::Address;
+use crate::domain::chain::block::BlockHash;
+use crate::domain::consensus::Reveal;
+use crate::domain::crypto::Signature;
 use crate::domain::difficulty::meets_work;
 use crate::domain::rules::{ChainRules, Consensus};
-use crate::domain::values::{BlockHash, Reveal, Signature};
 
 /// How many nonces a miner tries between asking whether to keep going.
 const CHECK_EVERY: u64 = 1 << 14;

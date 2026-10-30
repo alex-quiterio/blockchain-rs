@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::rules::{ChainRules, Consensus};
-use crate::domain::values::Coins;
+use crate::domain::accounting::Coins;
 
 /// What a chain is worth when forks compete: the total expected work behind it under proof of
 /// work, or the total stake behind its blocks under proof of stake. The heavier chain wins.

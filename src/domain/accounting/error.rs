@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::domain::values::Coins;
+use crate::domain::accounting::Coins;
 
 /// A transaction the ledger or the mempool won't take.
 #[derive(Debug, Clone, PartialEq, Eq)]

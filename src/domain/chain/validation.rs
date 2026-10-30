@@ -6,12 +6,14 @@ use std::collections::VecDeque;
 use chrono::Utc;
 
 use super::tally::Tally;
+use crate::domain::accounting::Coins;
 use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::BlockError;
+use crate::domain::chain::block::BlockHash;
+use crate::domain::chain::ChainError;
 use crate::domain::difficulty::{self, meets_work};
-use crate::domain::error::{BlockError, ChainError};
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::{select_validator, ChainRules, Consensus};
-use crate::domain::values::{BlockHash, Coins};
 
 /// Replays `blocks` by every rule, or says which block first breaks one and how.
 pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> Result<(), ChainError> {

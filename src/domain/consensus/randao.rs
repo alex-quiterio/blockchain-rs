@@ -9,8 +9,8 @@
 
 use ed25519_dalek::SigningKey;
 
+use crate::domain::consensus::{Beacon, Commitment, Reveal};
 use crate::domain::crypto;
-use crate::domain::values::{Beacon, Commitment, Reveal};
 
 /// Reveals one commitment covers. Staking again after they run out makes a new one.
 pub const LENGTH: u32 = 1_000;

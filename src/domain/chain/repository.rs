@@ -1,5 +1,9 @@
+//! Where the chain aggregate is kept between runs: a port, a repository in DDD terms, that
+//! infrastructure implements. One per aggregate, and only the chain has one: the mempool isn't
+//! stored.
+
 use super::block::Block;
-use super::chain::{ChainEvent, Snapshot};
+use super::{ChainEvent, Snapshot};
 
 pub type RepositoryError = Box<dyn std::error::Error + Send + Sync>;
 

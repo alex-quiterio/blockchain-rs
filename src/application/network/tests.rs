@@ -1,6 +1,6 @@
 //! A whole network in one process, and what goes over the wire as nodes join, sync and gossip.
 
-use crate::domain::values::Coins;
+use crate::domain::accounting::Coins;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 

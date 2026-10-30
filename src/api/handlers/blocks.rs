@@ -12,11 +12,11 @@ use crate::api::dto::blocks::{
     ConsensusResponse, ForgeRequest, MineRequest, ProposalRequest, StakeEntry,
 };
 use crate::api::AppState;
+use crate::domain::accounting::Coins;
 use crate::domain::address::Address;
 use crate::domain::block::Block;
 use crate::domain::crypto;
 use crate::domain::rules::Consensus;
-use crate::domain::values::Coins;
 
 pub async fn mine(
     State(state): State<AppState>,

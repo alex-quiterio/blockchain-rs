@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::Block;
 use crate::domain::address::Address;
-use crate::domain::values::{BlockHash, MerkleRoot, Reveal, Signature};
+use crate::domain::chain::block::{BlockHash, MerkleRoot};
+use crate::domain::consensus::Reveal;
+use crate::domain::crypto::Signature;
 
 impl Block {
     /// The block without its transactions.

@@ -1,9 +1,9 @@
 //! Questions about an address: what it holds and stakes, and what its next transaction needs.
 
 use super::ChainQueries;
+use crate::domain::accounting::Coins;
 use crate::domain::address::Address;
 use crate::domain::validators::ValidatorState;
-use crate::domain::values::Coins;
 
 pub struct Account {
     pub balance: Coins,

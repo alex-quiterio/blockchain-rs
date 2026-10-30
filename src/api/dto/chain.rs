@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::values::BlockHash;
+use crate::domain::chain::block::BlockHash;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ChainQuery {

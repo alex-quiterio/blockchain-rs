@@ -11,7 +11,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 
 use super::rules::Retarget;
 use crate::domain::block::Block;
-use crate::domain::error::BlockError;
+use crate::domain::chain::block::BlockError;
 
 /// The most one adjustment may change the work by, either way, as in Bitcoin.
 pub const MAX_STEP: i64 = 4;

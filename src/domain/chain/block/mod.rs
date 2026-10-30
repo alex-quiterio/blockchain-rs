@@ -3,27 +3,32 @@
 //! `domain::transaction`; they're re-exported here, where they've always been found.
 
 mod error;
+mod hash;
 mod header;
 pub mod merkle;
+mod proof;
 mod sealing;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::address::Address;
-use crate::domain::values::{BlockHash, MerkleRoot, Reveal, Signature};
+use crate::domain::consensus::Reveal;
+use crate::domain::crypto::Signature;
 
 pub use crate::domain::transaction::{Transaction, TxKind};
 pub use error::BlockError;
+pub use hash::{BlockHash, MerkleNode, MerkleRoot};
 use header::header_hash;
 pub use header::BlockHeader;
+pub use proof::{Side, Step};
 
 // Value objects of the domain. They derive serde because their JSON form is also how
 // blocks are hashed, stored and exchanged between nodes.
 
 // The names a transaction's sender and recipient take when they aren't accounts. They live with
 // `Source` and `Destination`; these keep their old paths working.
-pub use crate::domain::values::{COINBASE, STAKE, UNSTAKE};
+pub use crate::domain::accounting::{COINBASE, STAKE, UNSTAKE};
 
 /// A block of transactions. Only the domain changes one; everywhere else it can only be read:
 ///

@@ -26,9 +26,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use blockchain::domain::accounting::Coins;
 use blockchain::domain::address::Address;
 use blockchain::domain::block::{Block, Transaction};
-use blockchain::domain::values::Coins;
 
 struct Config {
     nodes: Vec<String>,

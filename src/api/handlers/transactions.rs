@@ -15,11 +15,11 @@ use crate::api::dto::transactions::{
 };
 use crate::api::AppState;
 use crate::application::Located;
+use crate::domain::accounting::Destination;
 use crate::domain::address::Address;
 use crate::domain::block::Transaction;
 use crate::domain::crypto;
 use crate::domain::randao;
-use crate::domain::values::Destination;
 
 /// A transaction by signature, and whether it's in a block yet.
 pub async fn get_transaction(

@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::PEER_HEADER;
 use crate::application::network::{PeerClient, PeerResult, PeerTip};
 use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::Extension;
-use crate::domain::values::BlockHash;
 
 /// Talks to other nodes over their REST API.
 pub struct HttpPeerClient {

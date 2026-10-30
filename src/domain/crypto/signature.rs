@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 
 use super::address::Address;
 use crate::domain::crypto;
-use crate::domain::error::ValueError;
+use crate::domain::crypto::ValueError;
 
 /// An ed25519 signature: 128 lowercase hex characters. On the wire it's the hex string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

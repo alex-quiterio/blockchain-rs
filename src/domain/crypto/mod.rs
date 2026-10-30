@@ -1,6 +1,20 @@
-//! A domain service: hashing, and making, reading, using and checking ed25519 keys.
+//! Hashing and signing, the concept every other one is built on. The functions here are a domain
+//! service: making, reading, using and checking ed25519 keys, and hashing. Its value objects are
+//! an `Address`, which is a public key, a `Signature` made with the private one, and each kind of
+//! hash, which every concept declares for itself with `sha256_type!`. `ValueError` says when a
+//! string is none of these.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+pub mod address;
+mod error;
+mod hash;
+pub mod signature;
+
+pub use address::Address;
+pub use error::ValueError;
+pub(crate) use hash::sha256_type;
+pub use signature::Signature;
+
+use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
@@ -44,5 +58,5 @@ pub fn verify(address: &str, payload: &[u8], signature_hex: &str) -> bool {
     else {
         return false;
     };
-    public.verify(payload, &Signature::from_bytes(&bytes)).is_ok()
+    public.verify(payload, &Ed25519Signature::from_bytes(&bytes)).is_ok()
 }

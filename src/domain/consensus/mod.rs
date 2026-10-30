@@ -6,8 +6,13 @@
 //! difficulty and randao are domain services, and `validators` is a value object the ledger
 //! carries. Each file says which it is.
 
+mod beacon;
+mod capacity;
 pub mod difficulty;
 pub mod randao;
 pub mod rules;
 pub mod validators;
 pub mod weight;
+
+pub use beacon::{Beacon, Commitment, Reveal};
+pub use capacity::BlockCapacity;

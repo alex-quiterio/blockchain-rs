@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use super::ChainQueries;
 use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
+use crate::domain::chain::block::{BlockHash, MerkleNode, Step};
 use crate::domain::chain::Blockchain;
 use crate::domain::merkle;
-use crate::domain::values::{BlockHash, MerkleNode, Step};
 
 /// Evidence that a transaction is in a block: its leaf, the sibling hashes up to the block's
 /// Merkle root, and the block's header, whose hash covers the root.

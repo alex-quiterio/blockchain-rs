@@ -4,7 +4,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::crypto;
-use crate::domain::error::ValueError;
+use crate::domain::crypto::ValueError;
 
 /// An account: a hex-encoded ed25519 public key. Holding one means it has already been checked.
 /// On the wire it's the hex string.

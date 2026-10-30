@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::values::Coins;
+use crate::domain::accounting::Coins;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {

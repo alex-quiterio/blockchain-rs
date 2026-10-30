@@ -8,9 +8,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::block::Block;
+use crate::domain::chain::block::BlockHash;
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::ChainRules;
-use crate::domain::values::BlockHash;
 use crate::domain::weight::ChainWeight;
 
 /// What replaying blocks in order adds up to.

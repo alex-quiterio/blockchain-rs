@@ -8,8 +8,12 @@ use axum::{
 };
 
 use crate::api::dto::error::ErrorResponse;
+use crate::application::DomainError;
 use crate::application::NodeError;
-use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError, ValueError};
+use crate::domain::accounting::TransactionError;
+use crate::domain::chain::block::BlockError;
+use crate::domain::chain::ChainError;
+use crate::domain::crypto::ValueError;
 
 /// Maps domain and application errors onto HTTP status codes and JSON error bodies.
 pub struct ApiError {

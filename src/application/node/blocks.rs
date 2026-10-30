@@ -8,8 +8,9 @@ use ed25519_dalek::SigningKey;
 use super::{NodeError, NodeService};
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::BlockError;
+use crate::domain::chain::ChainError;
 use crate::domain::chain::Extension;
-use crate::domain::error::{BlockError, ChainError};
 
 impl NodeService {
     /// What the mempool offers for a new block, as many as one holds.

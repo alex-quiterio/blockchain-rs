@@ -2,9 +2,10 @@
 //! blocks took.
 
 use super::ChainQueries;
+use crate::domain::accounting::Coins;
 use crate::domain::block::Transaction;
+use crate::domain::consensus::BlockCapacity;
 use crate::domain::mempool::FeeEstimate;
-use crate::domain::values::{BlockCapacity, Coins};
 
 /// What fee to pay: what's sure to win a place in the next block now, and what recent blocks
 /// took.

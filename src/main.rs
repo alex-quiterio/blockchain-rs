@@ -6,9 +6,9 @@ use std::time::Duration;
 use blockchain::api::{router, AppState};
 use blockchain::application::{Network, NodeEvent, NodeService, SNAPSHOT_BLOCKS};
 use blockchain::domain::chain::{ChainEvent, ReorgLimit};
+use blockchain::domain::consensus::BlockCapacity;
 use blockchain::domain::mempool::MempoolEvent;
 use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS};
-use blockchain::domain::values::BlockCapacity;
 use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";

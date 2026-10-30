@@ -7,9 +7,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::accounting::Coins;
 use crate::domain::address::Address;
+use crate::domain::consensus::{Beacon, BlockCapacity};
 use crate::domain::crypto;
-use crate::domain::values::{Beacon, BlockCapacity, Coins};
 
 /// How a chain decides who may add the next block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

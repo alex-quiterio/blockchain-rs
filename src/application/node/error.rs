@@ -2,8 +2,11 @@
 
 use std::fmt;
 
-use crate::domain::error::DomainError;
-use crate::domain::repository::RepositoryError;
+use crate::domain::accounting::TransactionError;
+use crate::domain::chain::block::BlockError;
+use crate::domain::chain::repository::RepositoryError;
+use crate::domain::chain::ChainError;
+use crate::domain::crypto::ValueError;
 
 #[derive(Debug)]
 pub enum NodeError {
@@ -27,5 +30,53 @@ impl std::error::Error for NodeError {}
 impl<E: Into<DomainError>> From<E> for NodeError {
     fn from(err: E) -> Self {
         Self::Domain(err.into())
+    }
+}
+
+/// A refusal from the domain, of whichever kind: what a use case returns when it may fail in
+/// several ways, such as `commit`, which takes any change to the chain. The domain itself never
+/// needs one; each of its operations fails only in the ways of what it handles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomainError {
+    Value(ValueError),
+    Transaction(TransactionError),
+    Block(BlockError),
+    Chain(ChainError),
+}
+
+impl fmt::Display for DomainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Value(e) => e.fmt(f),
+            Self::Transaction(e) => e.fmt(f),
+            Self::Block(e) => e.fmt(f),
+            Self::Chain(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for DomainError {}
+
+impl From<ValueError> for DomainError {
+    fn from(e: ValueError) -> Self {
+        Self::Value(e)
+    }
+}
+
+impl From<TransactionError> for DomainError {
+    fn from(e: TransactionError) -> Self {
+        Self::Transaction(e)
+    }
+}
+
+impl From<BlockError> for DomainError {
+    fn from(e: BlockError) -> Self {
+        Self::Block(e)
+    }
+}
+
+impl From<ChainError> for DomainError {
+    fn from(e: ChainError) -> Self {
+        Self::Chain(e)
     }
 }

@@ -5,8 +5,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::Extension;
-use crate::domain::values::BlockHash;
 
 pub type PeerResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 

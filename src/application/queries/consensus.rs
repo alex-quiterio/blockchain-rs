@@ -2,12 +2,13 @@
 //! validator should sign.
 
 use super::ChainQueries;
+use crate::domain::accounting::Coins;
 use crate::domain::address::Address;
 use crate::domain::block::Block;
+use crate::domain::chain::block::BlockError;
 use crate::domain::chain::ReorgLimit;
-use crate::domain::error::BlockError;
+use crate::domain::consensus::Reveal;
 use crate::domain::rules::ChainRules;
-use crate::domain::values::{Coins, Reveal};
 
 /// How the chain picks its next block, as of now.
 pub struct ConsensusState {

@@ -10,21 +10,24 @@ use std::collections::VecDeque;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 
+use crate::domain::accounting::Coins;
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::BlockError;
+use crate::domain::chain::block::BlockHash;
+use crate::domain::consensus::{Beacon, Reveal};
 use crate::domain::difficulty;
-use crate::domain::error::BlockError;
 use crate::domain::ledger::Ledger;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
 use crate::domain::validators::ValidatorState;
-use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 pub mod block;
 mod error;
 mod events;
 mod reorg;
+pub mod repository;
 mod tally;
 mod validation;
 

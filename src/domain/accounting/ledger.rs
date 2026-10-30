@@ -10,10 +10,12 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::transaction::{Transaction, TxKind};
+use crate::domain::accounting::Coins;
+use crate::domain::accounting::TransactionError;
 use crate::domain::address::Address;
-use crate::domain::error::TransactionError;
+use crate::domain::chain::block::BlockHash;
+use crate::domain::consensus::{Beacon, Reveal};
 use crate::domain::validators::{ValidatorState, Validators};
-use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 
 /// Balances, stakes and nonces that result from applying blocks in order, and, for proof of
 /// stake, the `Validators` those stakes may be drawn from.

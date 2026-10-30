@@ -8,9 +8,10 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::accounting::{Coins, Destination, Source};
 use crate::domain::address::Address;
-use crate::domain::values::signature::{self, Signature};
-use crate::domain::values::{Coins, Commitment, Destination, Source};
+use crate::domain::consensus::Commitment;
+use crate::domain::crypto::signature::{self, Signature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxKind {
@@ -26,14 +27,14 @@ pub enum TxKind {
 /// Only the domain changes one; everywhere else it can only be read:
 ///
 /// ```
-/// # fn read(tx: &blockchain::domain::transaction::Transaction) -> blockchain::domain::values::Coins {
+/// # fn read(tx: &blockchain::domain::transaction::Transaction) -> blockchain::domain::accounting::Coins {
 /// tx.amount()
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # fn tamper(tx: &mut blockchain::domain::transaction::Transaction) {
-/// tx.amount = blockchain::domain::values::Coins::new(1_000);
+/// tx.amount = blockchain::domain::accounting::Coins::new(1_000);
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

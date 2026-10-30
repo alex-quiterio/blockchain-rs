@@ -2,8 +2,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::address::Address;
-use crate::domain::error::ValueError;
+use crate::domain::crypto::Address;
+use crate::domain::crypto::ValueError;
 
 /// The sender a block reward names, since its coins come from nowhere.
 pub const COINBASE: &str = "coinbase";

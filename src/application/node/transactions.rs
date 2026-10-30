@@ -1,8 +1,8 @@
 //! Submitting a transaction to the mempool, from a client or a peer.
 
 use super::{NodeEvent, NodeService};
+use crate::domain::accounting::TransactionError;
 use crate::domain::block::Transaction;
-use crate::domain::error::TransactionError;
 
 impl NodeService {
     /// Queues a transaction, checked against the confirmed ledger and everything already

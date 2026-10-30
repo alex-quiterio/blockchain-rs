@@ -13,14 +13,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::block::Transaction;
 use crate::domain::chain::{Blockchain, ChainEvent, ReorgLimit};
-use crate::domain::error::DomainError;
 use crate::domain::mempool::Mempool;
 use crate::domain::repository::ChainRepository;
 use crate::domain::rules::ChainRules;
 
 use super::queries::ChainQueries;
 
-pub use error::NodeError;
+pub use error::{DomainError, NodeError};
 use events::Listener;
 pub use events::NodeEvent;
 

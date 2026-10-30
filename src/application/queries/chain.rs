@@ -3,8 +3,8 @@
 
 use super::ChainQueries;
 use crate::domain::block::{Block, BlockHeader};
-use crate::domain::error::ChainError;
-use crate::domain::values::BlockHash;
+use crate::domain::chain::block::BlockHash;
+use crate::domain::chain::ChainError;
 use crate::domain::weight::ChainWeight;
 
 pub struct TipStatus {
