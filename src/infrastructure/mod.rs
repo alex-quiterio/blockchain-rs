@@ -4,11 +4,11 @@
 mod config;
 mod event_log;
 mod http_peer;
-mod json_file;
+mod json;
 mod memory;
 
 pub use config::Config;
 pub use event_log::log_event;
 pub use http_peer::HttpPeerClient;
-pub use json_file::ChainJsonFileRepository;
+pub use json::ChainJsonFileRepository;
 pub use memory::ChainInMemoryRepository;
