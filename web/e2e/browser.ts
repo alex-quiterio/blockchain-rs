@@ -42,6 +42,8 @@ export async function drive(
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${mkdtempSync(join(tmpdir(), "blockchain-rs-e2e-"))}`,
       "--no-first-run",
+      // Ubuntu's AppArmor keeps Chrome's sandbox from starting on CI runners; locally it stays on.
+      ...(process.env.CI ? ["--no-sandbox"] : []),
       "--no-default-browser-check",
       "about:blank",
     ],

@@ -372,7 +372,7 @@ npm run format    # Prettier, for everything in web/
 
   Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
 
-CI runs `fmt`, `clippy -D warnings` and the Rust tests, and beside them Prettier, the TypeScript check, the web UI's unit tests and its build, on every push and pull request. It also fails if anything under `public/js` is ever committed. The browser test needs Chrome, so it runs locally.
+CI runs `fmt`, `clippy -D warnings` and the Rust tests, and beside them Prettier, the TypeScript check, the web UI's unit tests and its build, on every push and pull request. It also fails if anything under `public/` is ever committed, and runs the browser test, both pages in headless Chrome under both consensus modes.
 
 ## 💡 Ideas
 

@@ -39,3 +39,20 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+
+  # Both pages, end to end, in headless Chrome against fresh nodes of each consensus. The runner
+  # comes with Chrome.
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: cargo build --release --bin blockchain
+      - run: npm run e2e
