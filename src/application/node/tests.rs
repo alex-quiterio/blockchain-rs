@@ -323,6 +323,24 @@ fn what_happened_is_saved_and_then_told_to_listeners() {
 }
 
 #[test]
+fn a_listener_given_before_opening_hears_a_new_chain_start() {
+    let repo = SharedRepository::default();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = heard.clone();
+    let opening = NodeService::opening(Box::new(repo.clone()), RULES, ReorgLimit::DEFAULT);
+    let new = opening.listening(move |event| log.lock().unwrap().push(event.clone())).open();
+    assert!(new.unwrap().started());
+    assert_eq!(*heard.lock().unwrap(), [NodeEvent::Chain(ChainEvent::Started)]);
+
+    // Opening what was saved restores it: nothing new starts, so there's nothing to hear.
+    let log = heard.clone();
+    let opening = NodeService::opening(Box::new(repo), RULES, ReorgLimit::DEFAULT);
+    let restored = opening.listening(move |event| log.lock().unwrap().push(event.clone())).open();
+    assert!(!restored.unwrap().started());
+    assert_eq!(heard.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn adopting_a_heavier_chain_saves_it() {
     let repo = SharedRepository::default();
     let ours = node(repo.clone());

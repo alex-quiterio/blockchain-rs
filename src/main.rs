@@ -19,18 +19,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chain_file = &config.chain_file;
     let repository = Box::new(JsonFileRepository::new(chain_file));
     let started = std::time::Instant::now();
-    let node = NodeService::open(repository, config.rules, config.reorg_limit)
+    // Listening from the start, so the log says when a new chain is started.
+    let node = NodeService::opening(repository, config.rules, config.reorg_limit)
+        .listening(log_event)
+        .open()
         .map_err(|e| format!("{chain_file}: {e}"))?
         .with_snapshots_every(config.snapshot_every);
-    let length = node.queries().tip().height + 1;
-    match node.restored_from() {
-        Some(height) => tracing::info!(
-            "Loaded {length} blocks from {chain_file} in {:.0?}, replaying only those after the snapshot at {height}",
-            started.elapsed()
-        ),
-        None => tracing::info!("Loaded {length} blocks from {chain_file} in {:.0?}", started.elapsed()),
+    // A new chain says so through the log; a restored one says how much was loaded.
+    if !node.started() {
+        let length = node.queries().tip().height + 1;
+        match node.restored_from() {
+            Some(height) => tracing::info!(
+                "Loaded {length} blocks from {chain_file} in {:.0?}, replaying only those after the snapshot at {height}",
+                started.elapsed()
+            ),
+            None => tracing::info!("Loaded {length} blocks from {chain_file} in {:.0?}", started.elapsed()),
+        }
     }
-    node.subscribe(log_event);
     let client = Box::new(HttpPeerClient::new());
     let network = Network::new(Arc::new(node), client, Some(config.public_url));
     let state = AppState::new(network);

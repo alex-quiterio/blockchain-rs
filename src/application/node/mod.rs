@@ -37,6 +37,8 @@ pub struct NodeService {
     last_snapshot: Mutex<usize>,
     /// The snapshot the chain was restored from on opening, if one was used.
     restored_from: Option<usize>,
+    /// Whether opening started a new chain, because nothing was saved yet.
+    started: bool,
     /// Told what happened after every change.
     listeners: Mutex<Vec<Listener>>,
 }
@@ -44,37 +46,80 @@ pub struct NodeService {
 /// Blocks between snapshots, by default.
 pub const SNAPSHOT_BLOCKS: usize = 100;
 
-impl NodeService {
-    /// Restores the saved chain, or starts and saves a new one if nothing is saved yet, under
-    /// the network's `rules` and this node's own `reorg_limit`. A saved snapshot that fits the
-    /// chain spares replaying the blocks before it.
-    pub fn open(
-        repository: Box<dyn ChainRepository>,
-        rules: ChainRules,
-        reorg_limit: ReorgLimit,
-    ) -> Result<Self, NodeError> {
-        let (chain, restored_from) = match repository.load().map_err(NodeError::Storage)? {
+/// A node about to open, gathering who should hear what happens from the very first event. A
+/// listener subscribed after opening misses that a new chain was started.
+pub struct Opening {
+    repository: Box<dyn ChainRepository>,
+    rules: ChainRules,
+    reorg_limit: ReorgLimit,
+    listeners: Vec<Listener>,
+}
+
+impl Opening {
+    /// Calls `listener` with everything that happens from opening on, after it's saved.
+    pub fn listening(mut self, listener: impl Fn(&NodeEvent) + Send + Sync + 'static) -> Self {
+        self.listeners.push(Box::new(listener));
+        self
+    }
+
+    /// Restores the saved chain, or starts and saves a new one if nothing is saved yet, and
+    /// tells the listeners it started. A saved snapshot that fits the chain spares replaying the
+    /// blocks before it.
+    pub fn open(self) -> Result<NodeService, NodeError> {
+        let Self { repository, rules, reorg_limit, listeners } = self;
+        let (chain, restored_from, events) = match repository.load().map_err(NodeError::Storage)? {
             Some(blocks) => {
                 // A snapshot that can't be read is no worse than none: the chain is replayed.
                 let snapshot = repository.load_snapshot().unwrap_or(None);
-                Blockchain::restore_from(blocks, rules, reorg_limit, snapshot)?
+                let (chain, from) = Blockchain::restore_from(blocks, rules, reorg_limit, snapshot)?;
+                (chain, from, Vec::new())
             }
             None => {
                 let mut chain = Blockchain::new(rules).with_reorg_limit(reorg_limit);
                 let events = chain.take_events();
                 repository.save(chain.blocks(), &events).map_err(NodeError::Storage)?;
-                (chain, None)
+                (chain, None, events)
             }
         };
-        Ok(Self {
+        let node = NodeService {
             mempool: Arc::new(Mutex::new(Mempool::on(chain.ledger()))),
             chain: Arc::new(Mutex::new(chain)),
             repository,
             snapshot_every: SNAPSHOT_BLOCKS,
             last_snapshot: Mutex::new(restored_from.unwrap_or(0)),
             restored_from,
-            listeners: Mutex::default(),
-        })
+            started: !events.is_empty(),
+            listeners: Mutex::new(listeners),
+        };
+        node.publish(events.into_iter().map(NodeEvent::Chain));
+        Ok(node)
+    }
+}
+
+impl NodeService {
+    /// A node under the network's `rules` and this node's own `reorg_limit`, ready to be given
+    /// its listeners and opened.
+    pub fn opening(
+        repository: Box<dyn ChainRepository>,
+        rules: ChainRules,
+        reorg_limit: ReorgLimit,
+    ) -> Opening {
+        Opening { repository, rules, reorg_limit, listeners: Vec::new() }
+    }
+
+    /// Opens a node with nobody listening yet: `opening(…).open()`.
+    pub fn open(
+        repository: Box<dyn ChainRepository>,
+        rules: ChainRules,
+        reorg_limit: ReorgLimit,
+    ) -> Result<Self, NodeError> {
+        Self::opening(repository, rules, reorg_limit).open()
+    }
+
+    /// Whether opening started a new chain, because nothing was saved yet, rather than restoring
+    /// one.
+    pub fn started(&self) -> bool {
+        self.started
     }
 
     /// Saves a snapshot every `blocks` blocks instead of every `SNAPSHOT_BLOCKS`. 0 saves none.
