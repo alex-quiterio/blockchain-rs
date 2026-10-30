@@ -18,7 +18,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-  # The web UI: TypeScript in web/, compiled into public/js, which is build output only.
+  # The web UI: TypeScript in web/, built into public/, which is build output only.
   web:
     runs-on: ubuntu-24.04
     steps:
@@ -27,11 +27,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: public/js is build output, never committed
+      - name: public/ is build output, never committed
         run: |
-          if [ -n "$(git ls-files public/js)" ]; then
-            echo "These are tracked under public/js, which npm run build writes:"
-            git ls-files public/js
+          if [ -n "$(git ls-files public)" ]; then
+            echo "These are tracked under public/, which npm run build writes:"
+            git ls-files public
             exit 1
           fi
       - run: npm ci

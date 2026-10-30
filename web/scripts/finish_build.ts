@@ -1,6 +1,7 @@
 // Runs after tsc has compiled web/src into public/js. Browsers can't resolve the layer aliases,
-// so each one becomes a relative path to the compiled module; and each stylesheet is copied
-// next to the module it belongs to, where the pages link it.
+// so each one becomes a relative path to the compiled module; each stylesheet is copied next to
+// the module it belongs to, where the pages link it; and each page's HTML is written to public/,
+// where the node serves it.
 
 import {
   copyFileSync,
@@ -14,7 +15,14 @@ import { fileURLToPath } from "node:url";
 import { unalias } from "./layers.ts";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
-const OUT = fileURLToPath(new URL("../../public/js/", import.meta.url));
+const PUBLIC = fileURLToPath(new URL("../../public/", import.meta.url));
+const OUT = join(PUBLIC, "js");
+
+/** Each page's HTML, kept in the page's folder, and the path it's served at. */
+const PAGES: Record<string, string> = {
+  "ui/node/index.html": "index.html",
+  "ui/explorer/index.html": "explorer.html",
+};
 
 const filesUnder = (dir: string): string[] =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -49,6 +57,10 @@ for (const file of styles) {
   copyFileSync(file, to);
 }
 
+for (const [page, served] of Object.entries(PAGES)) {
+  copyFileSync(join(SRC, page), join(PUBLIC, served));
+}
+
 console.log(
-  `Linked the layer aliases in ${rewritten} modules and copied ${styles.length} stylesheets into public/js.`,
+  `Linked the layer aliases in ${rewritten} modules, copied ${styles.length} stylesheets into public/js, and wrote ${Object.keys(PAGES).length} pages into public.`,
 );

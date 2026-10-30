@@ -35,7 +35,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 
 ```sh
 docker compose up --build     # three linked nodes on :3000, :3001 and :3002
-# or, for a single node, build the web UI first (it's TypeScript, compiled into public/js):
+# or, for a single node, build the web UI first (it's TypeScript, built into public/):
 npm ci && npm run build
 cargo run                     # http://127.0.0.1:3000
 ```
@@ -295,14 +295,14 @@ flowchart TB
   - `blocks.rs`: mining, forging, and who may add the next block
   - `network.rs`: peers, syncing now, and which build the node runs
   - `error.rs`: how each refusal reaches a client, as an HTTP status and a message
-- **`web/`** is the web UI, in TypeScript. `npm run build` compiles `web/src` into `public/js`, which is build output and never committed, beside the two pages in `public/`. It's laid out with the same patterns as the node, but models the page's own concepts: layers with dependencies pointing inward, concepts inside the domain, ports and adapters, and each file naming its building block. Each layer is imported by name, `@domain`, `@application`, `@infra` and `@ui`, instead of climbing `../../..` to it; the build rewrites those to relative paths for the browser.
+- **`web/`** is the web UI, in TypeScript. `npm run build` writes it into `public/`, which is build output and never committed: each page's HTML from its folder (`ui/node/index.html` becomes `/index.html`, `ui/explorer/index.html` becomes `/explorer.html`), and `web/src` compiled into `public/js` with its styles. It's laid out with the same patterns as the node, but models the page's own concepts: layers with dependencies pointing inward, concepts inside the domain, ports and adapters, and each file naming its building block. Each layer is imported by name, `@domain`, `@application`, `@infra` and `@ui`, instead of climbing `../../..` to it; the build rewrites those to relative paths for the browser.
   - `src/domain/`: no DOM and no network.
     - `wallets/`: the `Wallets` **aggregate**, whose invariant is that nothing signs while it's locked, kept through `WalletsRepository`, a port it declares; and the **domain services** it uses: `keys.ts` (making keys and signing), `vault.ts` (encrypting keys with the passphrase) and `reveals.ts` (a wallet's reveal chain, for staking and forging)
     - `verification/` (**domain service**): re-checking what the node sends, so the page needn't trust it: Merkle roots and proofs, header hashes, work, signatures
     - `transfers.ts` and `blocks.ts`: what a transfer and a block are to the page (**value objects**). `encoding.ts`: hex and SHA-256
   - `src/application/`: the use cases: the node as the page last saw it (`node_view.ts`), sending, producing a block, the wallets, peers, and the explorer's lookups. They talk through `ports.ts`, which declares `NodePort` and what each of its answers holds; each page's `main.ts` wires the adapters, so no use case names one
   - `src/infrastructure/`: the **adapters**: `node_client.ts`, the node's HTTP API, implementing `NodePort`, and `repository/local_storage.ts`, implementing `WalletsRepository`
-  - `src/ui/`: `dom.ts` and `base.css`, which both pages share, and the two pages, `node/` (`index.html`) and `explorer/` (`explorer.html`). Each page's folder has its `main.ts` at the root, which wires the adapters, with its layout in `main.css` and what several of its parts draw in `components.ts` and `components.css`. Beneath it, each part is a folder holding its own script and styles:
+  - `src/ui/`: `dom.ts` and `base.css`, which both pages share, and the two pages, `node/` and `explorer/`. Each page's folder has its `index.html` and `main.ts` at the root, which wires the adapters, with its layout in `main.css` and what several of its parts draw in `components.ts` and `components.css`. Beneath it, each part is a folder holding its own script and styles:
     - `node/panels/`: `chain/`, `wallets/`, `sending/`, `producing/` and `network/`, each a `panel.ts` and `panel.css`
     - `explorer/pages/`: `home/`, `block/`, `transaction/` and `address/`, each a `page.ts`, with a `page.css` where it has styles of its own
   - `test/`: unit tests, mirroring `src/`, run by Node as they are. The verification tests check against blocks, a Merkle proof and a forged block recorded from real nodes (`scripts/record_fixtures.ts`), so the page is tested against the node and not only against itself

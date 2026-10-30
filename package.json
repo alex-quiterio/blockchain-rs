@@ -1,7 +1,7 @@
 {
   "name": "blockchain-rs-web",
   "private": true,
-  "description": "The node's web UI: TypeScript in web/src, compiled into public/js.",
+  "description": "The node's web UI: TypeScript in web/src, built into public/.",
   "type": "module",
   "engines": {
     "node": ">=24"

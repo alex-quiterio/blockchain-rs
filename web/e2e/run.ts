@@ -11,7 +11,7 @@ import { drive } from "./browser.ts";
 
 const NODE_BINARY = new URL("../../target/release/blockchain", import.meta.url)
   .pathname;
-const UI = new URL("../../public/js/ui/node/main.js", import.meta.url).pathname;
+const UI = new URL("../../public/index.html", import.meta.url).pathname;
 const CHROMES = [
   process.env.CHROME,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
