@@ -103,11 +103,11 @@ SENT=()  # "from to amount signature" of every accepted transfer
 # `quiet`, prints nothing.
 send() {  # from-index to-index amount fee [quiet]
   local from=$1 to=$2 amount=$3 fee=$4 quiet=${5:-} node=${HOME_NODE[$1]}
-  local req
-  req=$(jq -n --arg k "${KEY[$from]}" --arg to "${ADDR[$to]}" --argjson a "$amount" \
-    --argjson n "${NONCE[$from]}" --argjson f "$fee" \
-    '{secret_key: $k, to: $to, amount: $a, nonce: $n, fee: $f}')
-  call POST "${NODES[$node]}/transactions/sign" "$req"
+  # Keys and addresses are hex and the rest are numbers, so printf builds the JSON without
+  # starting jq for every transfer.
+  call POST "${NODES[$node]}/transactions/sign" \
+    "$(printf '{"secret_key":"%s","to":"%s","amount":%d,"nonce":%d,"fee":%d}' \
+      "${KEY[$from]}" "${ADDR[$to]}" "$amount" "${NONCE[$from]}" "$fee")"
   LAST_TX=$BODY
   submit "$from" "$to" "$LAST_TX" "$amount" "$fee" "$quiet"
 }
@@ -119,7 +119,8 @@ submit() {  # from-index to-index tx-json amount fee [quiet]
   call POST "${NODES[$node]}/transactions" "$tx"
   if [[ $CODE == 202 ]]; then
     NONCE[$from]=$(( NONCE[$from] + 1 ))
-    SENT+=("$from $to $amount $(jq -r .signature <<< "$tx")")
+    [[ $tx =~ \"signature\":[[:space:]]*\"([0-9a-f]+)\" ]]
+    SENT+=("$from $to $amount ${BASH_REMATCH[1]}")
     [[ -n $quiet ]] && return 0
     printf '  ✉️  %-6s ─%s %3d coins%s ─▶ %-6s via %s %s✓ %s accepted, gossiping%s\n' \
       "${NAMES[$from]}" "$GRN" "$amount" "$R$fee_note" "${NAMES[$to]}" "$(node_label "$node")" "$GRN" "$CODE" "$R"
@@ -130,6 +131,24 @@ submit() {  # from-index to-index tx-json amount fee [quiet]
       "$(jq -r '.message // .' <<< "$BODY" 2> /dev/null || echo "$BODY")" "$R"
     return 1
   fi
+}
+
+# Sends `count` free transfers of a coin from one sender to `recipients` in turn, in nonce
+# order, printing nothing until it's done, then how many were accepted. It changes no state of
+# the story's, so several can run at once, one per sender: only each sender's own nonces need
+# to arrive in order. Stops at the first refusal, since every later nonce would be refused too.
+queue_free() {  # from-index count recipient-index...
+  local from=$1 count=$2 node=${HOME_NODE[$1]} nonce=${NONCE[$1]} accepted=0 k tx
+  shift 2
+  local -a to=("$@")
+  for (( k = 0; k < count; k++ )); do
+    tx=$(curl -s -m 10 -H 'content-type: application/json' "${NODES[$node]}/transactions/sign" \
+      -d "$(printf '{"secret_key":"%s","to":"%s","amount":1,"nonce":%d}' "${KEY[$from]}" "${ADDR[${to[$(( k % ${#to[@]} ))]}]}" "$nonce")")
+    [[ $(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+      -d "$tx" "${NODES[$node]}/transactions") == 202 ]] || break
+    accepted=$(( accepted + 1 )) nonce=$(( nonce + 1 ))
+  done
+  echo "$accepted"
 }
 
 # Follows the last accepted transfer as gossip carries it into every node's mempool.
@@ -326,13 +345,25 @@ else
       for m in "${MINERS[@]}"; do left+=("$(balance "$(who "$m")")"); funds=$(( funds + left[${#left[@]} - 1] )); done
     done
   fi
-  free=0
-  for (( k = 0; free < need && k < 3 * need; k++ )); do
+  # Shares them out round-robin among those with coins left, then sends each share at once.
+  share=()
+  for m in "${MINERS[@]}"; do share+=(0); done
+  for (( k = 0, given = 0; given < need && k < 3 * need; k++ )); do
     m=$(( k % ${#MINERS[@]} ))
-    (( left[m] > 0 )) || continue
-    send "$(who "${MINERS[$m]}")" "$(who "${PEOPLE[$(( k % ${#PEOPLE[@]} ))]}")" 1 0 quiet \
-      && { free=$(( free + 1 )); left[m]=$(( left[m] - 1 )); }
+    (( share[m] < left[m] )) && { share[m]=$(( share[m] + 1 )); given=$(( given + 1 )); }
   done
+  queued=$(mktemp -d)
+  for m in "${!MINERS[@]}"; do
+    queue_free "$(who "${MINERS[$m]}")" "${share[$m]}" "${people_idx[@]}" > "$queued/$m" &
+  done
+  wait
+  free=0
+  for m in "${!MINERS[@]}"; do
+    accepted=$(< "$queued/$m")
+    free=$(( free + accepted ))
+    NONCE[$(who "${MINERS[$m]}")]=$(( NONCE[$(who "${MINERS[$m]}")] + accepted ))
+  done
+  rm -rf "$queued"
   printf '  ✉️  the %ss queue %s%s free transfers%s of 1 coin\n' "$MINER" "$B" "$free" "$R"
   # ...then, last in line, a few people pay to jump the queue.
   paid=()
