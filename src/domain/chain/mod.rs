@@ -1,5 +1,8 @@
-//! The chain: the aggregate root that every change goes through (`Blockchain`), the rules each
-//! block is checked by (`validation`), and what the blocks add up to (`tally`).
+//! The chain, an aggregate: its root that every change goes through (`Blockchain`), its entity
+//! the block (`block`), the rules each block is checked by (`validation`), and what the blocks
+//! add up to (`tally`). A block can be built outside the chain, but it only becomes part of it
+//! through the root, which checks it first. Its lock in a node is its own, so the mempool, the
+//! other aggregate, never waits on it.
 
 use std::cmp::Reverse;
 use std::collections::VecDeque;
@@ -10,7 +13,7 @@ use ed25519_dalek::SigningKey;
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty;
-use crate::domain::error::{BlockError, ChainError};
+use crate::domain::error::BlockError;
 use crate::domain::ledger::Ledger;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
@@ -19,6 +22,7 @@ use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 pub mod block;
+mod error;
 mod events;
 mod reorg;
 mod tally;
@@ -27,6 +31,7 @@ mod validation;
 use tally::{Tally, TallyLog};
 use validation::{apply_block, links_up, payout, replay_from, replay_kept};
 
+pub use error::ChainError;
 pub use events::ChainEvent;
 pub use reorg::ReorgLimit;
 pub use tally::Snapshot;

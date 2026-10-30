@@ -1,4 +1,5 @@
-//! A domain service: Merkle trees over a block's transactions, after Bitcoin's. It holds no
+//! A domain service: Merkle trees over a block's transactions, after Bitcoin's. It lives with the
+//! block because that's what it proves things about. It holds no
 //! state; what it makes are values, a `MerkleRoot`, `MerkleNode`s and the `Step`s of a proof.
 //!
 //! Each transaction is hashed into a leaf, and neighbouring hashes are hashed together in pairs,

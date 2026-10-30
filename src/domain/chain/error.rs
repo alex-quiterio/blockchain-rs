@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::BlockError;
+use super::block::BlockError;
 
 /// Blocks that can't become our chain.
 #[derive(Debug, Clone, PartialEq, Eq)]

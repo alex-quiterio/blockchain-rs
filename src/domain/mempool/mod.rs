@@ -1,3 +1,7 @@
+//! The mempool, an aggregate: the transfers waiting for a block, changed only through its root
+//! (`Mempool`), and what it offers when more is waiting than a block holds (`selection`). Its
+//! lock in a node is its own, so the chain, the other aggregate, never waits on it.
+
 use std::collections::HashSet;
 
 use crate::domain::address::Address;

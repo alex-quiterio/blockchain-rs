@@ -2,17 +2,19 @@
 //! header (`header`). The transactions it carries are shared with the mempool, so they live in
 //! `domain::transaction`; they're re-exported here, where they've always been found.
 
+mod error;
 mod header;
+pub mod merkle;
 mod sealing;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::address::Address;
-use crate::domain::merkle;
 use crate::domain::values::{BlockHash, MerkleRoot, Reveal, Signature};
 
 pub use crate::domain::transaction::{Transaction, TxKind};
+pub use error::BlockError;
 use header::header_hash;
 pub use header::BlockHeader;
 

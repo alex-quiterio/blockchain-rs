@@ -3,5 +3,8 @@
 //! work with these: the chain's blocks carry transactions and add up to a ledger, and the
 //! mempool holds transactions and projects its own ledger from them.
 
+mod error;
 pub mod ledger;
 pub mod transaction;
+
+pub use error::TransactionError;

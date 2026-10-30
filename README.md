@@ -221,37 +221,38 @@ flowchart TB
     api["<b>api/</b><br/>routes · handlers · DTOs"] --> app
     infra["<b>infrastructure/</b><br/>JSON file · in-memory · HTTP peers"] --> app
     app["<b>application/</b><br/>NodeService · ChainQueries · Network"] --> domain
-    domain["<b>domain/</b><br/>aggregates: Blockchain (with its Block) · Mempool<br/>Transaction · consensus/ · Ledger · Merkle · values · ports"]
+    domain["<b>domain/</b><br/>chain/ (aggregate, with its Block) · mempool/ (aggregate)<br/>accounting/ · consensus/ · crypto · values/ · ports"]
 ```
 
-- **`domain/`** has the rules and no I/O.
-  - `aggregates/`: the two clusters that change only through their root, each keeping its own invariants. In a node each has its own lock, so neither waits on the other.
-    - `chain/`: the `Blockchain` aggregate, root of the blocks and of the ledger they add up to.
-      - `mod.rs`: the `Blockchain` aggregate root, which every change goes through: mining, forging, `extend` and `adopt_if_heavier`. It knows nothing of the mempool: a new block takes whatever candidates it's given and keeps those that apply on its own ledger, as many as a block holds
-      - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
-      - `validation.rs`: the rules each block is checked by, and replaying a chain by them
-      - `tests.rs`: the aggregate's tests, kept apart so `mod.rs` holds only what changes the chain
-      - `reorg.rs`: `ReorgLimit`, how far back this node will follow a fork. Its own choice, kept apart from the `ChainRules` every node must share
-      - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
-      - `block/`: `Block`, the chain's entity, which mines, forges and hashes itself. One can be built outside the chain, but it only becomes part of it through the root, which checks it first. Only the domain can change one; outside it, it can only be read, and doctests check it stays that way
-        - `mod.rs`: `Block` itself, its hash, and the checks on its Merkle root and validator's signature
-        - `sealing.rs`: how a block gets made: genesis, mined, forged, or proposed and signed elsewhere
-        - `header.rs`: `BlockHeader`, what a light client keeps, and the header hash it shares with the block
-    - `mempool/`: the `Mempool` aggregate: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block asks it for `candidates`, and the chain keeps those that still apply, in the order given, as many as a block holds. It says what happened with `MempoolEvent`s: `Accepted` for each transfer submitted, `Rebased` for how a chain change left it
-      - `selection.rs`: what it offers when more is waiting than a block holds: the highest fees first, keeping each sender's nonce order. A producer's choice, not a consensus rule
+- **`domain/`** has the rules and no I/O. It's organised by concept, as DDD modules, not by building block; each file says which building blocks it holds. Two concepts are aggregates, clusters changed only through their root that keep their own invariants: the chain and the mempool. Each has its own lock in a node, so neither waits on the other.
+  - `chain/`: the **chain aggregate**.
+    - `mod.rs`: `Blockchain`, the aggregate root every change goes through: mining, forging, `extend` and `adopt_if_heavier`. It knows nothing of the mempool: a new block takes whatever candidates it's given and keeps those that apply on its own ledger, as many as a block holds
+    - `validation.rs`: the rules each block is checked by, and replaying a chain by them
+    - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
+    - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
+    - `reorg.rs`: `ReorgLimit`, how far back this node will follow a fork. Its own choice, kept apart from the `ChainRules` every node must share
+    - `error.rs`: `ChainError`, why blocks can't become our chain, and at which height
+    - `tests.rs`: the aggregate's tests, kept apart so `mod.rs` holds only what changes the chain
+    - `block/`: `Block`, the chain's **entity**, which mines, forges and hashes itself. One can be built outside the chain, but it only becomes part of it through the root, which checks it first. Only the domain can change one; outside it, it can only be read, and doctests check it stays that way
+      - `mod.rs`: `Block` itself, its hash, and the checks on its Merkle root and validator's signature
+      - `sealing.rs`: how a block gets made: genesis, mined, forged, or proposed and signed elsewhere
+      - `header.rs`: `BlockHeader`, what a light client keeps, and the header hash it shares with the block
+      - `merkle.rs`: a **domain service**: Merkle roots and proofs over a block's transactions
+      - `error.rs`: `BlockError`, the rule a block breaks: `BrokenLink`, `MerkleRootMismatch`, `InsufficientWork`, `WrongPayout`, `BadTransfer`…
+  - `mempool/`: the **mempool aggregate**: transactions waiting to be mined, kept as a running projection. It rebases onto the chain's ledger whenever the chain changes, taking back what a fork dropped; producing a block asks it for `candidates`, and the chain keeps those that still apply, in the order given, as many as a block holds. It says what happened with `MempoolEvent`s: `Accepted` for each transfer submitted, `Rebased` for how a chain change left it
+    - `selection.rs`: what it offers when more is waiting than a block holds: the highest fees first, keeping each sender's nonce order. A producer's choice, not a consensus rule
   - `accounting/`: who owns what. Both aggregates work with it, so it lives outside them.
-    - `transaction.rs`: `Transaction`, which signs itself, and `TxKind`. A value object: it never changes once signed, and like a block, only the domain can change one
-    - `ledger.rs`: balances, stakes and nonces, keyed by `Address`, beside the `Validators` those stakes may be drawn from, and the rules a transaction is checked by. A value object holding an aggregate's state: the chain keeps a copy per recent block and the mempool its own
+    - `transaction.rs`: `Transaction`, which signs itself, and `TxKind`. A **value object**: it never changes once signed, and only the domain can change one
+    - `ledger.rs`: balances, stakes and nonces, keyed by `Address`, beside the `Validators` those stakes may be drawn from, and the rules a transaction is checked by. A **value object** holding an aggregate's state: the chain keeps a copy per recent block and the mempool its own
+    - `error.rs`: `TransactionError`, why the ledger or the mempool won't take a transaction
   - `consensus/`: how the network agrees on one chain.
-    - `rules.rs`: `ChainRules`, what every node must share (consensus, reward and block capacity), `Consensus` and the stake-weighted `select_validator`
-    - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
-    - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
-    - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
-    - `validators.rs`: `Validators`, each validator's reveal chain and the beacon, and the rules for committing, revealing and retiring. Part of the ledger, but its own model: nothing in it moves coins
-  - `services/`: domain services, what the domain does that belongs to no one object, with no state of their own. The ones that decide on consensus live with its rules in `consensus/`.
-    - `merkle.rs`: Merkle roots and proofs over a block's transactions
-    - `crypto.rs`: hashing, and making, using and checking ed25519 keys
-  - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
+    - `rules.rs`: `ChainRules`, what every node must share (consensus, reward and block capacity), and `Consensus` (**value objects**), and the stake-weighted `select_validator` (a **service** function)
+    - `weight.rs`: `ChainWeight` (**value object**), what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
+    - `difficulty.rs` (**domain service**): proof-of-work targets as work, retargeting, and the timestamp rules
+    - `randao.rs` (**domain service**): the commit-reveal hash chains and the beacon that pick validators
+    - `validators.rs`: `Validators` (**value object**), each validator's reveal chain and the beacon, and the rules for committing, revealing and retiring. The ledger carries it, but nothing in it moves coins
+  - `crypto.rs` (**domain service**): hashing, and making, using and checking ed25519 keys
+  - `values/`: the shared vocabulary every other module is built from, too basic to belong to any one of them. The one module grouped by building block, on purpose: they're all **value objects**, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
     - `address.rs`: an `Address` can only hold a valid public key
     - `hash.rs`: `BlockHash`, `MerkleRoot` and `MerkleNode`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another
     - `proof.rs`: a Merkle proof's `Step`s: the sibling `MerkleNode` at each level, and the `Side` it sits on
@@ -259,10 +260,9 @@ flowchart TB
     - `capacity.rs`: `BlockCapacity`, how many transfers a block may hold: at most some number, or any
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
     - `party.rs`: where a transaction's coins come from (`Source`: an account, or new coins for a block reward) and go (`Destination`: an account, or into or out of a stake), instead of strings with magic values
-  - `error/`: why something was refused, by what it was: `ValueError`, `TransactionError`, `BlockError` or `ChainError`, each operation failing only in the ways of what it handles, and `DomainError` where they meet. Validation says which rule a block breaks (`BrokenLink`, `MerkleRootMismatch`, `InsufficientWork`, `WrongPayout`, `BadTransfer`…), and a refused chain says at which height
-    - `mod.rs`: `DomainError`, where the kinds meet
-    - `value.rs`, `transaction.rs`, `block.rs`, `chain.rs`: one kind of refusal each, with how it reads
-  - `repository.rs`: the storage port, which is told the events to save
+    - `error.rs`: `ValueError`, a value that isn't one
+  - `error.rs`: `DomainError`, where every kind of refusal meets, such as at the HTTP boundary. Each kind lives with its concept and is re-exported here, so each operation still fails only in the ways of what it handles
+  - `repository.rs`: the storage **port**, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
     - `mod.rs`: opening the node, and `commit`, the one path every change to the chain takes: applied to a copy, saved, then swapped in

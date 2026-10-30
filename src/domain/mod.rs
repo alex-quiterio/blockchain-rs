@@ -1,24 +1,24 @@
 //! Blocks, transactions and the rules for valid chains. No I/O lives here.
 //!
-//! Organised by concept, as DDD modules: the two aggregates (`aggregates/`: the chain, with its
-//! block, and the mempool), who owns what (`accounting/`: transactions and the ledger, which
-//! both aggregates work with), and how nodes agree (`consensus/`). Beside them, the services that
-//! belong to no one concept (`services/`) and the small checked values everything is made of
-//! (`values/`). Each file names the building block it is.
+//! Organised by concept, as DDD modules, not by building block. Two of them are aggregates: the
+//! chain (`chain/`, with its block) and the mempool (`mempool/`). Beside them, who owns what
+//! (`accounting/`: transactions and the ledger, which both aggregates work with), how nodes agree
+//! (`consensus/`), hashing and signing (`crypto`), and the shared vocabulary every other module is
+//! built from (`values/`). Each concept keeps its own errors; `error` gathers them where they
+//! meet. Each file names the building blocks it holds.
 
 pub mod accounting;
-pub mod aggregates;
+pub mod chain;
 pub mod consensus;
+pub mod crypto;
 pub mod error;
+pub mod mempool;
 pub mod repository;
-pub mod services;
 pub mod values;
 
-// These live under `accounting/`, `aggregates/`, `consensus/` and `services/`; the re-exports
-// keep their old paths working.
+// These live deeper in their concept; the re-exports keep their old paths working.
 pub use accounting::{ledger, transaction};
-pub use aggregates::chain::block;
-pub use aggregates::{chain, mempool};
+pub use chain::block;
+pub use chain::block::merkle;
 pub use consensus::{difficulty, randao, rules, validators, weight};
-pub use services::{crypto, merkle};
 pub use values::address;

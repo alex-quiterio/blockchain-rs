@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::TransactionError;
+use crate::domain::accounting::TransactionError;
 use crate::domain::address::Address;
 use crate::domain::values::Coins;
 

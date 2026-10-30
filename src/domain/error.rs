@@ -1,18 +1,17 @@
 //! Why the domain refused something, by what was refused: a value, a transaction, a block or a
 //! chain. Each operation fails only in the ways of what it handles, so its signature says what
 //! can go wrong; `DomainError` gathers them where several meet, such as at the HTTP boundary.
-
-mod block;
-mod chain;
-mod transaction;
-mod value;
+//!
+//! Each kind lives with the concept it refuses for: `ValueError` in `values`, `TransactionError`
+//! in `accounting`, `BlockError` with the block and `ChainError` with the chain. They're all
+//! re-exported here, so whoever handles refusals finds them in one place.
 
 use std::fmt;
 
-pub use block::BlockError;
-pub use chain::ChainError;
-pub use transaction::TransactionError;
-pub use value::ValueError;
+pub use crate::domain::accounting::TransactionError;
+pub use crate::domain::chain::block::BlockError;
+pub use crate::domain::chain::ChainError;
+pub use crate::domain::values::ValueError;
 
 /// Any of them, for where several kinds of refusal meet.
 #[derive(Debug, Clone, PartialEq, Eq)]

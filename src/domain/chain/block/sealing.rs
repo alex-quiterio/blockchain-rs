@@ -4,10 +4,9 @@
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 
-use super::{Block, Transaction};
+use super::{merkle, Block, Transaction};
 use crate::domain::address::Address;
 use crate::domain::difficulty::meets_work;
-use crate::domain::merkle;
 use crate::domain::rules::{ChainRules, Consensus};
 use crate::domain::values::{BlockHash, Reveal, Signature};
 
