@@ -286,7 +286,7 @@ flowchart TB
     - `gossip.rs`: pushing a new block or an accepted transaction as soon as there is one
     - `tests.rs`: a whole network in one process, and what goes over the wire
 - **`infrastructure/`** has the adapters: `JsonFileRepository`, `InMemoryRepository` and `HttpPeerClient`.
-- **`api/`** is the HTTP interface: `mod.rs` has the routes, and `handlers/` and `dto/` one file each per part of the API, the handlers and their request and response bodies, under the same names.
+- **`api/`** is the HTTP interface: `router.rs` has the routes, grouped as the handlers are, with the web UI for every other path; `mod.rs` the `AppState` every handler shares; and `handlers/` and `dto/` one file each per part of the API, the handlers and their request and response bodies, under the same names.
   - `chain.rs`: reading the chain and offering this node another's: blocks, headers, the tip, the work each block needed and a full replay
   - `transactions.rs`: signing, submitting, finding and proving transfers, what's waiting, and what fee gets one in
   - `wallets.rs`: keypairs and what an address holds
