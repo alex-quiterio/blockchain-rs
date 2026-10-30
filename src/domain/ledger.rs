@@ -5,82 +5,45 @@ use serde::{Deserialize, Serialize};
 use super::address::Address;
 use super::block::{Transaction, TxKind};
 use super::error::TransactionError;
-use super::randao;
+use super::validators::{ValidatorState, Validators};
 use super::values::{Beacon, BlockHash, Coins, Reveal};
 
-/// Balances, stakes, nonces and validator randomness that result from applying blocks in order.
+/// Balances, stakes and nonces that result from applying blocks in order, and, for proof of
+/// stake, the `Validators` those stakes may be drawn from.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
     balances: HashMap<Address, Coins>,
     stakes: HashMap<Address, Coins>,
     nonces: HashMap<Address, u64>,
-    /// Each validator's reveal chain: the link they showed last and how many are left.
-    commitments: HashMap<Address, RevealChain>,
-    /// How many commitments each address has ever made, which numbers the next one.
-    epochs: HashMap<Address, u64>,
-    /// The randomness that picks the next validator, mixed with every reveal.
-    beacon: Beacon,
-}
-
-/// A validator's reveal chain as far as it's been shown: the last link, and how many are left.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct RevealChain {
-    head: Reveal,
-    remaining: u32,
-}
-
-/// Where an address stands with its reveal chain, so a wallet can compute what to send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValidatorState {
-    /// The epoch of the commitment it would make next. The active one, if any, is one less.
-    pub next_epoch: u64,
-    /// Reveals left on the active commitment. `None` if there isn't one.
-    pub reveals_left: Option<u32>,
+    /// Flattened, so a snapshot reads the same as when these were the ledger's own fields.
+    #[serde(flatten)]
+    validators: Validators,
 }
 
 impl Ledger {
     /// An empty ledger whose beacon starts at the genesis hash.
     pub fn starting_at(genesis_hash: &BlockHash) -> Self {
         let beacon = Beacon::parse(genesis_hash.as_str()).expect("both are SHA-256 hex");
-        Self { beacon, ..Self::default() }
+        Self { validators: Validators::starting_at(beacon), ..Self::default() }
     }
 
     pub fn beacon(&self) -> &Beacon {
-        &self.beacon
+        self.validators.beacon()
     }
 
     /// Stakes that can be picked to forge: those whose reveal chain isn't used up, by address.
     pub fn validator_stakes(&self) -> Vec<(Address, Coins)> {
-        self.stakes()
-            .into_iter()
-            .filter(|(address, _)| self.commitments.get(address).is_some_and(|c| c.remaining > 0))
-            .collect()
+        self.validators.eligible(self.stakes())
     }
 
     pub fn validator_state(&self, address: &Address) -> ValidatorState {
-        ValidatorState {
-            next_epoch: self.epochs.get(address).copied().unwrap_or(0),
-            reveals_left: self.active_commitment(address).map(|c| c.remaining),
-        }
-    }
-
-    fn active_commitment(&self, address: &Address) -> Option<&RevealChain> {
-        self.commitments.get(address).filter(|c| c.remaining > 0)
+        self.validators.state(address)
     }
 
     /// Checks that `reveal` opens `validator`'s commitment, then moves their chain along by one
     /// and mixes the reveal into the beacon.
     pub(super) fn apply_reveal(&mut self, validator: &Address, reveal: &Reveal) -> bool {
-        let Some(chain) = self.commitments.get_mut(validator) else {
-            return false;
-        };
-        if chain.remaining == 0 || !randao::opens(reveal, &chain.head) {
-            return false;
-        }
-        chain.head = reveal.clone();
-        chain.remaining -= 1;
-        self.beacon = randao::mix(&self.beacon, reveal);
-        true
+        self.validators.apply_reveal(validator, reveal)
     }
 
     pub fn balance(&self, address: &Address) -> Coins {
@@ -133,7 +96,7 @@ impl Ledger {
             return Err(TransactionError::BadSignature);
         }
         // A first stake must commit to a reveal chain; any other transaction must not.
-        let needs_commitment = kind == TxKind::Stake && self.active_commitment(from).is_none();
+        let needs_commitment = kind == TxKind::Stake && !self.validators.is_committed(from);
         match (&tx.commitment, needs_commitment) {
             (None, true) => return Err(TransactionError::MissingCommitment),
             (Some(_), false) => return Err(TransactionError::UnexpectedCommitment),
@@ -157,14 +120,11 @@ impl Ledger {
             let left = staked.checked_sub(tx.amount).expect("checked just above");
             self.stakes.insert(from.clone(), left);
             if staked == tx.amount {
-                // Fully unstaked: the reveal chain ends, and staking again needs a new one.
-                self.commitments.remove(from);
+                self.validators.retire(from);
             }
         }
         if let Some(commitment) = &tx.commitment {
-            let head = randao::first_link(commitment);
-            self.commitments.insert(from.clone(), RevealChain { head, remaining: randao::LENGTH });
-            *self.epochs.entry(from.clone()).or_insert(0) += 1;
+            self.validators.commit(from, commitment);
         }
         self.balances.insert(from.clone(), left);
         match kind {
@@ -180,5 +140,18 @@ impl Ledger {
         }
         self.nonces.insert(from.clone(), expected + 1);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_reads_the_same_as_before_validators_had_their_own_type() {
+        let json = serde_json::to_value(Ledger::starting_at(&BlockHash::zero())).unwrap();
+        let mut keys: Vec<_> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["balances", "beacon", "commitments", "epochs", "nonces", "stakes"]);
     }
 }

@@ -9,10 +9,10 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Blockchain;
 use crate::domain::error::{BlockError, ChainError};
-use crate::domain::ledger::ValidatorState;
 use crate::domain::mempool::Mempool;
 use crate::domain::merkle;
 use crate::domain::rules::ChainRules;
+use crate::domain::validators::ValidatorState;
 use crate::domain::values::{BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 

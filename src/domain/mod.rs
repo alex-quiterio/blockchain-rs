@@ -12,5 +12,5 @@ pub mod repository;
 pub mod values;
 
 // The consensus modules live under `consensus/`; these keep their old paths working.
-pub use consensus::{difficulty, randao, rules, weight};
+pub use consensus::{difficulty, randao, rules, validators, weight};
 pub use values::address;

@@ -11,10 +11,11 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty;
 use crate::domain::error::{BlockError, ChainError};
-use crate::domain::ledger::{Ledger, ValidatorState};
+use crate::domain::ledger::Ledger;
 use crate::domain::mempool::Mempool;
 use crate::domain::randao;
 use crate::domain::rules::{select_validator, ChainRules};
+use crate::domain::validators::ValidatorState;
 use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
