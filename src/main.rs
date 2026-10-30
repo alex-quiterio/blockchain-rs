@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::{Network, NodeService};
-use blockchain::infrastructure::{log_event, Config, HttpPeerClient, JsonFileRepository};
+use blockchain::infrastructure::{log_event, ChainJsonFileRepository, Config, HttpPeerClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
     let chain_file = &config.chain_file;
-    let repository = Box::new(JsonFileRepository::new(chain_file));
+    let repository = Box::new(ChainJsonFileRepository::new(chain_file));
     let started = std::time::Instant::now();
     // Listening from the start, so the log says when a new chain is started.
     let node = NodeService::opening(repository, config.rules, config.reorg_limit)

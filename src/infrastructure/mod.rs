@@ -10,5 +10,5 @@ mod memory;
 pub use config::Config;
 pub use event_log::log_event;
 pub use http_peer::HttpPeerClient;
-pub use json_file::JsonFileRepository;
+pub use json_file::ChainJsonFileRepository;
 pub use memory::InMemoryRepository;
