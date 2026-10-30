@@ -1,18 +1,10 @@
 use tokio::signal;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use blockchain::api::{router, AppState};
-use blockchain::application::{Network, NodeEvent, NodeService, SNAPSHOT_BLOCKS};
-use blockchain::domain::chain::{ChainEvent, ReorgLimit};
-use blockchain::domain::consensus::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS};
-use blockchain::domain::consensus::BlockCapacity;
-use blockchain::domain::mempool::MempoolEvent;
-use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
-
-const DEFAULT_ADDR: &str = "127.0.0.1:3000";
-const DEFAULT_CHAIN_FILE: &str = "chain.json";
+use blockchain::application::{Network, NodeService};
+use blockchain::infrastructure::{log_event, Config, HttpPeerClient, JsonFileRepository};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,26 +15,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let reward = env_or("REWARD", ChainRules::default().reward.value());
-    let rules = match std::env::var("CONSENSUS").as_deref() {
-        Ok("pos") => ChainRules::proof_of_stake(reward),
-        Ok("pow") | Err(_) => ChainRules::proof_of_work(env_or("DIFFICULTY", 4), reward)
-            .with_retarget(env_or("TARGET_BLOCK_SECS", 10), env_or("RETARGET_BLOCKS", 10)),
-        Ok(other) => return Err(format!("CONSENSUS must be pow or pos, not {other}").into()),
-    }
-    .with_block_capacity(BlockCapacity::at_most(env_or(
-        "MAX_BLOCK_TRANSFERS",
-        DEFAULT_MAX_BLOCK_TRANSFERS,
-    )));
-    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
-    let chain_file = std::env::var("CHAIN_FILE").unwrap_or_else(|_| DEFAULT_CHAIN_FILE.to_string());
-
-    let repository = Box::new(JsonFileRepository::new(&chain_file));
+    let config = Config::from_env()?;
+    let chain_file = &config.chain_file;
+    let repository = Box::new(JsonFileRepository::new(chain_file));
     let started = std::time::Instant::now();
-    let reorg_limit = ReorgLimit::new(env_or("MAX_REORG_DEPTH", ReorgLimit::DEFAULT.blocks()));
-    let node = NodeService::open(repository, rules, reorg_limit)
+    let node = NodeService::open(repository, config.rules, config.reorg_limit)
         .map_err(|e| format!("{chain_file}: {e}"))?
-        .with_snapshots_every(env_or("SNAPSHOT_BLOCKS", SNAPSHOT_BLOCKS));
+        .with_snapshots_every(config.snapshot_every);
     let length = node.queries().tip().height + 1;
     match node.restored_from() {
         Some(height) => tracing::info!(
@@ -52,77 +31,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => tracing::info!("Loaded {length} blocks from {chain_file} in {:.0?}", started.elapsed()),
     }
     node.subscribe(log_event);
-    let public_url = std::env::var("PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}"));
-    let network = Network::new(Arc::new(node), Box::new(HttpPeerClient::new()), Some(public_url));
+    let client = Box::new(HttpPeerClient::new());
+    let network = Network::new(Arc::new(node), client, Some(config.public_url));
     let state = AppState::new(network);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("Node listening on {addr} ({rules})");
+    let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
+    tracing::info!("Node listening on {} ({})", config.bind_addr, config.rules);
 
-    let peers = std::env::var("PEERS").unwrap_or_default();
-    let sync_every = Duration::from_secs(env_or("SYNC_SECS", 5).max(1));
-    tokio::spawn(keep_in_sync(state.network.clone(), peers, sync_every));
+    tokio::spawn(state.network.clone().keep_in_sync(config.peers, config.sync_every));
 
     axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal()).await?;
 
     tracing::info!("Node stopped");
     Ok(())
-}
-
-/// Joins the configured peers, then pulls from every peer on a fixed interval.
-async fn keep_in_sync(network: Arc<Network>, peers: String, every: Duration) {
-    for url in peers.split(',').map(str::trim).filter(|url| !url.is_empty()) {
-        match network.add_peer(url).await {
-            Ok(_) => tracing::info!("Peer {url}"),
-            Err(e) => tracing::warn!("Skipping peer: {e}"),
-        }
-    }
-    let mut ticker = tokio::time::interval(every);
-    loop {
-        ticker.tick().await;
-        let report = network.sync().await;
-        if let Some(peer) = report.adopted_from {
-            tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
-            network.broadcast_tip(Some(&peer)).await;
-        }
-    }
-}
-
-/// Says in the log what happened to the chain and its mempool.
-fn log_event(event: &NodeEvent) {
-    match event {
-        NodeEvent::Chain(ChainEvent::Started) => tracing::info!("Started a new chain"),
-        NodeEvent::Chain(ChainEvent::Extended { from, to }) if from == to => {
-            tracing::info!("Added block {to}")
-        }
-        NodeEvent::Chain(ChainEvent::Extended { from, to }) => {
-            tracing::info!("Added blocks {from} to {to}")
-        }
-        NodeEvent::Chain(ChainEvent::Reorganized { from, dropped, added, returned }) => {
-            tracing::info!(
-                "Switched to a heavier fork: {dropped} block(s) from height {from} replaced by \
-                 {added}; {} transfer(s) back to the mempool",
-                returned.len()
-            )
-        }
-        // One per transfer: too many to log by default.
-        NodeEvent::Mempool { event: MempoolEvent::Accepted(tx), from } => tracing::debug!(
-            "Accepted a transfer of {} from {}",
-            tx.amount(),
-            from.as_deref().unwrap_or("a client")
-        ),
-        NodeEvent::Mempool { event: MempoolEvent::Rebased { kept, dropped, returned }, .. } => {
-            if dropped + returned > 0 {
-                tracing::info!(
-                    "Mempool: {dropped} transfer(s) left with the chain, {returned} came back \
-                     from a fork, {kept} still waiting"
-                )
-            }
-        }
-    }
-}
-
-fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 async fn shutdown_signal() {

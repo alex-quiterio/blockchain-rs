@@ -1,4 +1,8 @@
-//! Pulling: checking in with every peer, and catching up with any whose chain could beat ours.
+//! Pulling: checking in with every peer, catching up with any whose chain could beat ours, and
+//! doing that every few seconds for as long as the node runs.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::future::join_all;
@@ -15,6 +19,26 @@ pub struct SyncReport {
 }
 
 impl Network {
+    /// Joins `peers`, then pulls from every peer every `every`, for as long as the node runs.
+    /// After adopting a heavier chain from one, tells the rest about it.
+    pub async fn keep_in_sync(self: Arc<Self>, peers: Vec<String>, every: Duration) {
+        for url in &peers {
+            match self.add_peer(url).await {
+                Ok(_) => tracing::info!("Peer {url}"),
+                Err(e) => tracing::warn!("Skipping peer: {e}"),
+            }
+        }
+        let mut ticker = tokio::time::interval(every);
+        loop {
+            ticker.tick().await;
+            let report = self.sync().await;
+            if let Some(peer) = report.adopted_from {
+                tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
+                self.broadcast_tip(Some(&peer)).await;
+            }
+        }
+    }
+
     /// Checks in with every peer once. Fetches blocks only from a peer whose chain could beat
     /// ours, and its mempool only when something is waiting in it.
     /// Every peer is reached at once, so a slow one doesn't hold up the rest.
