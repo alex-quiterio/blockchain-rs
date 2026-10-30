@@ -123,8 +123,8 @@ flowchart TB
     domain["<b>domain/</b><br/>chain · mempool · accounting · consensus · crypto"]
 ```
 
-- **`domain/`** holds the rules and no I/O, grouped by concept rather than by building block. The chain and the mempool are the two aggregates, each under its own lock, so submitting a transaction never waits on mining. Amounts, addresses, hashes and signatures are value objects, and every refusal is a typed error that says what was refused.
-- **`application/`**: `NodeService` applies every change to a copy of the chain, saves it, then swaps it in, so memory and disk never disagree; the copy shares the blocks, so it stays cheap. `ChainQueries` answers questions without changing anything. `Network` gossips and syncs with peers. Work that replays the chain or writes to disk runs off the async runtime.
+- **`domain/`** ([README](src/domain/README.md)) holds the rules and no I/O, grouped by concept rather than by building block. The chain and the mempool are the two aggregates, each under its own lock, so submitting a transaction never waits on mining. Amounts, addresses, hashes and signatures are value objects, and every refusal is a typed error that says what was refused.
+- **`application/`** ([README](src/application/README.md)): `NodeService` applies every change to a copy of the chain, saves it, then swaps it in, so memory and disk never disagree; the copy shares the blocks, so it stays cheap. `ChainQueries` answers questions without changing anything. `Network` gossips and syncs with peers. Work that replays the chain or writes to disk runs off the async runtime.
 - **`infrastructure/`** has the adapters: the JSON file and in-memory stores, the HTTP peer client, logging and configuration. `main.rs` only wires them together.
 - **`api/`**: the HTTP routes, handlers and request and response bodies.
 - **`web/`**: the web UI, in TypeScript, laid out the same way. See [web/README.md](web/README.md).
