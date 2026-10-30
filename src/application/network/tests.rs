@@ -550,3 +550,51 @@ async fn discovery_stops_at_max_peers() {
     assert_eq!(a.discover().await, 2);
     assert_eq!(a.peers().len(), 3);
 }
+
+#[tokio::test]
+async fn a_peer_unreachable_for_long_enough_is_forgotten_unless_it_was_joined() {
+    let mesh = Mesh::default();
+    let a = Arc::new(
+        Network::new(
+            Arc::new(
+                NodeService::open(
+                    Box::new(ChainInMemoryRepository::default()),
+                    ChainRules::proof_of_work(2, 50),
+                    ReorgLimit::new(3),
+                )
+                .unwrap(),
+            ),
+            Box::new(mesh.clone()),
+            Some("http://a".into()),
+        )
+        .with_forget_after(Duration::ZERO),
+    );
+    mesh.join("http://up");
+    a.add_peer("http://up").await.unwrap();
+    a.add_peer("http://gone").await.unwrap();
+    a.join("http://seed").await.unwrap();
+
+    a.sync().await;
+    let known: Vec<_> = a.peers().into_iter().map(|(url, _)| url).collect();
+    assert_eq!(known, ["http://seed", "http://up"]);
+    assert!(a.peers()[0].1.failing_since.is_some());
+    assert_eq!(a.peers()[1].1.failing_since, None);
+}
+
+#[tokio::test]
+async fn a_peer_down_for_a_moment_is_kept() {
+    let mesh = Mesh::default();
+    let a = mesh.join("http://a");
+    a.add_peer("http://b").await.unwrap();
+
+    a.sync().await;
+    let since = a.peers()[0].1.failing_since;
+    assert!(since.is_some());
+    a.sync().await;
+    assert_eq!(a.peers()[0].1.failing_since, since, "still the same outage");
+
+    mesh.join("http://b");
+    a.sync().await;
+    let back = &a.peers()[0].1;
+    assert_eq!((back.failing_since, back.error.as_deref()), (None, None), "answering ends it");
+}

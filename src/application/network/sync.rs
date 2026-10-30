@@ -28,20 +28,20 @@ impl Network {
     /// peers after the first sync, once it has heard from them, and every `DISCOVER_EVERY` after.
     pub async fn keep_in_sync(self: Arc<Self>, peers: Vec<String>, every: Duration) {
         for url in &peers {
-            match self.add_peer(url).await {
+            match self.join(url).await {
                 Ok(_) => tracing::info!("Peer {url}"),
                 Err(e) => tracing::warn!("Skipping peer: {e}"),
             }
         }
         let mut ticker = tokio::time::interval(every);
-        for round in 0u64.. {
+        for round in (0..DISCOVER_EVERY).cycle() {
             ticker.tick().await;
             let report = self.sync().await;
             if let Some(peer) = report.adopted_from {
                 tracing::info!("Adopted the heavier chain from {peer} ({} blocks)", report.length);
                 self.broadcast_tip(Some(&peer)).await;
             }
-            if round % DISCOVER_EVERY == 0 {
+            if round == 0 {
                 self.discover().await;
             }
         }
@@ -49,11 +49,14 @@ impl Network {
 
     /// Checks in with every peer once. Fetches blocks only from a peer whose chain could beat
     /// ours, and its mempool only when something is waiting in it.
-    /// Every peer is reached at once, so a slow one doesn't hold up the rest.
+    /// Every peer is reached at once, so a slow one doesn't hold up the rest. A peer that hasn't
+    /// answered for `forget_after` is forgotten, unless it's one this node was told to join; it
+    /// comes back if it reaches out again, or a peer that reached it passes it on.
     pub async fn sync(&self) -> SyncReport {
         let urls = self.peer_urls();
         let pulls = join_all(urls.iter().map(|url| self.pull(url))).await;
         let mut report = SyncReport::default();
+        let now = Utc::now();
         for (url, pulled) in urls.into_iter().zip(pulls) {
             let status = match pulled {
                 Ok((theirs, adopted)) => {
@@ -63,11 +66,21 @@ impl Network {
                     }
                     PeerStatus {
                         height: Some(theirs.height as usize + 1),
-                        last_seen: Some(Utc::now()),
+                        last_seen: Some(now),
                         error: None,
+                        failing_since: None,
                     }
                 }
-                Err(error) => PeerStatus { error: Some(error), ..self.status_of(&url) },
+                Err(error) => {
+                    let before = self.status_of(&url);
+                    let failing_since = before.failing_since.unwrap_or(now);
+                    if now - failing_since >= self.forget_after && !self.kept(&url) {
+                        tracing::info!("Forgot peer {url}: unreachable since {failing_since}");
+                        self.peers.lock().unwrap().remove(&url);
+                        continue;
+                    }
+                    PeerStatus { error: Some(error), failing_since: Some(failing_since), ..before }
+                }
             };
             self.peers.lock().unwrap().insert(url, status);
         }
@@ -110,6 +123,10 @@ impl Network {
 }
 
 impl Network {
+    fn kept(&self, url: &str) -> bool {
+        self.kept.lock().unwrap().contains(url)
+    }
+
     /// Every header the peer has from `height` on, a page at a time.
     async fn headers_from(&self, url: &str, height: usize) -> Result<Vec<BlockHeader>, String> {
         let mut headers = Vec::new();

@@ -8,10 +8,11 @@ mod gossip;
 mod sync;
 
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 
 use super::{ChainQueries, NodeService};
 
@@ -25,6 +26,8 @@ pub struct PeerStatus {
     pub height: Option<usize>,
     pub last_seen: Option<DateTime<Utc>>,
     pub error: Option<String>,
+    /// When the attempts that have failed since it last answered began.
+    pub failing_since: Option<DateTime<Utc>>,
 }
 
 /// The other nodes this one keeps in step with. New blocks and transactions are pushed to peers
@@ -37,15 +40,23 @@ pub struct Network {
     /// This node's own URL, given to peers so they can reach back.
     me: Option<String>,
     peers: Mutex<BTreeMap<String, PeerStatus>>,
+    /// The peers it was told to join on startup, which it never forgets.
+    kept: Mutex<BTreeSet<String>>,
     /// How many blocks to fetch per request when catching up.
     page: usize,
     /// The most peers discovery adds up to.
     max_peers: usize,
+    /// How long a peer may go unanswered before it's forgotten.
+    forget_after: TimeDelta,
 }
 
 /// Blocks per request when catching up: small enough to arrive well within a request's timeout,
 /// large enough that a node far behind needs few of them.
 pub const SYNC_PAGE: usize = 500;
+
+/// How long a peer may go without answering before it's forgotten: long enough to ride out a
+/// restart or a deploy, short enough that a node gone for good stops costing a request per sync.
+pub const FORGET_AFTER: Duration = Duration::from_secs(600);
 
 /// Headers per request when catching up. A header is a fraction of a block, so more fit.
 pub const HEADER_PAGE: usize = 2000;
@@ -60,8 +71,10 @@ impl Network {
             client,
             me,
             peers: Mutex::default(),
+            kept: Mutex::default(),
             page: SYNC_PAGE,
             max_peers: MAX_PEERS,
+            forget_after: TimeDelta::from_std(FORGET_AFTER).unwrap(),
         }
     }
 
@@ -73,6 +86,11 @@ impl Network {
     /// Stops discovering peers once it has `max_peers`, instead of `MAX_PEERS`.
     pub fn with_max_peers(self, max_peers: usize) -> Self {
         Self { max_peers, ..self }
+    }
+
+    /// Forgets a peer that hasn't answered for `forget_after`, instead of `FORGET_AFTER`.
+    pub fn with_forget_after(self, forget_after: Duration) -> Self {
+        Self { forget_after: TimeDelta::from_std(forget_after).unwrap_or(TimeDelta::MAX), ..self }
     }
 
     pub fn node(&self) -> &Arc<NodeService> {
@@ -115,6 +133,14 @@ impl Network {
             }
         }
         Ok(added)
+    }
+
+    /// Adds a peer, as `add_peer` does, that's never forgotten however long it's unreachable.
+    /// For the peers a node is told to join: if one of those restarted and forgot this node,
+    /// forgetting it back would leave the two apart for good.
+    pub async fn join(&self, url: &str) -> Result<bool, String> {
+        self.kept.lock().unwrap().insert(normalize(url));
+        self.add_peer(url).await
     }
 
     /// Where the blocks a fork could reach back to begin, for chains whose shorter one has

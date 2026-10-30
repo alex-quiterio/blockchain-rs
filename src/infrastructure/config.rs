@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use crate::application::{MAX_PEERS, SNAPSHOT_BLOCKS};
+use crate::application::{FORGET_AFTER, MAX_PEERS, SNAPSHOT_BLOCKS};
 use crate::domain::chain::ReorgLimit;
 use crate::domain::consensus::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS};
 use crate::domain::consensus::BlockCapacity;
@@ -32,6 +32,8 @@ pub struct Config {
     pub max_peers: usize,
     /// How often to pull from peers.
     pub sync_every: Duration,
+    /// How long a peer may go unanswered before it's forgotten.
+    pub forget_after: Duration,
 }
 
 impl Config {
@@ -66,6 +68,7 @@ impl Config {
                 .collect(),
             max_peers: env_or("MAX_PEERS", MAX_PEERS),
             sync_every: Duration::from_secs(env_or("SYNC_SECS", 5).max(1)),
+            forget_after: Duration::from_secs(env_or("FORGET_SECS", FORGET_AFTER.as_secs())),
             bind_addr,
         })
     }
