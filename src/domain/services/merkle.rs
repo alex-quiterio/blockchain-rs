@@ -1,4 +1,5 @@
-//! Merkle trees over a block's transactions, after Bitcoin's.
+//! A domain service: Merkle trees over a block's transactions, after Bitcoin's. It holds no
+//! state; what it makes are values, a `MerkleRoot`, `MerkleNode`s and the `Step`s of a proof.
 //!
 //! Each transaction is hashed into a leaf, and neighbouring hashes are hashed together in pairs,
 //! level by level, until one is left: the root. A block's hash covers the root instead of the
@@ -10,35 +11,17 @@
 //! instead of being paired with itself, so `[a, b, c]` and `[a, b, c, c]` don't share a root, as
 //! they do in Bitcoin (CVE-2012-2459).
 
-use serde::{Deserialize, Serialize};
-
-use super::block::Transaction;
-use super::crypto;
-use super::values::MerkleRoot;
-
-/// Which side of the hash so far a proof's sibling sits on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Side {
-    Left,
-    Right,
-}
-
-/// One level of a proof: the hash to combine with, and on which side.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Step {
-    pub hash: String,
-    pub side: Side,
-}
+use crate::domain::transaction::Transaction;
+use crate::domain::values::{MerkleNode, MerkleRoot, Side, Step};
 
 /// A transaction's leaf: the hash of its JSON, as blocks store it.
-pub fn leaf(tx: &Transaction) -> String {
+pub fn leaf(tx: &Transaction) -> MerkleNode {
     let json = serde_json::to_string(tx).expect("transactions serialize");
-    crypto::sha256_hex(format!("leaf|{json}").as_bytes())
+    MerkleNode::of(format!("leaf|{json}").as_bytes())
 }
 
 pub fn root(transactions: &[Transaction]) -> MerkleRoot {
-    let mut level: Vec<String> = transactions.iter().map(leaf).collect();
+    let mut level: Vec<MerkleNode> = transactions.iter().map(leaf).collect();
     if level.is_empty() {
         // Only genesis has no transactions.
         return MerkleRoot::zero();
@@ -46,7 +29,7 @@ pub fn root(transactions: &[Transaction]) -> MerkleRoot {
     while level.len() > 1 {
         level = parent_level(&level);
     }
-    MerkleRoot::parse(&level[0]).expect("SHA-256 is 64 hex characters")
+    MerkleRoot::parse(level[0].as_str()).expect("both are SHA-256 hex")
 }
 
 /// The sibling hashes that lead from the transaction at `index` up to the root.
@@ -54,7 +37,7 @@ pub fn proof(transactions: &[Transaction], mut index: usize) -> Option<Vec<Step>
     if index >= transactions.len() {
         return None;
     }
-    let mut level: Vec<String> = transactions.iter().map(leaf).collect();
+    let mut level: Vec<MerkleNode> = transactions.iter().map(leaf).collect();
     let mut steps = Vec::new();
     while level.len() > 1 {
         let sibling = index ^ 1;
@@ -69,15 +52,15 @@ pub fn proof(transactions: &[Transaction], mut index: usize) -> Option<Vec<Step>
 }
 
 /// Whether `steps` lead from `leaf` to `root`.
-pub fn verify(leaf: &str, steps: &[Step], root: &MerkleRoot) -> bool {
-    let top = steps.iter().fold(leaf.to_string(), |hash, step| match step.side {
+pub fn verify(leaf: &MerkleNode, steps: &[Step], root: &MerkleRoot) -> bool {
+    let top = steps.iter().fold(leaf.clone(), |hash, step| match step.side {
         Side::Left => node(&step.hash, &hash),
         Side::Right => node(&hash, &step.hash),
     });
-    top == root.as_str()
+    top.as_str() == root.as_str()
 }
 
-fn parent_level(level: &[String]) -> Vec<String> {
+fn parent_level(level: &[MerkleNode]) -> Vec<MerkleNode> {
     level
         .chunks(2)
         .map(|pair| match pair {
@@ -88,14 +71,15 @@ fn parent_level(level: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn node(left: &str, right: &str) -> String {
-    crypto::sha256_hex(format!("node|{left}|{right}").as_bytes())
+fn node(left: &MerkleNode, right: &MerkleNode) -> MerkleNode {
+    MerkleNode::of(format!("node|{left}|{right}").as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::address::Address;
+    use crate::domain::crypto;
     use crate::domain::values::Coins;
 
     fn txs(n: u64) -> Vec<Transaction> {
@@ -145,7 +129,7 @@ mod tests {
     #[test]
     fn a_single_transaction_is_its_own_root() {
         let txs = txs(1);
-        assert_eq!(root(&txs).as_str(), leaf(&txs[0]));
+        assert_eq!(root(&txs).as_str(), leaf(&txs[0]).as_str());
         assert_eq!(proof(&txs, 0), Some(vec![]));
     }
 }

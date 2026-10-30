@@ -6,10 +6,12 @@ mod capacity;
 mod coins;
 mod hash;
 mod party;
+mod proof;
 pub mod signature;
 
 pub use capacity::BlockCapacity;
 pub use coins::Coins;
-pub use hash::{Beacon, BlockHash, Commitment, MerkleRoot, Reveal};
+pub use hash::{Beacon, BlockHash, Commitment, MerkleNode, MerkleRoot, Reveal};
 pub use party::{Destination, Source, COINBASE, STAKE, UNSTAKE};
+pub use proof::{Side, Step};
 pub use signature::Signature;

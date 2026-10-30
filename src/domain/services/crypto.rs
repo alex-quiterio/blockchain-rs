@@ -1,3 +1,5 @@
+//! A domain service: hashing, and making, reading, using and checking ed25519 keys.
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};

@@ -79,6 +79,11 @@ sha256_type!(
 );
 
 sha256_type!(
+    /// A hash inside a Merkle tree: a transaction's leaf, or two nodes below it hashed together.
+    MerkleNode
+);
+
+sha256_type!(
     /// A link of a validator's reveal chain, shown in a block it forges. Hashing it once gives the
     /// link shown before it, so anyone can check it, and nobody can show the next one early.
     Reveal

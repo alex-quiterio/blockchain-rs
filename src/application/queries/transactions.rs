@@ -8,14 +8,14 @@ use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Blockchain;
 use crate::domain::merkle;
-use crate::domain::values::BlockHash;
+use crate::domain::values::{BlockHash, MerkleNode, Step};
 
 /// Evidence that a transaction is in a block: its leaf, the sibling hashes up to the block's
 /// Merkle root, and the block's header, whose hash covers the root.
 pub struct TransactionProof {
     pub transaction: Transaction,
-    pub leaf: String,
-    pub steps: Vec<merkle::Step>,
+    pub leaf: MerkleNode,
+    pub steps: Vec<Step>,
     pub header: BlockHeader,
     /// Blocks on top of it, counting its own.
     pub confirmations: u64,

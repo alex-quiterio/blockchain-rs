@@ -4,8 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::block::{BlockHeader, Transaction};
-use crate::domain::merkle::Step;
-use crate::domain::values::{BlockHash, Coins, Commitment};
+use crate::domain::values::{BlockHash, Coins, Commitment, MerkleNode, Step};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignRequest {
@@ -48,7 +47,7 @@ pub struct PlacementResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProofResponse {
     pub transaction: Transaction,
-    pub leaf: String,
+    pub leaf: MerkleNode,
     pub proof: Vec<Step>,
     pub header: BlockHeader,
     /// Blocks on top of it, counting its own.

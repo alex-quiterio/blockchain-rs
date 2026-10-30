@@ -246,11 +246,14 @@ flowchart TB
     - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
     - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
     - `validators.rs`: `Validators`, each validator's reveal chain and the beacon, and the rules for committing, revealing and retiring. Part of the ledger, but its own model: nothing in it moves coins
-  - `merkle.rs`: Merkle roots and proofs over a block's transactions
+  - `services/`: domain services, what the domain does that belongs to no one object, with no state of their own. The ones that decide on consensus live with its rules in `consensus/`.
+    - `merkle.rs`: Merkle roots and proofs over a block's transactions
+    - `crypto.rs`: hashing, and making, using and checking ed25519 keys
   - `ledger.rs`: balances, stakes and nonces, keyed by `Address`, beside the `Validators` those stakes may be drawn from
   - `values/`: value objects, each checked when it's made, so the rest of the domain never handles a malformed one or mixes one kind up with another. They travel as the plain string or number they wrap.
     - `address.rs`: an `Address` can only hold a valid public key
-    - `hash.rs`: `BlockHash`, `MerkleRoot`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another
+    - `hash.rs`: `BlockHash`, `MerkleRoot` and `MerkleNode`, and for proof of stake `Commitment`, `Reveal` and `Beacon`: each can only hold 64 hex characters, and none can be passed for another
+    - `proof.rs`: a Merkle proof's `Step`s: the sibling `MerkleNode` at each level, and the `Side` it sits on
     - `signature.rs`: `Signature`, 128 hex characters; a block reward has none, which travels as `""`
     - `capacity.rs`: `BlockCapacity`, how many transfers a block may hold: at most some number, or any
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
@@ -258,7 +261,7 @@ flowchart TB
   - `error/`: why something was refused, by what it was: `ValueError`, `TransactionError`, `BlockError` or `ChainError`, each operation failing only in the ways of what it handles, and `DomainError` where they meet. Validation says which rule a block breaks (`BrokenLink`, `MerkleRootMismatch`, `InsufficientWork`, `WrongPayout`, `BadTransfer`…), and a refused chain says at which height
     - `mod.rs`: `DomainError`, where the kinds meet
     - `value.rs`, `transaction.rs`, `block.rs`, `chain.rs`: one kind of refusal each, with how it reads
-  - `crypto.rs`, `repository.rs`: signing and hashing, and the storage port, which is told the events to save
+  - `repository.rs`: the storage port, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
     - `mod.rs`: opening the node, and `commit`, the one path every change to the chain takes: applied to a copy, saved, then swapped in
