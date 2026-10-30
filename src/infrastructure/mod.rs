@@ -2,11 +2,11 @@
 //! for reading a node's settings from the environment (`Config`).
 
 mod config;
-mod event;
 mod http;
+mod logger;
 mod repository;
 
 pub use config::Config;
-pub use event::log_event;
 pub use http::HttpPeerClient;
+pub use logger::log_event;
 pub use repository::{ChainInMemoryRepository, ChainJsonRepository};
