@@ -261,6 +261,12 @@ flowchart TB
     - `snapshots.rs`: when to save a snapshot of the balances
     - `error.rs`: `NodeError`, a rule refused the change or it couldn't be saved
   - `ChainQueries` answers every question about the chain (blocks, headers, accounts, history, proofs) and changes nothing. Questions only a reader asks, like an address's history or where a transfer landed, are worked out here from the blocks, so the aggregate keeps only what its rules need.
+    - `mod.rs`: `ChainQueries` itself, reading the same chain and mempool the node changes
+    - `chain.rs`: blocks, headers, where the tip stands, a full replay and the work each block needed
+    - `transactions.rs`: where a transfer is, an address's history, a Merkle proof, and what's waiting
+    - `accounts.rs`: what an address holds and stakes, and what its next transaction needs
+    - `fees.rs`: what's sure to get a transfer into the next block, and what recent blocks took
+    - `consensus.rs`: the rules, whose turn it is, and the block a validator should sign
   - `Network` keeps the peers in step through the `PeerClient` port. It lives in `network/`, one file per concern:
     - `mod.rs`: `Network` and who its peers are, added both ways
     - `client.rs`: the `PeerClient` port, what this node asks of a peer and offers it
