@@ -8,7 +8,9 @@ use axum::{extract::State, http::StatusCode, Json};
 
 use super::error::ApiError;
 use super::gossip_chain;
-use crate::api::dto::{ConsensusResponse, ForgeRequest, MineRequest, ProposalRequest, StakeEntry};
+use crate::api::dto::blocks::{
+    ConsensusResponse, ForgeRequest, MineRequest, ProposalRequest, StakeEntry,
+};
 use crate::api::AppState;
 use crate::domain::address::Address;
 use crate::domain::block::Block;

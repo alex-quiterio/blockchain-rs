@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 
-use crate::api::dto::ErrorResponse;
+use crate::api::dto::error::ErrorResponse;
 use crate::application::NodeError;
 use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError, ValueError};
 

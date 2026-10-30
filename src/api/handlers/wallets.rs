@@ -7,7 +7,7 @@ use axum::{
 };
 
 use super::error::ApiError;
-use crate::api::dto::{BalanceResponse, WalletResponse};
+use crate::api::dto::wallets::{BalanceResponse, WalletResponse};
 use crate::api::AppState;
 use crate::domain::address::Address;
 use crate::domain::crypto;

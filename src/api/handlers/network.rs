@@ -4,7 +4,9 @@ use axum::{extract::State, http::StatusCode, Json};
 
 use super::error::ApiError;
 use super::gossip_chain;
-use crate::api::dto::{AddPeerResponse, NodeResponse, PeerRequest, PeerResponse, SyncResponse};
+use crate::api::dto::network::{
+    AddPeerResponse, NodeResponse, PeerRequest, PeerResponse, SyncResponse,
+};
 use crate::api::AppState;
 
 pub async fn get_peers(State(state): State<AppState>) -> Json<Vec<PeerResponse>> {

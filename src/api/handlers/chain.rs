@@ -9,7 +9,7 @@ use axum::{
 
 use super::error::ApiError;
 use super::{gossip_chain, sender};
-use crate::api::dto::{ChainQuery, ReplaceResponse, StatusResponse, ValidityResponse};
+use crate::api::dto::chain::{ChainQuery, ReplaceResponse, StatusResponse, ValidityResponse};
 use crate::api::AppState;
 use crate::domain::block::{Block, BlockHeader};
 use crate::domain::chain::Extension;

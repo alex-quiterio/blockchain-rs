@@ -9,7 +9,7 @@ use axum::{
 
 use super::error::ApiError;
 use super::sender;
-use crate::api::dto::{
+use crate::api::dto::transactions::{
     BlockFeesEntry, FeesResponse, PlacementResponse, ProofResponse, SignRequest,
     TransactionResponse,
 };
