@@ -4,13 +4,13 @@
 
 use std::collections::HashSet;
 
+use crate::domain::accounting::ledger::Ledger;
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::accounting::Coins;
 use crate::domain::accounting::TransactionError;
-use crate::domain::address::Address;
 use crate::domain::consensus::BlockCapacity;
+use crate::domain::crypto::address::Address;
 use crate::domain::crypto::Signature;
-use crate::domain::ledger::Ledger;
-use crate::domain::transaction::Transaction;
 
 mod selection;
 
@@ -173,8 +173,8 @@ impl Mempool {
 mod tests {
     use super::*;
     use crate::domain::accounting::Coins;
-    use crate::domain::address::Address;
     use crate::domain::crypto;
+    use crate::domain::crypto::address::Address;
 
     fn funded() -> (Ledger, ed25519_dalek::SigningKey, Address) {
         let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();

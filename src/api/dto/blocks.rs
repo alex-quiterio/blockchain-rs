@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::accounting::Coins;
-use crate::domain::address::Address;
 use crate::domain::consensus::Reveal;
+use crate::domain::crypto::address::Address;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MineRequest {

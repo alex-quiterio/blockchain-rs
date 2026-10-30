@@ -10,18 +10,19 @@ use std::collections::VecDeque;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 
+use crate::domain::accounting::ledger::Ledger;
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::accounting::Coins;
-use crate::domain::address::Address;
-use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockError;
 use crate::domain::chain::block::BlockHash;
+use crate::domain::consensus::difficulty;
+use crate::domain::consensus::randao;
+use crate::domain::consensus::rules::{select_validator, ChainRules};
+use crate::domain::consensus::validators::ValidatorState;
+use crate::domain::consensus::weight::ChainWeight;
 use crate::domain::consensus::{Beacon, Reveal};
-use crate::domain::difficulty;
-use crate::domain::ledger::Ledger;
-use crate::domain::randao;
-use crate::domain::rules::{select_validator, ChainRules};
-use crate::domain::validators::ValidatorState;
-use crate::domain::weight::ChainWeight;
+use crate::domain::crypto::address::Address;
 
 pub mod block;
 mod error;

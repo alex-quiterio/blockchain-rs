@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 
-use crate::domain::block::Block;
+use crate::domain::chain::block::Block;
+use crate::domain::chain::repository::{ChainRepository, RepositoryError};
 use crate::domain::chain::{ChainEvent, Snapshot};
-use crate::domain::repository::{ChainRepository, RepositoryError};
 
 /// Keeps the chain in memory only, for tests and throwaway nodes.
 #[derive(Default)]

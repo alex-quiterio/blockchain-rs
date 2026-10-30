@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::domain::accounting::Coins;
 use crate::domain::accounting::TransactionError;
-use crate::domain::address::Address;
+use crate::domain::crypto::address::Address;
 
 /// A block that can't be made or added, by the rule it breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]

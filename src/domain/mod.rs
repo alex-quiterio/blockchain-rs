@@ -12,11 +12,3 @@ pub mod chain;
 pub mod consensus;
 pub mod crypto;
 pub mod mempool;
-
-// These live deeper in their concept; the re-exports keep their old paths working.
-pub use accounting::{ledger, transaction};
-pub use chain::block;
-pub use chain::block::merkle;
-pub use chain::repository;
-pub use consensus::{difficulty, randao, rules, validators, weight};
-pub use crypto::address;

@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::block::Block;
+use crate::domain::accounting::ledger::Ledger;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockHash;
-use crate::domain::ledger::Ledger;
-use crate::domain::rules::ChainRules;
-use crate::domain::weight::ChainWeight;
+use crate::domain::consensus::rules::ChainRules;
+use crate::domain::consensus::weight::ChainWeight;
 
 /// What replaying blocks in order adds up to.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::PEER_HEADER;
 use crate::application::network::{PeerClient, PeerResult, PeerTip};
-use crate::domain::block::{Block, Transaction};
+use crate::domain::accounting::transaction::Transaction;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::Extension;
 

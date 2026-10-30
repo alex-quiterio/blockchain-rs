@@ -4,10 +4,10 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 
-use crate::domain::address::Address;
-use crate::domain::block::Transaction;
+use crate::domain::accounting::ledger::Ledger;
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::consensus::BlockCapacity;
-use crate::domain::ledger::Ledger;
+use crate::domain::crypto::address::Address;
 
 /// As many of `fitting` as a block of `capacity` holds, highest fees first, in an order that applies on top of
 /// `confirmed`. `fitting` must already apply in order there, as a rebuilt mempool's do.

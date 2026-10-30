@@ -4,7 +4,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::domain::block::{Block, Transaction};
+use crate::domain::accounting::transaction::Transaction;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::Extension;
 

@@ -2,8 +2,8 @@
 //! blocks took.
 
 use super::ChainQueries;
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::accounting::Coins;
-use crate::domain::block::Transaction;
 use crate::domain::consensus::BlockCapacity;
 use crate::domain::mempool::FeeEstimate;
 

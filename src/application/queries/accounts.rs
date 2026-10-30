@@ -2,8 +2,8 @@
 
 use super::ChainQueries;
 use crate::domain::accounting::Coins;
-use crate::domain::address::Address;
-use crate::domain::validators::ValidatorState;
+use crate::domain::consensus::validators::ValidatorState;
+use crate::domain::crypto::address::Address;
 
 pub struct Account {
     pub balance: Coins,

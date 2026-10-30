@@ -6,14 +6,15 @@ use std::collections::VecDeque;
 use chrono::Utc;
 
 use super::tally::Tally;
+use crate::domain::accounting::ledger::Ledger;
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::accounting::Coins;
-use crate::domain::block::{Block, Transaction};
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockError;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::ChainError;
-use crate::domain::difficulty::{self, meets_work};
-use crate::domain::ledger::Ledger;
-use crate::domain::rules::{select_validator, ChainRules, Consensus};
+use crate::domain::consensus::difficulty::{self, meets_work};
+use crate::domain::consensus::rules::{select_validator, ChainRules, Consensus};
 
 /// Replays `blocks` by every rule, or says which block first breaks one and how.
 pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> Result<(), ChainError> {
@@ -214,8 +215,8 @@ fn check_seal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::address::Address;
     use crate::domain::crypto;
+    use crate::domain::crypto::address::Address;
 
     #[test]
     fn fees_too_large_to_add_up_make_no_valid_payout() {

@@ -9,8 +9,8 @@ use axum::{
 use super::error::ApiError;
 use crate::api::dto::wallets::{BalanceResponse, WalletResponse};
 use crate::api::AppState;
-use crate::domain::address::Address;
 use crate::domain::crypto;
+use crate::domain::crypto::address::Address;
 
 pub async fn create_wallet() -> (StatusCode, Json<WalletResponse>) {
     let (address, secret_key) = crypto::generate_keypair();

@@ -5,12 +5,13 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use super::*;
-use crate::domain::address::Address;
-use crate::domain::block::{Block, Transaction};
+use crate::domain::accounting::transaction::Transaction;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::Extension;
 use crate::domain::chain::ReorgLimit;
+use crate::domain::consensus::rules::ChainRules;
 use crate::domain::crypto;
-use crate::domain::rules::ChainRules;
+use crate::domain::crypto::address::Address;
 use crate::infrastructure::InMemoryRepository;
 
 /// A whole network in one process: peer URLs map straight to other nodes' networks. Every

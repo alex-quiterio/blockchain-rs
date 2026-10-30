@@ -3,9 +3,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::domain::block::Block;
+use crate::domain::chain::block::Block;
+use crate::domain::chain::repository::{ChainRepository, RepositoryError};
 use crate::domain::chain::{ChainEvent, Snapshot};
-use crate::domain::repository::{ChainRepository, RepositoryError};
 
 /// Keeps the chain in one file, one block of JSON per line. A new block is appended, so saving
 /// costs the same however long the chain gets; the file is only rewritten after a fork, or when
@@ -117,10 +117,10 @@ fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, RepositoryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::address::Address;
     use crate::domain::chain::{Blockchain, ReorgLimit};
+    use crate::domain::consensus::rules::ChainRules;
     use crate::domain::crypto;
-    use crate::domain::rules::ChainRules;
+    use crate::domain::crypto::address::Address;
 
     /// A path in the system temp dir that is removed when dropped.
     struct TempPath(PathBuf);

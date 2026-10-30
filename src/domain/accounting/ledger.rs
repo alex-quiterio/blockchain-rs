@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 use super::transaction::{Transaction, TxKind};
 use crate::domain::accounting::Coins;
 use crate::domain::accounting::TransactionError;
-use crate::domain::address::Address;
 use crate::domain::chain::block::BlockHash;
+use crate::domain::consensus::validators::{ValidatorState, Validators};
 use crate::domain::consensus::{Beacon, Reveal};
-use crate::domain::validators::{ValidatorState, Validators};
+use crate::domain::crypto::address::Address;
 
 /// Balances, stakes and nonces that result from applying blocks in order, and, for proof of
 /// stake, the `Validators` those stakes may be drawn from.

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::randao;
 use crate::domain::accounting::Coins;
-use crate::domain::address::Address;
 use crate::domain::consensus::{Beacon, Commitment, Reveal};
+use crate::domain::crypto::address::Address;
 
 /// Every validator's reveal chain and the beacon. Part of the ledger, since stakes and
 /// commitments change together, but its own model: nothing here moves coins.

@@ -2,10 +2,10 @@
 //! replays, and the work each block needed.
 
 use super::ChainQueries;
-use crate::domain::block::{Block, BlockHeader};
 use crate::domain::chain::block::BlockHash;
+use crate::domain::chain::block::{Block, BlockHeader};
 use crate::domain::chain::ChainError;
-use crate::domain::weight::ChainWeight;
+use crate::domain::consensus::weight::ChainWeight;
 
 pub struct TipStatus {
     pub height: u64,

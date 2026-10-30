@@ -7,7 +7,7 @@ use tokio::runtime::Handle;
 
 use super::Network;
 use crate::application::NodeEvent;
-use crate::domain::block::Transaction;
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::chain::Extension;
 use crate::domain::mempool::MempoolEvent;
 

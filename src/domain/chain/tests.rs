@@ -5,9 +5,9 @@ use super::validation::replay;
 use super::*;
 use crate::domain::accounting::TransactionError;
 use crate::domain::accounting::{Destination, Source};
+use crate::domain::consensus::difficulty::meets_work;
 use crate::domain::consensus::BlockCapacity;
 use crate::domain::crypto;
-use crate::domain::difficulty::meets_work;
 use crate::domain::mempool::Mempool;
 
 const RULES: ChainRules = ChainRules::proof_of_work(2, 50);

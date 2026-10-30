@@ -13,10 +13,10 @@ use crate::api::dto::blocks::{
 };
 use crate::api::AppState;
 use crate::domain::accounting::Coins;
-use crate::domain::address::Address;
-use crate::domain::block::Block;
+use crate::domain::chain::block::Block;
+use crate::domain::consensus::rules::Consensus;
 use crate::domain::crypto;
-use crate::domain::rules::Consensus;
+use crate::domain::crypto::address::Address;
 
 pub async fn mine(
     State(state): State<AppState>,

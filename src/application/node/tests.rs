@@ -1,18 +1,18 @@
 //! Opening, restarting, saving, mining and offering blocks, as one node sees them.
 
 use crate::domain::accounting::Coins;
-use crate::domain::merkle;
+use crate::domain::chain::block::merkle;
 use std::sync::Arc;
 
 use super::*;
-use crate::domain::address::Address;
-use crate::domain::block::Block;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockError;
+use crate::domain::chain::repository::RepositoryError;
 use crate::domain::chain::ChainError;
 use crate::domain::chain::Snapshot;
 use crate::domain::crypto;
+use crate::domain::crypto::address::Address;
 use crate::domain::mempool::MempoolEvent;
-use crate::domain::repository::RepositoryError;
 use crate::infrastructure::InMemoryRepository;
 use std::sync::atomic::AtomicBool;
 

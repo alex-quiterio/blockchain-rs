@@ -1,7 +1,7 @@
 //! What happens to a chain, in the domain's own words. The aggregate records these as it changes,
 //! and whoever made the change takes them: to save only what's new, to log, to tell others.
 
-use crate::domain::block::Transaction;
+use crate::domain::accounting::transaction::Transaction;
 
 /// Something that happened to the chain.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -11,11 +11,11 @@ mod transactions;
 
 use std::sync::{Arc, Mutex};
 
-use crate::domain::block::Transaction;
+use crate::domain::accounting::transaction::Transaction;
+use crate::domain::chain::repository::ChainRepository;
 use crate::domain::chain::{Blockchain, ChainEvent, ReorgLimit};
+use crate::domain::consensus::rules::ChainRules;
 use crate::domain::mempool::Mempool;
-use crate::domain::repository::ChainRepository;
-use crate::domain::rules::ChainRules;
 
 use super::queries::ChainQueries;
 

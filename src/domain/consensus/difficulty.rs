@@ -10,7 +10,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
 
 use super::rules::Retarget;
-use crate::domain::block::Block;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockError;
 
 /// The most one adjustment may change the work by, either way, as in Bitcoin.
@@ -90,11 +90,12 @@ mod tests {
 
     #[test]
     fn rounding_never_breaks_the_4x_cap() {
-        use crate::domain::rules::Retarget;
+        use crate::domain::consensus::rules::Retarget;
         let retarget = Some(Retarget { target_block_secs: 10, interval: 4 });
         // Eight blocks, the last window 2.5x too slow: 5 hashes would round down to 1.
         let at = |secs| Utc::now() - TimeDelta::days(1) + TimeDelta::seconds(secs);
-        let mut block = Block::genesis(&crate::domain::rules::ChainRules::proof_of_work(0, 50));
+        let mut block =
+            Block::genesis(&crate::domain::consensus::rules::ChainRules::proof_of_work(0, 50));
         let blocks: Vec<Block> = [0, 1, 2, 3, 4, 29, 54, 79]
             .iter()
             .map(|&secs| {

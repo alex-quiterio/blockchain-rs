@@ -1,6 +1,6 @@
 //! The chain aggregate's entity: a block itself (here), how one is made (`sealing`) and its
 //! header (`header`). The transactions it carries are shared with the mempool, so they live in
-//! `domain::transaction`; they're re-exported here, where they've always been found.
+//! `accounting::transaction`.
 
 mod error;
 mod hash;
@@ -12,34 +12,27 @@ mod sealing;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::address::Address;
 use crate::domain::consensus::Reveal;
+use crate::domain::crypto::address::Address;
 use crate::domain::crypto::Signature;
 
-pub use crate::domain::transaction::{Transaction, TxKind};
+use crate::domain::accounting::transaction::Transaction;
 pub use error::BlockError;
 pub use hash::{BlockHash, MerkleNode, MerkleRoot};
 use header::header_hash;
 pub use header::BlockHeader;
 pub use proof::{Side, Step};
 
-// Value objects of the domain. They derive serde because their JSON form is also how
-// blocks are hashed, stored and exchanged between nodes.
-
-// The names a transaction's sender and recipient take when they aren't accounts. They live with
-// `Source` and `Destination`; these keep their old paths working.
-pub use crate::domain::accounting::{COINBASE, STAKE, UNSTAKE};
-
 /// A block of transactions. Only the domain changes one; everywhere else it can only be read:
 ///
 /// ```
-/// # fn read(block: &blockchain::domain::block::Block) -> u64 {
+/// # fn read(block: &blockchain::domain::chain::block::Block) -> u64 {
 /// block.nonce()
 /// # }
 /// ```
 ///
 /// ```compile_fail
-/// # fn tamper(block: &mut blockchain::domain::block::Block) {
+/// # fn tamper(block: &mut blockchain::domain::chain::block::Block) {
 /// block.nonce += 1;
 /// # }
 /// ```

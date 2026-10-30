@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ed25519_dalek::SigningKey;
 
 use super::{NodeError, NodeService};
-use crate::domain::address::Address;
-use crate::domain::block::{Block, Transaction};
+use crate::domain::accounting::transaction::Transaction;
+use crate::domain::chain::block::Block;
 use crate::domain::chain::block::BlockError;
 use crate::domain::chain::ChainError;
 use crate::domain::chain::Extension;
+use crate::domain::crypto::address::Address;
 
 impl NodeService {
     /// What the mempool offers for a new block, as many as one holds.

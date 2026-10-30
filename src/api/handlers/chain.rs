@@ -11,7 +11,7 @@ use super::error::ApiError;
 use super::{gossip_chain, sender};
 use crate::api::dto::chain::{ChainQuery, ReplaceResponse, StatusResponse, ValidityResponse};
 use crate::api::AppState;
-use crate::domain::block::{Block, BlockHeader};
+use crate::domain::chain::block::{Block, BlockHeader};
 use crate::domain::chain::Extension;
 
 /// Every block, or with `?from=N` the blocks from height N on, and with `&limit=M` at most M of

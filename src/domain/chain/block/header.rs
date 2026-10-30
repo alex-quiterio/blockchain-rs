@@ -4,9 +4,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::Block;
-use crate::domain::address::Address;
 use crate::domain::chain::block::{BlockHash, MerkleRoot};
 use crate::domain::consensus::Reveal;
+use crate::domain::crypto::address::Address;
 use crate::domain::crypto::Signature;
 
 impl Block {

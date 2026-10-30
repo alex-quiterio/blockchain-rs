@@ -13,11 +13,11 @@ use std::sync::Arc;
 use blockchain::api::dto::ProofResponse;
 use blockchain::application::{Network, NodeService};
 use blockchain::domain::accounting::Coins;
-use blockchain::domain::block::BlockHeader;
+use blockchain::domain::chain::block::merkle;
+use blockchain::domain::chain::block::BlockHeader;
 use blockchain::domain::chain::ReorgLimit;
+use blockchain::domain::consensus::rules::ChainRules;
 use blockchain::domain::consensus::BlockCapacity;
-use blockchain::domain::merkle;
-use blockchain::domain::rules::ChainRules;
 use blockchain::infrastructure::{HttpPeerClient, InMemoryRepository};
 
 fn app() -> Router {
@@ -243,7 +243,7 @@ async fn refuses_to_rewrite_history_deeper_than_allowed() {
 
 #[tokio::test]
 async fn forging_with_a_key_that_never_leaves_the_client() {
-    use blockchain::domain::{block::Block, crypto};
+    use blockchain::domain::{chain::block::Block, crypto};
 
     let app = app_with(ChainRules::proof_of_stake(50));
     let (address, secret) = crypto::generate_keypair();

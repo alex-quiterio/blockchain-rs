@@ -3,8 +3,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::accounting::transaction::Transaction;
 use crate::domain::accounting::Coins;
-use crate::domain::block::{BlockHeader, Transaction};
+use crate::domain::chain::block::BlockHeader;
 use crate::domain::chain::block::{BlockHash, MerkleNode, Step};
 use crate::domain::consensus::Commitment;
 
