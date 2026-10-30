@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # A guided tour of a three-node network: people open wallets, miners mint coins, transfers
-# gossip from node to node, blocks propagate, cheaters get turned away and two miners race.
-# Every message is printed as it happens.
+# gossip from node to node, blocks propagate, a full block takes the highest fees first,
+# cheaters get turned away and two miners race. Every message is printed as it happens.
 #
 #   docker compose up --build        # in another terminal
 #   ./scripts/story.sh
+#
+# Under proof of stake (CONSENSUS=pos docker compose up --build) the same cast forges instead of
+# mining. Nobody stakes in the story, so anyone may forge every block.
 #
 # Settings, from the environment:
 #   NODES   space-separated node URLs   (http://127.0.0.1:3000 http://127.0.0.1:3001 http://127.0.0.1:3002)
@@ -42,7 +45,7 @@ short() { printf '%s…' "${1:0:8}"; }
 call() {
   local method=$1 url=$2 data=${3:-}
   local out limit=10
-  [[ $url == */mine ]] && limit=300
+  [[ $url == */mine || $url == */forge ]] && limit=300
   if [[ -n $data ]]; then
     out=$(curl -s -m "$limit" -w $'\n%{http_code}' -X "$method" -H 'content-type: application/json' -d "$data" "$url") || out=$'\n000'
   else
@@ -53,6 +56,18 @@ call() {
 }
 
 status() { curl -s -m 5 "${NODES[$1]}/status"; }
+consensus() { curl -s -m 5 "${NODES[0]}/consensus"; }
+
+# Proof of work mines a block; proof of stake forges one, signed with the producer's key.
+KIND=proof_of_work MINE=mine MINES=mines MINED=mined MINER=miner
+produce_path() { [[ $KIND == proof_of_stake ]] && echo /forge || echo /mine; }
+produce_body() {  # producer-index
+  if [[ $KIND == proof_of_stake ]]; then
+    jq -n --arg k "${KEY[$1]}" '{secret_key: $k}'
+  else
+    jq -n --arg m "${ADDR[$1]}" '{miner: $m}'
+  fi
+}
 
 # ── The cast ──────────────────────────────────────────────────────────────────
 
@@ -77,36 +92,39 @@ open_wallet() {  # name home-node
   printf '  👛 %-6s opens a wallet on %s → %s%s%s\n' "$1" "$(node_label "$node")" "$YEL" "${ADDR[${#ADDR[@]}-1]}" "$R"
 }
 
-balance() { curl -s -m 5 "${NODES[0]}/balances/${ADDR[$1]}" | jq -r .balance; }
+balance() { curl -s -m 5 "${NODES[${2:-0}]}/balances/${ADDR[$1]}" | jq -r .balance; }  # who [node]
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 
 LAST_TX=""
 SENT=()  # "from to amount signature" of every accepted transfer
 
-# Signs a transfer and sends it to the sender's home node. Returns non-zero if refused.
-send() {  # from-index to-index amount fee
-  local from=$1 to=$2 amount=$3 fee=$4 node=${HOME_NODE[$1]}
+# Signs a transfer and sends it to the sender's home node. Returns non-zero if refused. With
+# `quiet`, prints nothing.
+send() {  # from-index to-index amount fee [quiet]
+  local from=$1 to=$2 amount=$3 fee=$4 quiet=${5:-} node=${HOME_NODE[$1]}
   local req
   req=$(jq -n --arg k "${KEY[$from]}" --arg to "${ADDR[$to]}" --argjson a "$amount" \
     --argjson n "${NONCE[$from]}" --argjson f "$fee" \
     '{secret_key: $k, to: $to, amount: $a, nonce: $n, fee: $f}')
   call POST "${NODES[$node]}/transactions/sign" "$req"
   LAST_TX=$BODY
-  submit "$from" "$to" "$LAST_TX" "$amount" "$fee"
+  submit "$from" "$to" "$LAST_TX" "$amount" "$fee" "$quiet"
 }
 
-submit() {  # from-index to-index tx-json amount fee
-  local from=$1 to=$2 tx=$3 amount=$4 fee=$5 node=${HOME_NODE[$1]}
+submit() {  # from-index to-index tx-json amount fee [quiet]
+  local from=$1 to=$2 tx=$3 amount=$4 fee=$5 quiet=${6:-} node=${HOME_NODE[$1]}
   local fee_note=""
   (( fee > 0 )) && fee_note=" ${D}+fee $fee${R}"
   call POST "${NODES[$node]}/transactions" "$tx"
   if [[ $CODE == 202 ]]; then
     NONCE[$from]=$(( NONCE[$from] + 1 ))
     SENT+=("$from $to $amount $(jq -r .signature <<< "$tx")")
+    [[ -n $quiet ]] && return 0
     printf '  ✉️  %-6s ─%s %3d coins%s ─▶ %-6s via %s %s✓ %s accepted, gossiping%s\n' \
       "${NAMES[$from]}" "$GRN" "$amount" "$R$fee_note" "${NAMES[$to]}" "$(node_label "$node")" "$GRN" "$CODE" "$R"
   else
+    [[ -n $quiet ]] && return 1
     printf '  ✉️  %-6s ─%s %3d coins%s ─▶ %-6s via %s %s✗ %s %s%s\n' \
       "${NAMES[$from]}" "$RED" "$amount" "$R$fee_note" "${NAMES[$to]}" "$(node_label "$node")" "$RED" "$CODE" \
       "$(jq -r '.message // .' <<< "$BODY" 2> /dev/null || echo "$BODY")" "$R"
@@ -160,7 +178,8 @@ describe_block() {  # block-json
   local block=$1
   jq -r --arg D "$D" --arg R "$R" '
     [.transactions[] | select(.signature != "")] as $txs
-    | "  🧱 block #\(.index)  \($D)hash \(.hash[0:16])…  prev \(.prev_hash[0:16])…  nonce \(.nonce)\($R)",
+    | (if .validator then "signed by \(.validator[0:8])…" else "nonce \(.nonce)" end) as $seal
+    | "  🧱 block #\(.index)  \($D)hash \(.hash[0:16])…  prev \(.prev_hash[0:16])…  \($seal)\($R)",
       "     \($txs | length) transfer(s), \($txs | map(.fee // 0) | add // 0) coins in fees"' <<< "$block"
 }
 
@@ -187,7 +206,7 @@ watch_propagation() {  # height started-ms origin-node
   local line="  📡 propagation "
   for i in "${!NODES[@]}"; do
     if (( i == origin )); then
-      line+="$(node_label "$i") ${D}mined it${R}   "
+      line+="$(node_label "$i") ${D}${MINED} it${R}   "
     elif [[ -n ${seen[$i]} ]]; then
       line+="$(node_label "$i") ${GRN}+${seen[$i]}ms${R}   "
     else
@@ -199,10 +218,10 @@ watch_propagation() {  # height started-ms origin-node
 
 mine() {  # miner-index
   local miner=$1 node=${HOME_NODE[$1]}
-  printf '  ⛏️  %s mines on %s…\n' "${NAMES[$miner]}" "$(node_label "$node")"
+  printf '  ⛏️  %s %s on %s…\n' "${NAMES[$miner]}" "$MINES" "$(node_label "$node")"
   local t0
   t0=$(now_ms)
-  call POST "${NODES[$node]}/mine" "$(jq -n --arg m "${ADDR[$miner]}" '{miner: $m}')"
+  call POST "${NODES[$node]}$(produce_path)" "$(produce_body "$miner")"
   # Another miner on the network can win the race; the story carries on either way.
   if [[ $CODE != 201 ]]; then
     printf '     %s✗ %s after %sms: %s%s\n' "$YEL" "$CODE" "$(( $(now_ms) - t0 ))" \
@@ -211,16 +230,22 @@ mine() {  # miner-index
   fi
   local found
   found=$(now_ms)
-  printf '     found after %sms, the reward and fees go to %s\n' "$(( found - t0 ))" "${NAMES[$miner]}"
+  printf '     %s after %sms, the reward and fees go to %s\n' "$MINED" "$(( found - t0 ))" "${NAMES[$miner]}"
   describe_block "$BODY"
   watch_propagation "$(jq -r .index <<< "$BODY")" "$found" "$node"
 }
 
 difficulty() {
   local c
-  c=$(curl -s -m 5 "${NODES[0]}/consensus")
-  printf '  🎯 next block needs ~%s hashes %s(target pace %ss, next adjustment at height %s)%s\n' \
-    "$(jq -r .work <<< "$c")" "$D" "$(jq -r .target_block_secs <<< "$c")" "$(jq -r .next_retarget <<< "$c")" "$R"
+  c=$(consensus)
+  if [[ $KIND == proof_of_stake ]]; then
+    printf '  🪙 proof of stake: %s\n' "$(jq -r 'if .next_validator then "the next block is \(.next_validator[0:8])…'"'"'s to forge" else "nothing is staked, so anyone may forge" end' <<< "$c")"
+  elif [[ $(jq -r .target_block_secs <<< "$c") == null ]]; then
+    printf '  🎯 every block needs ~%s hashes %s(fixed difficulty)%s\n' "$(jq -r .work <<< "$c")" "$D" "$R"
+  else
+    printf '  🎯 next block needs ~%s hashes %s(target pace %ss, next adjustment at height %s)%s\n' \
+      "$(jq -r .work <<< "$c")" "$D" "$(jq -r .target_block_secs <<< "$c")" "$(jq -r .next_retarget <<< "$c")" "$R"
+  fi
 }
 
 network() {
@@ -240,6 +265,10 @@ for i in "${!NODES[@]}"; do
   peers=$(curl -s -m 5 "${NODES[$i]}/peers" | jq -r '[.[].url] | join(", ")')
   printf '  %s %s  peers: %s\n' "$(node_label "$i")" "${D}${NODES[$i]}${R}" "${peers:-none}"
 done
+KIND=$(consensus | jq -r .kind)
+if [[ $KIND == proof_of_stake ]]; then
+  MINE=forge MINES=forges MINED=forged MINER=forger
+fi
 network
 difficulty
 
@@ -247,7 +276,7 @@ act "Act 1 · Wallets" "Everyone makes a keypair. The address is the public key;
 for i in "${!MINERS[@]}"; do open_wallet "${MINERS[$i]}" $(( i % ${#NODES[@]} )); done
 for i in "${!PEOPLE[@]}"; do open_wallet "${PEOPLE[$i]}" $(( i % ${#NODES[@]} )); done
 
-act "Act 2 · Coins from nothing" "Coins only enter through block rewards. Each miner mines on its own node; watch each block reach the others."
+act "Act 2 · Coins from nothing" "Coins only enter through block rewards. Each ${MINER} ${MINES} on its own node; watch each block reach the others."
 for m in "${MINERS[@]}"; do mine "$(who "$m")"; beat; done
 
 act "Act 3 · Paying people" "Miners pay everyone. Each transfer is signed, sent to one node, and gossiped to the rest. It waits in every mempool until a block takes it."
@@ -259,10 +288,10 @@ mempools
 mine "$(who Noah)"
 mempools
 
-act "Act 4 · A busy market" "Rounds of transfers between people, through their own nodes, with fees for the miners. Miners take turns."
+act "Act 4 · A busy market" "Rounds of transfers between people, through their own nodes, with fees for whoever adds the block. The ${MINER}s take turns."
 people_idx=()
 for p in "${PEOPLE[@]}"; do people_idx+=("$(who "$p")"); done
-for round in $(seq 1 "$ROUNDS"); do
+for (( round = 1; round <= ROUNDS; round++ )); do
   printf '\n  %sRound %s/%s%s\n' "$B" "$round" "$ROUNDS" "$R"
   for _ in $(seq 1 $(( 3 + RANDOM % 4 ))); do
     from=${people_idx[$(( RANDOM % ${#people_idx[@]} ))]}
@@ -278,7 +307,62 @@ for round in $(seq 1 "$ROUNDS"); do
   beat
 done
 
-act "Act 5 · Cheaters" "Every node checks every message on its own. Nobody has to trust the sender."
+act "Act 5 · A full block" "A block holds only so many transfers. When more are waiting, whoever adds it takes the highest fees first, and the rest wait for the next one."
+cap=$(consensus | jq -r '.max_block_transfers // empty')
+if [[ -z $cap ]]; then
+  echo "  ${D}This network sets no limit (MAX_BLOCK_TRANSFERS=0), so every block takes everything waiting.${R}"
+else
+  echo "  📏 at most ${B}${cap}${R} transfers a block"
+  # More free transfers than fit, a coin each, from the ${MINER}s. If they can't afford that
+  # many between them yet, one of them adds a block first.
+  need=$(( cap + 6 ))
+  left=() funds=0
+  for m in "${MINERS[@]}"; do left+=("$(balance "$(who "$m")")"); funds=$(( funds + left[${#left[@]} - 1] )); done
+  if (( funds < need )); then
+    echo "  ${D}The ${MINER}s hold ${funds} coins between them, short of ${need}, so Mia adds blocks first.${R}"
+    while (( funds < need )); do
+      mine "$(who Mia)"
+      funds=0 left=()
+      for m in "${MINERS[@]}"; do left+=("$(balance "$(who "$m")")"); funds=$(( funds + left[${#left[@]} - 1] )); done
+    done
+  fi
+  free=0
+  for (( k = 0; free < need && k < 3 * need; k++ )); do
+    m=$(( k % ${#MINERS[@]} ))
+    (( left[m] > 0 )) || continue
+    send "$(who "${MINERS[$m]}")" "$(who "${PEOPLE[$(( k % ${#PEOPLE[@]} ))]}")" 1 0 quiet \
+      && { free=$(( free + 1 )); left[m]=$(( left[m] - 1 )); }
+  done
+  printf '  ✉️  the %ss queue %s%s free transfers%s of 1 coin\n' "$MINER" "$B" "$free" "$R"
+  # ...then, last in line, a few people pay to jump the queue.
+  paid=()
+  for p in Alice Bob Carol Dave; do
+    send "$(who "$p")" "$(who Erin)" 1 $(( 2 + RANDOM % 3 )) && paid+=("$(jq -r .signature <<< "$LAST_TX")")
+  done
+  mempools
+  mine "$(who Noah)"
+  if [[ $CODE == 201 ]]; then
+    block=$BODY
+    in_block=0
+    for sig in "${paid[@]}"; do
+      jq -e --arg s "$sig" 'any(.transactions[]; .signature == $s)' <<< "$block" > /dev/null && in_block=$(( in_block + 1 ))
+    done
+    waiting=$(status "${HOME_NODE[$(who Noah)]}" | jq -r .pending)
+    if (( waiting == 0 )); then
+      printf '  %sEverything fit this time, so nobody had to wait.%s\n' "$D" "$R"
+    elif (( in_block == ${#paid[@]} )); then
+      printf '  %s✓ all %s that paid a fee went in,%s though they arrived last. %s free transfer(s) wait for the next block.\n' \
+        "$GRN" "$in_block" "$R" "$waiting"
+    else
+      printf '  %s✗ only %s of the %s that paid a fee went in, with %s left waiting.%s\n' \
+        "$RED" "$in_block" "${#paid[@]}" "$waiting" "$R"
+    fi
+    mine "$(who Olga)"
+    mempools
+  fi
+fi
+
+act "Act 6 · Cheaters" "Every node checks every message on its own. Nobody has to trust the sender."
 alice=$(who Alice) bob=$(who Bob) dave=$(who Dave)
 
 echo "  ${B}Spending money you don't have${R}"
@@ -305,31 +389,35 @@ NONCE[$bob]=$(( NONCE[$bob] + 5 ))
 send "$bob" "$alice" 1 0 || true
 NONCE[$bob]=$(( NONCE[$bob] - 5 ))
 
-act "Act 6 · A race" "Two miners on opposite ends of the network find a block at the same time. For a moment there are two truths; then the nodes agree on one."
+act "Act 7 · A race" "Two ${MINER}s on opposite ends of the network add a block at the same time. For a moment there are two truths; then the nodes agree on one."
 send "$(who Carol)" "$(who Erin)" 3 1 || true
 send "$(who Frank)" "$(who Alice)" 2 2 || true
 sleep 0.5
 last=$(( ${#NODES[@]} - 1 ))
 race=$(mktemp -d)
 t0=$(now_ms)
-curl -s -m 300 -X POST -H 'content-type: application/json' -d "$(jq -n --arg m "${ADDR[$(who Mia)]}" '{miner: $m}')" "${NODES[0]}/mine" > "$race/Mia" &
-curl -s -m 300 -X POST -H 'content-type: application/json' -d "$(jq -n --arg m "${ADDR[$(who Olga)]}" '{miner: $m}')" "${NODES[$last]}/mine" > "$race/Olga" &
+curl -s -m 300 -X POST -H 'content-type: application/json' -d "$(produce_body "$(who Mia)")" "${NODES[0]}$(produce_path)" > "$race/Mia" &
+curl -s -m 300 -X POST -H 'content-type: application/json' -d "$(produce_body "$(who Olga)")" "${NODES[$last]}$(produce_path)" > "$race/Olga" &
 wait
 for racer in Mia Olga; do
   node=0
   [[ $racer == Olga ]] && node=$last
   if jq -e .hash "$race/$racer" > /dev/null 2>&1; then
-    printf '  ⛏️  %-4s on %s found block #%s %s%s…%s\n' "$racer" "$(node_label "$node")" \
+    printf '  ⛏️  %-4s on %s %s block #%s %s%s…%s\n' "$racer" "$(node_label "$node")" "$MINED" \
       "$(jq -r .index "$race/$racer")" "$YEL" "$(jq -r '.hash[0:12]' "$race/$racer")" "$R"
   else
     printf '  ⛏️  %-4s on %s %sgave up: %s%s\n' "$racer" "$(node_label "$node")" "$RED" \
       "$(jq -r '.message // .' "$race/$racer" 2> /dev/null || cat "$race/$racer")" "$R"
   fi
 done
-if [[ $(jq -r .index "$race/Mia" 2> /dev/null) == "$(jq -r .index "$race/Olga" 2> /dev/null)" ]]; then
+mia_at=$(jq -r '.index // empty' "$race/Mia" 2> /dev/null || true)
+olga_at=$(jq -r '.index // empty' "$race/Olga" 2> /dev/null || true)
+if [[ -n $mia_at && $mia_at == "$olga_at" ]]; then
   echo "  ${YEL}Same height, different blocks: the chain has forked.${R} Heaviest chain wins, ties go to the lower hash."
+elif [[ -n $mia_at && -n $olga_at ]]; then
+  echo "  ${D}No fork this time: one block reached the other ${MINER}'s node first, so the second was built on top of it. Both count. Run it again for a split.${R}"
 else
-  echo "  ${D}No fork this time: one block arrived while the other miner was still searching, so that search was wasted. Run it again for a split.${R}"
+  echo "  ${D}No fork this time: one block arrived before the other ${MINER} had theirs, so that one was wasted. Run it again for a split.${R}"
 fi
 rm -rf "$race"
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -348,7 +436,7 @@ winner=$(curl -s -m 5 "${NODES[0]}/chain?from=$(status 0 | jq -r .height)" | jq 
 for i in "${!ADDR[@]}"; do [[ ${ADDR[$i]} == "$winner" ]] && echo "  🏆 Every node now builds on ${NAMES[$i]}'s block. Transfers only in a losing block go back to the mempool."; done
 mempools
 
-act "Act 7 · A light client" "A phone can't keep every block. It keeps only their headers, and asks for a proof that a payment is in one. The block's hash covers a Merkle root, and the proof is the few hashes that lead from the payment up to it."
+act "Act 8 · A light client" "A phone can't keep every block. It keeps only their headers, and asks for a proof that a payment is in one. The block's hash covers a Merkle root, and the proof is the few hashes that lead from the payment up to it."
 sha256() { printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1; }
 read -r from to amount sig <<< "${SENT[0]}"
 headers=$(curl -s -m 10 "${NODES[1]}/headers")
@@ -384,12 +472,25 @@ fi
 act "Epilogue" "Where everyone stands, according to every node. Paste an address into the explorer's search, or open its link."
 explorer="${NODES[0]}/explorer.html"
 for i in "${!NAMES[@]}"; do
-  printf '  %-6s %s%5s coins%s  %s\n' "${NAMES[$i]}" "$B" "$(balance "$i")" "$R" "${D}sent ${NONCE[$i]} transfer(s)${R}"
+  seen=()
+  for n in "${!NODES[@]}"; do seen+=("$(balance "$i" "$n")"); done
+  if [[ $(printf '%s\n' "${seen[@]}" | sort -u | wc -l) -eq 1 ]]; then
+    agree="${D}every node agrees${R}"
+  else
+    agree="${RED}nodes disagree: ${seen[*]}${R}"
+  fi
+  printf '  %-6s %s%5s coins%s  %s, %s\n' "${NAMES[$i]}" "$B" "${seen[0]}" "$R" "${D}sent ${NONCE[$i]} transfer(s)${R}" "$agree"
   printf '         %s%s%s\n         %s#/address/%s\n' "$YEL" "${ADDR[$i]}" "$R" "$explorer" "${ADDR[$i]}"
 done
 echo
 printf '  🔎 explorer: %s   latest block: %s#/block/%s\n' "$explorer" "$explorer" "$(status 0 | jq -r .height)"
 echo
 network
-valid=$(curl -s -m 30 "${NODES[0]}/chain/valid" | jq -r .valid)
-echo "  ✅ node-a replays its whole chain from genesis: valid = $valid"
+for i in "${!NODES[@]}"; do
+  validity=$(curl -s -m 30 "${NODES[$i]}/chain/valid")
+  if [[ $(jq -r .valid <<< "$validity") == true ]]; then
+    echo "  ✅ $(node_label "$i") replays its whole chain from genesis: valid"
+  else
+    echo "  ❌ $(node_label "$i") replays its whole chain from genesis: ${RED}$(jq -r '.problem // "invalid"' <<< "$validity")${R}"
+  fi
+done

@@ -82,6 +82,14 @@ BIND_ADDR=127.0.0.1:3002 CHAIN_FILE=c.json PEERS=http://127.0.0.1:3001 ./target/
 
 Each node's UI shows its peers and whether they're ahead, behind or in step.
 
+### 📖 Watch it tell its own story
+
+```sh
+./scripts/story.sh        # with the Docker network running
+```
+
+A narrated tour of the three-node network: wallets open, miners mint coins, transfers gossip from node to node, a full block takes the highest fees first, cheaters get turned away, two miners race, and a light client checks a Merkle proof. Every message is printed as it happens, with how long it took to reach each node. It works under proof of stake too, where the same cast forges instead. Tune it with `NODES`, `ROUNDS` and `PACE`.
+
 ### 🌊 Put it under pressure
 
 The load generator floods a network with random signed transactions, with random fees, and adds blocks on a schedule like a pool of miners. It prints what happens every second.
