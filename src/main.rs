@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::{Network, NodeService};
-use blockchain::infrastructure::{log_event, ChainJsonRepository, Config, HttpPeerClient};
+use blockchain::infrastructure::repository::json::ChainJsonRepository;
+use blockchain::infrastructure::{log_event, Config, HttpPeerClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

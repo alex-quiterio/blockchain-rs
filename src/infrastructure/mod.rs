@@ -4,9 +4,8 @@
 mod config;
 mod http;
 mod logger;
-mod repository;
+pub mod repository;
 
 pub use config::Config;
 pub use http::HttpPeerClient;
 pub use logger::log_event;
-pub use repository::{ChainInMemoryRepository, ChainJsonRepository};

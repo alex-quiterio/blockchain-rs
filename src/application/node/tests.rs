@@ -13,7 +13,7 @@ use crate::domain::chain::Snapshot;
 use crate::domain::crypto;
 use crate::domain::crypto::address::Address;
 use crate::domain::mempool::MempoolEvent;
-use crate::infrastructure::ChainInMemoryRepository;
+use crate::infrastructure::repository::memory::ChainInMemoryRepository;
 use std::sync::atomic::AtomicBool;
 
 const RULES: ChainRules = ChainRules::proof_of_work(2, 50);

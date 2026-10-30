@@ -12,7 +12,7 @@ use crate::domain::chain::ReorgLimit;
 use crate::domain::consensus::rules::ChainRules;
 use crate::domain::crypto;
 use crate::domain::crypto::address::Address;
-use crate::infrastructure::ChainInMemoryRepository;
+use crate::infrastructure::repository::memory::ChainInMemoryRepository;
 
 /// A whole network in one process: peer URLs map straight to other nodes' networks. Every
 /// message is logged as `peer what`, so tests can see what went over the wire.

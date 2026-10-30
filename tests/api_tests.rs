@@ -18,7 +18,8 @@ use blockchain::domain::chain::block::BlockHeader;
 use blockchain::domain::chain::ReorgLimit;
 use blockchain::domain::consensus::rules::ChainRules;
 use blockchain::domain::consensus::BlockCapacity;
-use blockchain::infrastructure::{ChainInMemoryRepository, HttpPeerClient};
+use blockchain::infrastructure::repository::memory::ChainInMemoryRepository;
+use blockchain::infrastructure::HttpPeerClient;
 
 fn app() -> Router {
     app_with(ChainRules::proof_of_work(2, 50))
