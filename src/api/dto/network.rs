@@ -4,11 +4,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct PeerRequest {
     pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct PeerResponse {
     pub url: String,
     /// The peer's chain length when last reached.
@@ -19,12 +21,14 @@ pub struct PeerResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct AddPeerResponse {
     pub url: String,
     pub added: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyncResponse {
     pub adopted_from: Option<String>,
     pub reached: usize,
@@ -32,6 +36,7 @@ pub struct SyncResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct NodeResponse {
     pub version: String,
     /// The git commit the node was built from. `-dirty` means uncommitted changes.

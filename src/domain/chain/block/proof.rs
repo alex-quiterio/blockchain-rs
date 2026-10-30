@@ -7,6 +7,7 @@ use super::MerkleNode;
 
 /// Which side of the hash so far a proof's sibling sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum Side {
     Left,
@@ -15,6 +16,7 @@ pub enum Side {
 
 /// One level of a proof: the hash to combine with, and on which side.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct Step {
     pub hash: MerkleNode,
     pub side: Side,

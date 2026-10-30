@@ -38,6 +38,7 @@ pub enum TxKind {
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct Transaction {
     pub(in crate::domain) from: Source,
     pub(in crate::domain) to: Destination,
@@ -46,6 +47,7 @@ pub struct Transaction {
     pub(in crate::domain) nonce: u64,
     /// Hex-encoded ed25519 signature over `signing_payload()`. Empty for coinbase.
     #[serde(with = "signature::or_empty")]
+    #[cfg_attr(test, ts(as = "String"))]
     pub(in crate::domain) signature: Option<Signature>,
     /// Optional tip for whoever adds the block, paid on top of `amount`. Left out when zero, so
     /// transactions without one keep their original JSON and signature.
@@ -54,6 +56,7 @@ pub struct Transaction {
     /// Stakes only: the end of the staker's reveal hash chain, needed the first time they stake
     /// (see `randao`). Left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub(in crate::domain) commitment: Option<Commitment>,
 }
 

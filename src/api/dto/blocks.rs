@@ -7,27 +7,33 @@ use crate::domain::consensus::Reveal;
 use crate::domain::crypto::address::Address;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct MineRequest {
     pub miner: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ForgeRequest {
     /// The validator's key, which signs the block. Only for local experiments.
     pub secret_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProposalRequest {
     /// The address that will sign the block.
     pub validator: String,
     /// The next link of the validator's reveal chain. Leave it out while anyone may forge.
+    #[cfg_attr(test, ts(optional = nullable))]
     pub reveal: Option<Reveal>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ConsensusResponse {
     /// `proof_of_work` or `proof_of_stake`.
+    #[cfg_attr(test, ts(type = "\"proof_of_work\" | \"proof_of_stake\""))]
     pub kind: String,
     /// Proof of work only.
     pub difficulty: Option<usize>,
@@ -52,6 +58,7 @@ pub struct ConsensusResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct StakeEntry {
     pub address: Address,
     pub amount: Coins,

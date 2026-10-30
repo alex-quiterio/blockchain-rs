@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::accounting::Coins;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct WalletResponse {
     pub address: String,
     /// Only for local experiments: a real wallet never sends its key over the wire.
@@ -12,6 +13,7 @@ pub struct WalletResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct BalanceResponse {
     pub address: String,
     pub balance: Coins,

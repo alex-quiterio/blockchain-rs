@@ -29,6 +29,7 @@ impl Block {
 /// A block without its transactions: enough to check its hash, its proof of work or signature,
 /// and Merkle proofs of what it holds. What a light client keeps instead of whole blocks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct BlockHeader {
     pub index: u64,
     pub timestamp: DateTime<Utc>,
@@ -37,10 +38,13 @@ pub struct BlockHeader {
     pub nonce: u64,
     pub hash: BlockHash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub validator: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub reveal: Option<Reveal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub signature: Option<Signature>,
 }
 

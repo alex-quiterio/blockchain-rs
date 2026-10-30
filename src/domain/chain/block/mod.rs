@@ -37,6 +37,7 @@ pub use proof::{Side, Step};
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct Block {
     pub(in crate::domain) index: u64,
     pub(in crate::domain) timestamp: DateTime<Utc>,
@@ -51,13 +52,16 @@ pub struct Block {
     /// Proof of stake only: who forged the block. Left out of proof-of-work blocks entirely, so
     /// their JSON and hashes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub(in crate::domain) validator: Option<Address>,
     /// Proof of stake only: the next link of the validator's reveal chain, mixed into the beacon
     /// that picks who forges next. Absent while nothing is staked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub(in crate::domain) reveal: Option<Reveal>,
     /// Proof of stake only: the validator's signature over `hash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub(in crate::domain) signature: Option<Signature>,
 }
 

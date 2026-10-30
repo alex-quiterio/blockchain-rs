@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::chain::block::BlockHash;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ChainQuery {
     /// Only return blocks from this height on.
     pub from: Option<usize>,
@@ -13,6 +14,7 @@ pub struct ChainQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ReplaceResponse {
     /// Whether the offered blocks were adopted.
     pub replaced: bool,
@@ -24,6 +26,7 @@ pub struct ReplaceResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct StatusResponse {
     pub height: u64,
     pub tip: BlockHash,
@@ -34,6 +37,7 @@ pub struct StatusResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ValidityResponse {
     pub valid: bool,
     /// Which block first breaks a rule, and how. `null` while the chain is valid.

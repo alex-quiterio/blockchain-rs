@@ -7,6 +7,8 @@ pub mod chain;
 pub mod error;
 pub mod network;
 pub mod transactions;
+#[cfg(test)]
+mod typescript;
 pub mod wallets;
 
 pub use blocks::*;
