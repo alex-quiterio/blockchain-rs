@@ -1,6 +1,14 @@
-/* The node page's layout: the panels down the side, the chain beside them. */
+/* The node page's layout: the panels down the side, the chain beside them; and an empty list. */
 
 :where([data-page="node"]) {
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    padding: 1rem;
+    border: 1px dashed var(--line);
+    border-radius: 11px;
+  }
   .layout {
     display: grid;
     grid-template-columns: minmax(320px, 400px) 1fr;

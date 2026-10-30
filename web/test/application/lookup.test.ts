@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  block,
-  refreshContext,
-  context,
-  search,
-  transaction,
-} from "@application/lookup";
-import { wire } from "@application/ports";
+import { Lookup } from "@application/lookup";
 import { mined, proof } from "../fixtures.ts";
 import { fakeNode } from "./fake_node.ts";
 
@@ -34,38 +27,38 @@ const fake = fakeNode({
   }),
   proof: () => proof,
 });
-wire({ node: fake.node });
+const lookup = new Lookup(fake.node);
 
 test("a search tells a height, a transaction, a block hash and an address apart", async () => {
-  assert.deepEqual(await search(" 12 "), { kind: "block", id: "12" });
-  assert.deepEqual(await search("ab".repeat(64)), {
+  assert.deepEqual(await lookup.search(" 12 "), { kind: "block", id: "12" });
+  assert.deepEqual(await lookup.search("ab".repeat(64)), {
     kind: "tx",
     id: "ab".repeat(64),
   });
-  assert.deepEqual(await search(known), { kind: "block", id: known });
+  assert.deepEqual(await lookup.search(known), { kind: "block", id: known });
   assert.deepEqual(
-    await search("cd".repeat(32)),
+    await lookup.search("cd".repeat(32)),
     { kind: "address", id: "cd".repeat(32) },
     "not a block, so an address",
   );
-  await assert.rejects(search("nonsense"), /Try a block height/);
+  await assert.rejects(lookup.search("nonsense"), /Try a block height/);
 });
 
 test("the rules are fetched only when the tip moves", async () => {
-  assert.equal(await refreshContext(), true);
-  assert.equal(context.height, 2);
-  assert.equal(await refreshContext(), false);
+  assert.equal(await lookup.refreshContext(), true);
+  assert.equal(lookup.context.height, 2);
+  assert.equal(await lookup.refreshContext(), false);
   assert.equal(fake.called("consensus").length, 1);
 });
 
 test("a block comes with the one before it and, when mined, the work it needed", async () => {
-  const found = await block("2");
+  const found = await lookup.block("2");
   assert.equal(found.prev?.index, 1);
   assert.equal(found.work, 256);
 });
 
 test("a confirmed transaction comes with its block and the proof it's in it", async () => {
-  const found = await transaction(proof.transaction.signature);
+  const found = await lookup.transaction(proof.transaction.signature);
   assert.equal(found.block?.hash, known);
   assert.equal(found.proof?.leaf, proof.leaf);
 });

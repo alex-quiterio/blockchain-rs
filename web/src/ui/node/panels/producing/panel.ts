@@ -1,20 +1,32 @@
 // The producer panel: mining a block under proof of work, or forging one under proof of stake,
 // with whose turn it is and how the stake is split.
 
-import { consensus, isStake } from "@application/node_view";
 import { forge, mine } from "@application/producing";
-import { wallets } from "@application/wallets";
 import type { Wallet } from "@domain/wallets/wallets";
 import { $, el, explain, fmt, toast } from "@ui/dom";
-import { busy, requireUnlocked } from "@ui/node/actions";
-import { avatar, fmtWork, hues, nameOf, party, pct } from "@ui/node/components";
-import { fillSelect } from "@ui/node/panels/wallets/panel";
+import type { NodePage } from "@ui/node/page";
+import {
+  avatar,
+  fillWalletSelect,
+  hues,
+  nameOf,
+  party,
+} from "@ui/node/parties";
+import { fmtWork } from "@ui/node/work";
 
-export function renderProducer(): void {
-  if (isStake()) return renderForge();
+const pct = (part: number, whole: number): string =>
+  `${whole ? Math.round((part / whole) * 100) : 0}%`;
+
+/** Draws mining or forging, whichever the node's rules call for, each time the view changes. */
+export function installProducing(page: NodePage): void {
+  page.view.onChange(() => renderProducer(page));
+}
+
+function renderProducer(page: NodePage): void {
+  if (page.view.isStake()) return renderForge(page);
   $("producer-title").textContent = "Mine";
   const select = el("select", { id: "miner" });
-  fillSelect(select);
+  fillWalletSelect(select, page.wallets);
   const button = el("button", { className: "gold", textContent: "Mine block" });
   const form = el(
     "form",
@@ -24,9 +36,9 @@ export function renderProducer(): void {
   );
   form.onsubmit = (e) => {
     e.preventDefault();
-    mineAs(button, select.value);
+    mineAs(page, button, select.value);
   };
-  const c = consensus();
+  const c = page.view.consensus();
   const work = Number(c.work);
   const pace = c.target_block_secs
     ? el(
@@ -60,15 +72,20 @@ export function renderProducer(): void {
   );
 }
 
-function renderForge(): void {
+function renderForge(page: NodePage): void {
+  const { wallets } = page;
   $("producer-title").textContent = "Forge";
-  const { next_validator: next, stakes, total_stake: total } = consensus();
-  const ours = next ? wallets().byAddress(next) : undefined;
+  const {
+    next_validator: next,
+    stakes,
+    total_stake: total,
+  } = page.view.consensus();
+  const ours = next ? wallets.byAddress(next) : undefined;
   const children: HTMLElement[] = [];
 
   if (!next) {
     const select = el("select");
-    fillSelect(select);
+    fillWalletSelect(select, wallets);
     const button = el("button", {
       className: "stake",
       textContent: "Forge block",
@@ -81,7 +98,7 @@ function renderForge(): void {
     );
     form.onsubmit = (e) => {
       e.preventDefault();
-      forgeAs(button, wallets().byAddress(select.value));
+      forgeAs(page, button, wallets.byAddress(select.value));
     };
     children.push(
       el(
@@ -106,7 +123,7 @@ function renderForge(): void {
       textContent: ours ? `Forge as ${ours.name}` : "Not your turn",
       disabled: !ours,
     });
-    button.onclick = () => forgeAs(button, ours);
+    button.onclick = () => forgeAs(page, button, ours);
     children.push(
       el(
         "div",
@@ -117,7 +134,7 @@ function renderForge(): void {
           { className: "grow" },
           el("div", {
             className: "who",
-            textContent: `${nameOf(next)}'s turn`,
+            textContent: `${nameOf(wallets, next)}'s turn`,
           }),
           el("div", {
             className: "sub",
@@ -139,7 +156,7 @@ function renderForge(): void {
         { className: "stakebar" },
         stakes.map((s) => {
           const seg = el("span", {
-            title: `${nameOf(s.address)}: ${fmt(s.amount)}`,
+            title: `${nameOf(wallets, s.address)}: ${fmt(s.amount)}`,
           });
           seg.style.width = pct(s.amount, total);
           const [from, to] = hues(s.address);
@@ -154,7 +171,7 @@ function renderForge(): void {
           el(
             "li",
             { className: s.address === next ? "next" : "" },
-            party(s.address),
+            party(wallets, s.address),
             el("span", { className: "fee", textContent: fmt(s.amount) }),
             el("span", {
               className: "pct",
@@ -216,14 +233,18 @@ function showProducing(text: string): (message?: string) => void {
   };
 }
 
-function mineAs(button: HTMLButtonElement, miner: string): void {
+function mineAs(
+  { node, view, actions }: NodePage,
+  button: HTMLButtonElement,
+  miner: string,
+): void {
   if (!miner) return toast("Create a wallet first", { error: true });
   const done = showProducing(
-    `Trying about ${fmtWork(Number(consensus().work))} hashes`,
+    `Trying about ${fmtWork(Number(view.consensus().work))} hashes`,
   );
-  void busy(button, async () => {
+  void actions.busy(button, async () => {
     try {
-      const block = await mine(miner);
+      const block = await mine(node, miner);
       done(`Block ${block.index} found on try ${fmt(block.nonce + 1)}`);
     } catch (err) {
       done();
@@ -232,11 +253,20 @@ function mineAs(button: HTMLButtonElement, miner: string): void {
   });
 }
 
-function forgeAs(button: HTMLButtonElement, wallet: Wallet | undefined): void {
+function forgeAs(
+  { node, wallets, view, actions }: NodePage,
+  button: HTMLButtonElement,
+  wallet: Wallet | undefined,
+): void {
   if (!wallet) return toast("Create a wallet first", { error: true });
-  void busy(button, async () => {
-    requireUnlocked();
-    const block = await forge(wallet, Boolean(consensus().next_validator));
+  void actions.busy(button, async () => {
+    actions.requireUnlocked();
+    const block = await forge(
+      node,
+      wallets,
+      wallet,
+      Boolean(view.consensus().next_validator),
+    );
     toast(`${wallet.name} forged block ${block.index}`);
   });
 }

@@ -57,6 +57,14 @@ export function toast(
   setTimeout(() => note.remove(), ms);
 }
 
+/** What a refusal or failure says. */
+export const messageOf = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
+
+/** A refusal or failure, shown as an error notice. */
+export const showError = (err: unknown, ms?: number): void =>
+  toast(messageOf(err), { error: true, ms });
+
 /**
  * A question that opens into numbered answers. Each answer is trusted HTML written in this code.
  */

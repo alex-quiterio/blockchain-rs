@@ -1,6 +1,17 @@
-/* The explorer's page: the search in the header, and the layout every view shares. */
+/* The explorer's page: the search in the header, the layout every view shares, and muted,
+   wrapping and pending text. */
 
 :where([data-page="explorer"]) {
+  .muted {
+    color: var(--muted);
+  }
+  .wrap {
+    overflow-wrap: anywhere;
+  }
+  .pending {
+    color: var(--gold);
+    font-weight: 600;
+  }
   .search {
     display: flex;
     gap: 0.4rem;

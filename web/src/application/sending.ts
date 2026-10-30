@@ -4,9 +4,8 @@
 import { STAKE, type Transfer } from "@domain/transfers";
 import { signTransfer } from "@domain/wallets/keys";
 import { commitment } from "@domain/wallets/reveals";
-import type { Wallet } from "@domain/wallets/wallets";
-import { ports } from "./ports.ts";
-import { wallets } from "./wallets.ts";
+import type { Wallet, Wallets } from "@domain/wallets/wallets";
+import type { NodePort } from "./ports.ts";
 
 export interface Sending {
   from: Wallet;
@@ -16,15 +15,14 @@ export interface Sending {
   fee: number;
 }
 
-/** Signs and submits `amount` from `from` to `to`, with `fee`. */
-export async function send({
-  from,
-  to,
-  amount,
-  fee,
-}: Sending): Promise<Transfer> {
-  const secret = wallets().secretOf(from.address);
-  const { next_nonce, commitment_due } = await ports.node.balance(from.address);
+/** Signs `amount` from `from` to `to`, with `fee`, with a key from `wallets`, and submits it. */
+export async function send(
+  node: NodePort,
+  wallets: Wallets,
+  { from, to, amount, fee }: Sending,
+): Promise<Transfer> {
+  const secret = wallets.secretOf(from.address);
+  const { next_nonce, commitment_due } = await node.balance(from.address);
   // A first stake commits to the reveal chain this wallet will forge with.
   const committed =
     to === STAKE && commitment_due != null
@@ -38,6 +36,6 @@ export async function send({
     fee,
     commitment: committed,
   });
-  await ports.node.submitTransaction(tx);
+  await node.submitTransaction(tx);
   return tx;
 }

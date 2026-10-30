@@ -1,78 +1,11 @@
-// Small views the explorer's pages share: links, verdicts that arrive once a check finishes, fact
-// lists, panels and tables of transactions.
+// Tables on the explorer's pages, and the one for transactions, each signature re-checked here.
 
 import { signatureOf } from "@application/audit";
 import type { Located } from "@application/ports";
-import {
-  COINBASE,
-  STAKE,
-  UNSTAKE,
-  kindOf,
-  type Transfer,
-} from "@domain/transfers";
-import { el, fmt, short, type Child } from "@ui/dom";
-
-export const href = {
-  block: (id: string | number): string => `#/block/${id}`,
-  tx: (sig: string): string => `#/tx/${sig}`,
-  address: (a: string): string => `#/address/${a}`,
-};
-export const link = (
-  to: string,
-  text: string,
-  className = "mono",
-): HTMLAnchorElement => el("a", { href: to, className, textContent: text });
-
-/** An address as a link, or the special names it can take. */
-export function who(address: string): HTMLElement {
-  if (address === COINBASE)
-    return el("span", { className: "tag", textContent: "new coins" });
-  if (address === STAKE || address === UNSTAKE)
-    return el("span", { className: `tag ${address}`, textContent: address });
-  return link(href.address(address), short(address));
-}
-
-const ok = (text: string): HTMLSpanElement =>
-  el("span", { className: "ok", textContent: `✓ ${text}` });
-const bad = (text: string): HTMLSpanElement =>
-  el("span", { className: "bad", textContent: `✗ ${text}` });
-
-/** A check's verdict: whether it passed, and what it says. */
-export type Verdict = [passed: boolean, text: string];
-
-/** A row of the facts list whose verdict arrives later. */
-export function checkRow(
-  facts: HTMLElement,
-  label: string,
-  check: Promise<Verdict>,
-  ...detail: Child[]
-): void {
-  const verdict = el("span", { className: "muted", textContent: "checking…" });
-  check
-    .then(([passed, text]) =>
-      verdict.replaceWith(passed ? ok(text) : bad(text)),
-    )
-    .catch((e: unknown) =>
-      verdict.replaceWith(bad(e instanceof Error ? e.message : String(e))),
-    );
-  facts.append(
-    el("dt", { textContent: label }),
-    el("dd", {}, verdict, detail.length ? " " : null, detail),
-  );
-}
-
-export function factRow(
-  facts: HTMLElement,
-  label: string,
-  ...value: Child[]
-): void {
-  facts.append(el("dt", { textContent: label }), el("dd", {}, value));
-}
-
-export const panel = (title: string, ...children: Child[]): HTMLElement =>
-  el("section", { className: "panel" }, el("h2", {}, title), children);
-export const formula = (text: string): HTMLSpanElement =>
-  el("span", { className: "formula", textContent: text });
+import { kindOf, type Transfer } from "@domain/transfers";
+import { el, fmt } from "@ui/dom";
+import { bad, ok } from "./facts.ts";
+import { href, link, who } from "./links.ts";
 
 export function table(
   headings: string[],

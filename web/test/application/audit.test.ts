@@ -7,15 +7,15 @@ import {
   signatureOf,
   totalsOf,
 } from "@application/audit";
-import { refreshContext } from "@application/lookup";
-import { wire, type Consensus, type Located } from "@application/ports";
+import { Lookup } from "@application/lookup";
+import type { Consensus, Located } from "@application/ports";
 import type { Block } from "@domain/blocks";
 import { COINBASE, STAKE } from "@domain/transfers";
 import { forged, mined, proof } from "../fixtures.ts";
 import { account, fakeNode } from "./fake_node.ts";
 
-/** The node answers from `blocks`, by height or hash, as it would. */
-function serving(blocks: Block[], placedHash = mined.block.hash) {
+/** Lookups through a node that answers from `blocks`, by height or hash, as it would. */
+async function serving(blocks: Block[], placedHash = mined.block.hash) {
   const find = (id: string | number) => {
     const found = blocks.find(
       (b) => String(b.index) === String(id) || b.hash === id,
@@ -46,8 +46,9 @@ function serving(blocks: Block[], placedHash = mined.block.hash) {
     }),
     proof: () => proof,
   });
-  wire({ node: fake.node });
-  return fake;
+  const lookup = new Lookup(fake.node);
+  await lookup.refreshContext();
+  return lookup;
 }
 
 // A block before the mined one, whose hash the mined one names.
@@ -59,9 +60,8 @@ const before: Block = {
 };
 
 test("a block the node mined passes every check", async () => {
-  serving([before, mined.block]);
-  await refreshContext();
-  const audit = await auditBlock("2");
+  const lookup = await serving([before, mined.block]);
+  const audit = await auditBlock(lookup, "2");
   assert.equal(await audit.header, true);
   assert.deepEqual(
     audit.link && { passed: audit.link.passed, prev: audit.link.prev.index },
@@ -78,7 +78,7 @@ test("a block the node mined passes every check", async () => {
 });
 
 test("a forged block's seal is its validator's signature", async () => {
-  serving([
+  const lookup = await serving([
     {
       ...forged,
       index: forged.index - 1,
@@ -87,7 +87,7 @@ test("a forged block's seal is its validator's signature", async () => {
     },
     forged,
   ]);
-  const audit = await auditBlock(String(forged.index));
+  const audit = await auditBlock(lookup, String(forged.index));
   assert.equal(audit.seal.by, "signature");
   assert.equal(await audit.seal.passed, true);
   assert.equal(await audit.header, true);
@@ -99,8 +99,8 @@ test("a tampered block fails exactly the checks it breaks", async () => {
     ...mined.block,
     transactions: [{ ...payout!, amount: payout!.amount + 1 }, ...rest],
   };
-  serving([{ ...before, hash: "00".repeat(32) }, padded]);
-  const audit = await auditBlock("2");
+  const lookup = await serving([{ ...before, hash: "00".repeat(32) }, padded]);
+  const audit = await auditBlock(lookup, "2");
   assert.equal(
     audit.link?.passed,
     false,
@@ -120,8 +120,8 @@ test("a tampered block fails exactly the checks it breaks", async () => {
 });
 
 test("a confirmed transfer's signature and its inclusion check out", async () => {
-  serving([mined.block]);
-  const audit = await auditTransaction(proof.transaction.signature);
+  const lookup = await serving([mined.block]);
+  const audit = await auditTransaction(lookup, proof.transaction.signature);
   assert.equal(await audit.signature, true);
   const inclusion = await audit.inclusion!;
   assert.ok(inclusion.leafMatches && inclusion.reachesRoot);
@@ -130,9 +130,9 @@ test("a confirmed transfer's signature and its inclusion check out", async () =>
 });
 
 test("a proof whose header isn't the block the transfer is placed in fails", async () => {
-  serving([mined.block], "ee".repeat(32));
+  const lookup = await serving([mined.block], "ee".repeat(32));
   const inclusion = await (
-    await auditTransaction(proof.transaction.signature)
+    await auditTransaction(lookup, proof.transaction.signature)
   ).inclusion!;
   assert.equal(await inclusion.header, false);
 });
@@ -183,12 +183,10 @@ test("an address's history adds up to its balance, pending transfers left out", 
     balance: () => account({ address: me, balance: 40, staked: 5 }),
     history: () => history,
   });
-  wire({ node: fake.node });
-  assert.equal((await auditAddress(me)).addsUp, true);
+  assert.equal((await auditAddress(new Lookup(fake.node), me)).addsUp, true);
   const off = fakeNode({
     balance: () => account({ address: me, balance: 41, staked: 5 }),
     history: () => history,
   });
-  wire({ node: off.node });
-  assert.equal((await auditAddress(me)).addsUp, false);
+  assert.equal((await auditAddress(new Lookup(off.node), me)).addsUp, false);
 });

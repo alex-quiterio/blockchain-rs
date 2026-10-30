@@ -1,23 +1,24 @@
 // A block's page: why it's valid, each of the node's checks redone here, and what it holds.
 
 import { auditBlock } from "@application/audit";
-import { context } from "@application/lookup";
+import type { Lookup } from "@application/lookup";
 import { ago, el, fmt, short } from "@ui/dom";
 import {
   checkRow,
   factRow,
   formula,
-  href,
-  link,
   panel,
-  txTable,
-  who,
-  type TableEntry,
   type Verdict,
-} from "@ui/explorer/components";
+} from "@ui/explorer/facts";
+import { href, link, who } from "@ui/explorer/links";
+import { txTable, type TableEntry } from "@ui/explorer/tables";
 
-export async function blockPage(id: string): Promise<HTMLElement[]> {
-  const audit = await auditBlock(id);
+export async function blockPage(
+  lookup: Lookup,
+  id: string,
+): Promise<HTMLElement[]> {
+  const audit = await auditBlock(lookup, id);
+  const { context } = lookup;
   const { block } = audit;
   const isTip = block.hash === context.tip;
 

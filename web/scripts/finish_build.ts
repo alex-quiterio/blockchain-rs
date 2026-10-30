@@ -1,7 +1,7 @@
 // Runs after tsc has compiled web/src into public/js. Browsers can't resolve the layer aliases,
-// so each one becomes a relative path to the compiled module; each stylesheet is copied next to
-// the module it belongs to, where the pages link it; and each page's HTML is written to public/,
-// where the node serves it.
+// so each one becomes a relative path to the compiled module; each page's stylesheets are joined
+// into one, so a page links a single file however many parts it has; and each page's HTML is
+// written to public/, where the node serves it.
 
 import {
   copyFileSync,
@@ -10,7 +10,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unalias } from "./layers.ts";
 
@@ -23,6 +23,8 @@ const PAGES: Record<string, string> = {
   "ui/node/index.html": "index.html",
   "ui/explorer/index.html": "explorer.html",
 };
+/** What every page's styles start from. */
+const BASE_STYLES = "ui/base.css";
 
 const filesUnder = (dir: string): string[] =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -50,17 +52,33 @@ for (const file of filesUnder(OUT).filter((f) => f.endsWith(".js"))) {
   }
 }
 
-const styles = filesUnder(SRC).filter((f) => f.endsWith(".css"));
-for (const file of styles) {
-  const to = join(OUT, relative(SRC, file));
-  mkdirSync(dirname(to), { recursive: true });
-  copyFileSync(file, to);
+/**
+ * A page's stylesheets, in the order they apply: the base, the page's main.css, then every other
+ * one under its folder. Each part scopes its own rules, so the order among parts doesn't matter.
+ */
+function stylesOf(folder: string): string[] {
+  const main = join(folder, "main.css");
+  const parts = filesUnder(folder)
+    .filter((f) => f.endsWith(".css") && f !== main)
+    .sort();
+  return [join(SRC, BASE_STYLES), main, ...parts];
 }
 
+mkdirSync(join(PUBLIC, "css"), { recursive: true });
+let joined = 0;
 for (const [page, served] of Object.entries(PAGES)) {
+  const folder = dirname(join(SRC, page));
+  const styles = stylesOf(folder);
+  writeFileSync(
+    join(PUBLIC, "css", `${basename(folder)}.css`),
+    styles
+      .map((f) => `/* ${relative(SRC, f)} */\n${readFileSync(f, "utf8")}`)
+      .join("\n"),
+  );
+  joined += styles.length;
   copyFileSync(join(SRC, page), join(PUBLIC, served));
 }
 
 console.log(
-  `Linked the layer aliases in ${rewritten} modules, copied ${styles.length} stylesheets into public/js, and wrote ${Object.keys(PAGES).length} pages into public.`,
+  `Linked the layer aliases in ${rewritten} modules, joined ${joined} stylesheets into one per page in public/css, and wrote ${Object.keys(PAGES).length} pages into public.`,
 );

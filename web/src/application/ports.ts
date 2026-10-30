@@ -1,10 +1,9 @@
-// What the application talks through, wired in by each page's main.ts, so the use cases never
-// name an adapter: `node`, the node's API, and `walletsRepository`, where the wallets are kept.
-// The node's port is declared here, with what each of its answers holds.
+// What the application talks to the node through: its port, declared here with what each of its
+// answers holds. Each page's main.ts hands an adapter for it to the use cases that need it, so
+// they never name one. Where the wallets are kept is the domain's port, WalletsRepository.
 
 import type { Block, BlockHeader, ProofStep } from "@domain/blocks";
 import type { Transfer } from "@domain/transfers";
-import type { WalletsRepository } from "@domain/wallets/wallets";
 
 export interface Status {
   height: number;
@@ -115,30 +114,4 @@ export interface NodePort {
   submitBlock(block: Block): Promise<Block>;
   addPeer(url: string): Promise<{ url: string; added: boolean }>;
   sync(): Promise<SyncReport>;
-}
-
-export interface Ports {
-  node: NodePort;
-  walletsRepository: WalletsRepository;
-}
-
-const wired: Partial<Ports> = {};
-
-/** Wires the adapters in. Each page does this once, before anything else runs. */
-export function wire(adapters: Partial<Ports>): void {
-  Object.assign(wired, adapters);
-}
-
-/** The adapters, as wired. Asking for one that wasn't is a mistake in the page, so it throws. */
-export const ports = {
-  get node(): NodePort {
-    return wired.node ?? missing("node");
-  },
-  get walletsRepository(): WalletsRepository {
-    return wired.walletsRepository ?? missing("walletsRepository");
-  },
-};
-
-function missing(port: keyof Ports): never {
-  throw new Error(`No adapter wired for ${port}`);
 }

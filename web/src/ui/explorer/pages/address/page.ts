@@ -1,17 +1,19 @@
 // An address's page: what it holds, its history, and whether that history adds up to it.
 
 import { auditAddress } from "@application/audit";
+import type { Lookup } from "@application/lookup";
 import { el, fmt, short } from "@ui/dom";
-import {
-  checkRow,
-  factRow,
-  panel,
-  txTable,
-  type Verdict,
-} from "@ui/explorer/components";
+import { checkRow, factRow, panel, type Verdict } from "@ui/explorer/facts";
+import { txTable } from "@ui/explorer/tables";
 
-export async function addressPage(address: string): Promise<HTMLElement[]> {
-  const { account, history, totals, addsUp } = await auditAddress(address);
+export async function addressPage(
+  lookup: Lookup,
+  address: string,
+): Promise<HTMLElement[]> {
+  const { account, history, totals, addsUp } = await auditAddress(
+    lookup,
+    address,
+  );
   const { rewards, received, sent, fees, staked } = totals;
 
   const facts = el("dl", { className: "facts" });

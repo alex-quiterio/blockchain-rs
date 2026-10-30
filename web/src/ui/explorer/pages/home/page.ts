@@ -1,23 +1,18 @@
 // The explorer's home: where the network stands, the latest blocks and what's waiting.
 
-import { latest, rules } from "@application/lookup";
+import type { Lookup } from "@application/lookup";
 import { feesOf } from "@domain/transfers";
 import { ago, el, fmt, short } from "@ui/dom";
-import {
-  factRow,
-  href,
-  link,
-  panel,
-  table,
-  txTable,
-  who,
-} from "@ui/explorer/components";
+import { factRow, panel } from "@ui/explorer/facts";
+import { href, link, who } from "@ui/explorer/links";
+import { table, txTable } from "@ui/explorer/tables";
 
 const LATEST = 20;
 
-export async function home(): Promise<HTMLElement[]> {
-  const { status, blocks, pending } = await latest(LATEST);
-  const stake = rules().kind === "proof_of_stake";
+export async function home(lookup: Lookup): Promise<HTMLElement[]> {
+  const { status, blocks, pending } = await lookup.latest(LATEST);
+  const rules = lookup.rules();
+  const stake = rules.kind === "proof_of_stake";
 
   const facts = el("dl", { className: "facts" });
   factRow(facts, "Consensus", stake ? "proof of stake" : "proof of work");
@@ -29,7 +24,7 @@ export async function home(): Promise<HTMLElement[]> {
     fmt(status.weight),
     stake ? " stake behind the blocks" : " expected hashes behind the blocks",
   );
-  const work = rules().work;
+  const work = rules.work;
   if (work)
     factRow(facts, "Next block", `needs ${fmt(work)} hashes on average`);
 

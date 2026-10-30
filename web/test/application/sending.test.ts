@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { wire } from "@application/ports";
 import { send } from "@application/sending";
-import { createWallet, wallets } from "@application/wallets";
+import { createWallet } from "@application/wallets";
 import { STAKE, type Transfer } from "@domain/transfers";
 import { sha256Hex } from "@domain/encoding";
 import { transferIsSigned } from "@domain/verification/signatures";
 import { reveal, LENGTH } from "@domain/wallets/reveals";
+import { Wallets } from "@domain/wallets/wallets";
 import { account, emptyRepository, fakeNode } from "./fake_node.ts";
 
 const fake = fakeNode({
@@ -14,13 +14,13 @@ const fake = fakeNode({
     account({ address: address as string, next_nonce: 4, commitment_due: 0 }),
   submitTransaction: (tx) => tx,
 });
-wire({ node: fake.node, walletsRepository: emptyRepository() });
-await wallets().setUp("correct horse");
-await createWallet("Alice");
-const alice = wallets().list[0]!;
+const wallets = new Wallets(emptyRepository()).load();
+await wallets.setUp("correct horse");
+await createWallet(wallets, "Alice");
+const alice = wallets.list[0]!;
 
 test("a transfer is signed here, with the sender's next nonce, and submitted", async () => {
-  const tx = await send({
+  const tx = await send(fake.node, wallets, {
     from: alice,
     to: "bb".repeat(32),
     amount: 5,
@@ -37,8 +37,13 @@ test("a transfer is signed here, with the sender's next nonce, and submitted", a
 });
 
 test("a first stake commits to the reveal chain the wallet will forge with", async () => {
-  const tx = await send({ from: alice, to: STAKE, amount: 10, fee: 0 });
-  const first = await reveal(wallets().secretOf(alice.address), 0, LENGTH);
+  const tx = await send(fake.node, wallets, {
+    from: alice,
+    to: STAKE,
+    amount: 10,
+    fee: 0,
+  });
+  const first = await reveal(wallets.secretOf(alice.address), 0, LENGTH);
   assert.equal(
     tx.commitment,
     await sha256Hex(first),
@@ -48,10 +53,15 @@ test("a first stake commits to the reveal chain the wallet will forge with", asy
 });
 
 test("nothing is sent while the wallets are locked", async () => {
-  wallets().lock();
+  wallets.lock();
   const before = fake.calls.length;
   await assert.rejects(
-    send({ from: alice, to: "bb".repeat(32), amount: 1, fee: 0 }),
+    send(fake.node, wallets, {
+      from: alice,
+      to: "bb".repeat(32),
+      amount: 1,
+      fee: 0,
+    }),
     /Unlock/,
   );
   assert.equal(fake.calls.length, before, "the node isn't even asked");

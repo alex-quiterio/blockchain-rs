@@ -1,25 +1,26 @@
 // The send panel and what's waiting: sending from a wallet, staking or unstaking, with what it
 // costs and whether the fee gets it into the next block; and the mempool.
 
-import { state } from "@application/node_view";
 import { send } from "@application/sending";
-import { wallets } from "@application/wallets";
+import type { Fees } from "@application/ports";
 import { STAKE, UNSTAKE, feesOf } from "@domain/transfers";
 import { $, el, fmt, toast, type Child } from "@ui/dom";
-import { busy, requireUnlocked } from "@ui/node/actions";
-import { txView } from "@ui/node/components";
+import type { NodePage } from "@ui/node/page";
+import { fillWalletSelect } from "@ui/node/parties";
+import { txView } from "@ui/node/transfers";
 
 const input = (id: string) => $<HTMLInputElement>(id);
 const select = (id: string) => $<HTMLSelectElement>(id);
 
-export function renderPending(): void {
-  const fees = feesOf(state.pending);
+function renderPending({ view, wallets }: NodePage): void {
+  const { pending } = view.state;
+  const fees = feesOf(pending);
   $("pending-fees").textContent = fees
     ? `· ${fmt(fees)} in fees for the next block`
     : "";
   $("pending").replaceChildren(
-    ...(state.pending.length
-      ? state.pending.map(txView)
+    ...(pending.length
+      ? pending.map((tx) => txView(wallets, tx))
       : [
           el("li", {
             className: "empty",
@@ -29,7 +30,23 @@ export function renderPending(): void {
   );
 }
 
-export function updateSendSummary(): void {
+/** Offers each wallet to send from, and each wallet, the stake or another address to send to. */
+function renderChoices({ view, wallets }: NodePage): void {
+  fillWalletSelect(select("send-from"), wallets);
+  const extras: [string, string][] = view.isStake()
+    ? [
+        ["__stake", "Stake: lock coins to validate"],
+        ["__unstake", "Unstake: unlock staked coins"],
+      ]
+    : [];
+  fillWalletSelect(select("send-to"), wallets, [
+    ...extras,
+    ["__other", "Other address…"],
+  ]);
+}
+
+function updateSendSummary({ view }: NodePage): void {
+  const { state } = view;
   const to = select("send-to").value;
   const amount = Number(input("send-amount").value) || 0;
   const fee = Number(input("send-fee").value) || 0;
@@ -45,7 +62,7 @@ export function updateSendSummary(): void {
   );
   $("send-summary").replaceChildren(
     ...(parts.flat() as (Node | string)[]),
-    ...feeAdvice(fee),
+    ...feeAdvice(state.fees, fee),
   );
   const needed = state.fees?.fee ?? 0;
   input("send-fee").placeholder = needed
@@ -57,8 +74,8 @@ export function updateSendSummary(): void {
  * Whether `fee` wins a place in the next block. Only said once it's full: while there's room,
  * any fee gets in. The node's estimate is sure for a sender with nothing else waiting.
  */
-function feeAdvice(fee: number): (Node | string)[] {
-  const needed = state.fees?.room === 0 ? state.fees.fee : 0;
+function feeAdvice(fees: Fees | null, fee: number): (Node | string)[] {
+  const needed = fees?.room === 0 ? fees.fee : 0;
   if (!needed) return [];
   return fee >= needed
     ? [
@@ -92,18 +109,25 @@ function recipient(choice: string): string {
   return choice;
 }
 
-export function installSending(): void {
+/** Wires up sending, and draws the choices, their cost and what's waiting each time the view changes. */
+export function installSending(page: NodePage): void {
+  const { node, wallets, actions } = page;
+  page.view.onChange(() => {
+    renderChoices(page);
+    updateSendSummary(page);
+    renderPending(page);
+  });
   for (const id of ["send-from", "send-to", "send-amount", "send-fee"])
-    $(id).oninput = updateSendSummary;
+    $(id).oninput = () => updateSendSummary(page);
   $<HTMLFormElement>("send-form").onsubmit = (e) => {
     e.preventDefault();
-    void busy($<HTMLButtonElement>("send"), async () => {
-      const from = wallets().byAddress(select("send-from").value);
+    void actions.busy($<HTMLButtonElement>("send"), async () => {
+      const from = wallets.byAddress(select("send-from").value);
       if (!from) throw new Error("Create a wallet first");
-      requireUnlocked();
+      actions.requireUnlocked();
       const to = recipient(select("send-to").value);
       if (!to) return;
-      await send({
+      await send(node, wallets, {
         from,
         to,
         amount: Number(input("send-amount").value),

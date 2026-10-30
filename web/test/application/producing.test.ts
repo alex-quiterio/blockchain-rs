@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { wire } from "@application/ports";
 import { forge, mine } from "@application/producing";
-import { createWallet, wallets } from "@application/wallets";
+import { createWallet } from "@application/wallets";
 import type { Block } from "@domain/blocks";
 import { isSignedBy } from "@domain/verification/signatures";
 import { reveal } from "@domain/wallets/reveals";
+import { Wallets } from "@domain/wallets/wallets";
 import { forged } from "../fixtures.ts";
 import { account, emptyRepository, fakeNode } from "./fake_node.ts";
 
@@ -17,13 +17,13 @@ const fake = fakeNode({
   submitBlock: (block) => block,
   mine: () => forged,
 });
-wire({ node: fake.node, walletsRepository: emptyRepository() });
-await wallets().setUp("correct horse");
-await createWallet("Val");
-const val = wallets().list[0]!;
+const wallets = new Wallets(emptyRepository()).load();
+await wallets.setUp("correct horse");
+await createWallet(wallets, "Val");
+const val = wallets.list[0]!;
 
 test("forging signs the proposed block's hash here; only the signature goes back", async () => {
-  const block = await forge(val, false);
+  const block = await forge(fake.node, wallets, val, false);
   assert.ok(await isSignedBy(val.address, block.hash, block.signature!));
   const [submitted] = fake.called("submitBlock").at(-1)!.args as [Block];
   assert.equal(submitted.signature, block.signature);
@@ -35,8 +35,8 @@ test("forging signs the proposed block's hash here; only the signature goes back
 });
 
 test("once validators are drawn, forging reveals the next link of the wallet's chain", async () => {
-  await forge(val, true);
-  const expected = await reveal(wallets().secretOf(val.address), 0, 997);
+  await forge(fake.node, wallets, val, true);
+  const expected = await reveal(wallets.secretOf(val.address), 0, 997);
   assert.deepEqual(fake.called("propose").at(-1)!.args, [
     val.address,
     expected,
@@ -44,6 +44,6 @@ test("once validators are drawn, forging reveals the next link of the wallet's c
 });
 
 test("mining asks the node, paying the miner", async () => {
-  await mine(val.address);
+  await mine(fake.node, val.address);
   assert.deepEqual(fake.called("mine").at(-1)!.args, [val.address]);
 });

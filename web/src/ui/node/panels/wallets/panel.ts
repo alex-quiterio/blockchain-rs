@@ -1,13 +1,11 @@
 // The wallets panel: the vault's lock, the wallets and what each holds, making one, and backing
 // them up or restoring them.
 
-import { isStake, state } from "@application/node_view";
-import { createWallet, wallets } from "@application/wallets";
+import { createWallet } from "@application/wallets";
 import type { Wallet } from "@domain/wallets/wallets";
-import { $, el, fmt, short, toast } from "@ui/dom";
-import { busy, fail, refreshPage } from "@ui/node/actions";
-import { avatar } from "@ui/node/components";
-import { updateSendSummary } from "@ui/node/panels/sending/panel";
+import { $, el, fmt, short, showError, toast } from "@ui/dom";
+import type { NodePage } from "@ui/node/page";
+import { avatar } from "@ui/node/parties";
 
 const lockIcon = (open: boolean): HTMLSpanElement =>
   el("span", { textContent: open ? "🔓" : "🔒", ariaHidden: "true" });
@@ -25,54 +23,27 @@ function passphraseInput(
   });
 }
 
-/** Fills a select with the wallets, then `extras` as `[value, label]`, keeping what was chosen. */
-export function fillSelect(
-  select: HTMLSelectElement,
-  extras: [string, string][] = [],
-): void {
-  const current = select.value;
-  select.replaceChildren(
-    ...wallets().list.map((w) =>
-      el("option", { value: w.address, textContent: w.name }),
-    ),
-    ...extras.map(([value, label]) =>
-      el("option", { value, textContent: label }),
-    ),
-  );
-  if ([...select.options].some((o) => o.value === current))
-    select.value = current;
-}
-
-export function renderWallets(): void {
-  renderVault();
-  const list = wallets().list;
+function renderWallets(page: NodePage): void {
+  renderVault(page);
+  const list = page.wallets.list;
   $("wallet-count").textContent = list.length ? String(list.length) : "";
   $("wallets").replaceChildren(
     ...(list.length
-      ? list.map(walletView)
+      ? list.map((wallet) => walletView(page, wallet))
       : [
           el("div", {
             className: "empty",
-            textContent: `No wallets yet. Make one, then ${isStake() ? "forge" : "mine"} to fund it.`,
+            textContent: `No wallets yet. Make one, then ${page.view.isStake() ? "forge" : "mine"} to fund it.`,
           }),
         ]),
   );
-  fillSelect($<HTMLSelectElement>("send-from"));
-  const extras: [string, string][] = isStake()
-    ? [
-        ["__stake", "Stake: lock coins to validate"],
-        ["__unstake", "Unstake: unlock staked coins"],
-      ]
-    : [];
-  fillSelect($<HTMLSelectElement>("send-to"), [
-    ...extras,
-    ["__other", "Other address…"],
-  ]);
-  updateSendSummary();
 }
 
-function walletView(wallet: Wallet): HTMLDivElement {
-  const account = state.accounts[wallet.address] ?? {
+function walletView(
+  { view, wallets, actions }: NodePage,
+  wallet: Wallet,
+): HTMLDivElement {
+  const account = view.state.accounts[wallet.address] ?? {
     balance: 0,
     staked: 0,
     next_nonce: 0,
@@ -94,7 +65,7 @@ function walletView(wallet: Wallet): HTMLDivElement {
     title: "Forget this wallet",
   });
   forget.onclick = () => {
-    if (wallets().locked)
+    if (wallets.locked)
       return toast("Unlock your wallets first", { error: true });
     if (
       !confirm(
@@ -102,7 +73,7 @@ function walletView(wallet: Wallet): HTMLDivElement {
       )
     )
       return;
-    wallets().remove(wallet).then(refreshPage, fail);
+    wallets.remove(wallet).then(() => actions.refreshPage(), showError);
   };
   return el(
     "div",
@@ -140,11 +111,11 @@ function walletView(wallet: Wallet): HTMLDivElement {
   );
 }
 
-function renderVault(): void {
-  const w = wallets();
+function renderVault(page: NodePage): void {
+  const { wallets: w, actions } = page;
   $("wallet-form").hidden = w.locked;
-  if (w.needsPassphrase) return renderSetUp();
-  if (w.locked) return renderUnlock();
+  if (w.needsPassphrase) return renderSetUp(page);
+  if (w.locked) return renderUnlock(page);
 
   const lock = el("button", {
     className: "small",
@@ -153,7 +124,7 @@ function renderVault(): void {
   });
   lock.onclick = () => {
     w.lock();
-    void refreshPage();
+    void actions.refreshPage();
     toast("Locked. Your keys are wiped from memory.");
   };
   const backup = el("button", {
@@ -161,13 +132,13 @@ function renderVault(): void {
     type: "button",
     textContent: "Back up",
   });
-  backup.onclick = downloadBackup;
+  backup.onclick = () => downloadBackup(page);
   const restore = el("button", {
     className: "small",
     type: "button",
     textContent: "Restore",
   });
-  restore.onclick = restoreBackup;
+  restore.onclick = () => restoreBackup(page);
   $("vault").replaceChildren(
     el(
       "div",
@@ -184,7 +155,7 @@ function renderVault(): void {
   );
 }
 
-function renderSetUp(): void {
+function renderSetUp({ wallets, actions }: NodePage): void {
   const first = passphraseInput("Passphrase, 8+ characters", "new-password");
   const again = passphraseInput("Type it again", "new-password");
   const button = el("button", { textContent: "Set passphrase" });
@@ -193,13 +164,13 @@ function renderSetUp(): void {
     e.preventDefault();
     if (first.value !== again.value)
       return toast("The passphrases don't match", { error: true });
-    void busy(button, async () => {
+    void actions.busy(button, async () => {
       button.textContent = "Encrypting…";
-      await wallets().setUp(first.value);
+      await wallets.setUp(first.value);
       toast("Your keys are now encrypted with your passphrase");
     });
   };
-  const n = wallets().legacy.length;
+  const n = wallets.legacy.length;
   $("vault").replaceChildren(
     el(
       "div",
@@ -222,7 +193,7 @@ function renderSetUp(): void {
   );
 }
 
-function renderUnlock(): void {
+function renderUnlock({ wallets, actions }: NodePage): void {
   const input = passphraseInput("Passphrase", "current-password");
   input.id = "unlock-passphrase";
   const button = el("button", { textContent: "Unlock" });
@@ -238,9 +209,9 @@ function renderUnlock(): void {
   );
   form.onsubmit = (e) => {
     e.preventDefault();
-    void busy(button, async () => {
+    void actions.busy(button, async () => {
       button.textContent = "Unlocking…";
-      await wallets().unlock(input.value);
+      await wallets.unlock(input.value);
       toast("Unlocked");
     });
   };
@@ -258,10 +229,10 @@ function renderUnlock(): void {
   );
 }
 
-function downloadBackup(): void {
+function downloadBackup({ wallets }: NodePage): void {
   const link = el("a", {
     href: URL.createObjectURL(
-      new Blob([wallets().backup()], { type: "application/json" }),
+      new Blob([wallets.backup()], { type: "application/json" }),
     ),
     download: `blockchain-rs-wallets-${new Date().toISOString().slice(0, 10)}.json`,
   });
@@ -272,7 +243,7 @@ function downloadBackup(): void {
   );
 }
 
-function restoreBackup(): void {
+function restoreBackup({ wallets, actions }: NodePage): void {
   const picker = el("input", {
     type: "file",
     accept: "application/json,.json",
@@ -284,26 +255,32 @@ function restoreBackup(): void {
       const text = await file.text();
       const passphrase = prompt("Passphrase this backup was made with:");
       if (!passphrase) return;
-      const added = await wallets().restore(text, passphrase);
+      const added = await wallets.restore(text, passphrase);
       toast(
         added
           ? `Restored ${added} wallet${added === 1 ? "" : "s"}`
           : "Those wallets are already here",
       );
-      void refreshPage();
+      void actions.refreshPage();
     } catch (err) {
-      fail(err);
+      showError(err);
     }
   };
   picker.click();
 }
 
-/** Wires up making a wallet, and locking the wallets after a stretch without activity. */
-export function installWallets(): void {
+/**
+ * Wires up making a wallet, and locking the wallets after a stretch without activity; and draws
+ * the wallets each time the view changes.
+ */
+export function installWallets(page: NodePage): void {
+  const { wallets, actions } = page;
+  page.view.onChange(() => renderWallets(page));
   $<HTMLFormElement>("wallet-form").onsubmit = (e) => {
     e.preventDefault();
-    void busy($<HTMLButtonElement>("create-wallet"), async () => {
+    void actions.busy($<HTMLButtonElement>("create-wallet"), async () => {
       const name = await createWallet(
+        wallets,
         $<HTMLInputElement>("wallet-name").value.trim(),
       );
       $<HTMLInputElement>("wallet-name").value = "";
@@ -314,15 +291,15 @@ export function installWallets(): void {
     document.addEventListener(
       event,
       () => {
-        wallets().lastActive = Date.now();
+        wallets.lastActive = Date.now();
       },
       { passive: true },
     );
   }
   setInterval(() => {
-    if (!wallets().idle) return;
-    wallets().lock();
-    void refreshPage();
+    if (!wallets.idle) return;
+    wallets.lock();
+    void actions.refreshPage();
     toast("Locked after 15 idle minutes");
   }, 30_000);
 }

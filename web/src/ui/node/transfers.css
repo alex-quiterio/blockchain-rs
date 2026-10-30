@@ -1,0 +1,36 @@
+/* Transfers on the node page: lists of them, one row each. */
+
+:where([data-page="node"]) {
+  .txs {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .tx {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+  }
+  .tx .arrow {
+    color: var(--muted);
+  }
+  .tx .amt {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .tx.coinbase .amt {
+    color: var(--gold);
+  }
+  .tx .fee {
+    font-size: 0.7rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+}

@@ -1,16 +1,6 @@
-/* What the explorer's pages share: muted and pending text, and tables. */
+/* Tables on the explorer's pages. */
 
 :where([data-page="explorer"]) {
-  .muted {
-    color: var(--muted);
-  }
-  .wrap {
-    overflow-wrap: anywhere;
-  }
-  .pending {
-    color: var(--gold);
-    font-weight: 600;
-  }
   .grid-wrap {
     overflow-x: auto;
   }

@@ -1,0 +1,28 @@
+/* Parties on the node page: avatars, and a name beside one. */
+
+:where([data-page="node"]) {
+  .avatar {
+    display: inline-block;
+    flex: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+  }
+  .avatar.sm {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+  }
+  .party {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 0;
+    vertical-align: middle;
+  }
+  .party span:not(.avatar) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

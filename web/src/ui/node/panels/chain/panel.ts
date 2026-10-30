@@ -2,32 +2,38 @@
 // it's valid, its Merkle root re-checked here.
 
 import { contentsMatch } from "@application/audit";
-import {
-  SHOWN_BLOCKS,
-  blockAt,
-  consensus,
-  isStake,
-  state,
-  supply,
-  tip,
-} from "@application/node_view";
+import { SHOWN_BLOCKS } from "@application/node_view";
 import type { Block } from "@domain/blocks";
 import { feesOf, type Transfer } from "@domain/transfers";
 import { $, ago, el, fmt, short, type Child } from "@ui/dom";
-import { fmtWork, hashView, party, txView } from "@ui/node/components";
+import type { NodePage } from "@ui/node/page";
+import { party } from "@ui/node/parties";
+import { txView } from "@ui/node/transfers";
+import { fmtWork, hashView } from "@ui/node/work";
 
 const SHOWN_TXS = 6;
-let seenTip: string | undefined | null = null;
 
-export function renderStats(): void {
+/** Draws the stats and the latest blocks each time the view changes. */
+export function installChain(page: NodePage): void {
+  let seenTip: string | undefined | null = null;
+  page.view.onChange(() => {
+    renderStats(page);
+    const fresh = seenTip !== null && page.view.tip() !== seenTip;
+    seenTip = page.view.tip();
+    renderChain(page, fresh);
+  });
+}
+
+function renderStats({ view }: NodePage): void {
+  const { state } = view;
   const c = state.consensus;
   $("stat-consensus").textContent = c
-    ? isStake()
+    ? view.isStake()
       ? "Proof of stake"
       : `Proof of work · ${fmtWork(Number(c.work))}`
     : "–";
   $("stat-height").textContent = state.height >= 0 ? fmt(state.height) : "–";
-  $("stat-supply").textContent = fmt(supply());
+  $("stat-supply").textContent = fmt(view.supply());
   $("stat-pending").textContent = fmt(state.pending.length);
   const pill = $("validity");
   pill.className = `pill ${state.valid ? "ok" : "bad"}`;
@@ -35,23 +41,28 @@ export function renderStats(): void {
   pill.title = state.problem ?? "";
 }
 
-export function renderChain(): void {
-  const fresh = seenTip !== null && tip() !== seenTip;
-  seenTip = tip();
+/** The latest blocks, newest first; `fresh` marks the newest as just arrived. */
+function renderChain(page: NodePage, fresh: boolean): void {
+  const { view } = page;
   const open = new Set(
     [...document.querySelectorAll<HTMLDetailsElement>(".breakdown[open]")].map(
       (d) => d.dataset.hash,
     ),
   );
-  const shown = state.blocks.slice(-SHOWN_BLOCKS).reverse();
+  const shown = view.state.blocks.slice(-SHOWN_BLOCKS).reverse();
   const older = shown.at(-1)?.index ?? 0;
   $("blocks").replaceChildren(
     ...shown.map((block, i) => {
-      const view = blockView(block, blockAt(block.index - 1), fresh && i === 0);
-      const details = view.querySelector<HTMLDetailsElement>(".breakdown")!;
+      const card = blockView(
+        page,
+        block,
+        view.blockAt(block.index - 1),
+        fresh && i === 0,
+      );
+      const details = card.querySelector<HTMLDetailsElement>(".breakdown")!;
       details.dataset.hash = block.hash;
       details.open = open.has(block.hash);
-      return view;
+      return card;
     }),
     ...(older > 0
       ? [
@@ -69,6 +80,7 @@ export function renderChain(): void {
 }
 
 function blockView(
+  page: NodePage,
   block: Block,
   prev: Block | undefined,
   fresh: boolean,
@@ -107,12 +119,12 @@ function blockView(
           textContent: `${block.transactions.length} tx`,
         }),
       ),
-      hashView(block.hash, state.works[block.index]),
+      hashView(block.hash, page.view.state.works[block.index]),
       el(
         "div",
         { className: "meta" },
         block.validator
-          ? el("span", {}, "forged by ", party(block.validator))
+          ? el("span", {}, "forged by ", party(page.wallets, block.validator))
           : el(
               "span",
               {},
@@ -129,19 +141,23 @@ function blockView(
           }),
         ),
       ),
-      txList(block.transactions),
-      breakdown(block, prev, payout, rest),
+      txList(page, block.transactions),
+      breakdown(page, block, prev, payout, rest),
     ),
   );
 }
 
 /** A block's transactions; long lists show the first few and fold the rest away. */
-function txList(transactions: Transfer[]): HTMLUListElement | null {
+function txList(
+  { wallets }: NodePage,
+  transactions: Transfer[],
+): HTMLUListElement | null {
   if (!transactions.length) return null;
+  const row = (tx: Transfer) => txView(wallets, tx);
   const list = el(
     "ul",
     { className: "txs" },
-    transactions.slice(0, SHOWN_TXS).map(txView),
+    transactions.slice(0, SHOWN_TXS).map(row),
   );
   if (transactions.length > SHOWN_TXS) {
     const rest = transactions.slice(SHOWN_TXS);
@@ -151,7 +167,7 @@ function txList(transactions: Transfer[]): HTMLUListElement | null {
       el("summary", {
         textContent: `${fmt(rest.length)} more transactions · ${fmt(feesOf(rest))} in fees`,
       }),
-      el("ul", { className: "txs" }, rest.map(txView)),
+      el("ul", { className: "txs" }, rest.map(row)),
     );
     list.append(el("li", {}, more));
   }
@@ -160,6 +176,7 @@ function txList(transactions: Transfer[]): HTMLUListElement | null {
 
 /** The "why is this block valid" story, one fact per row. */
 function breakdown(
+  { view, wallets }: NodePage,
   block: Block,
   prev: Block | undefined,
   payout: Transfer | undefined,
@@ -188,7 +205,7 @@ function breakdown(
       "Proof",
       yes("signed"),
       " by ",
-      party(block.validator),
+      party(wallets, block.validator),
       ". The validator was drawn at random, weighted by stake, from a randomness beacon that only validators' committed reveals can move, so every node agrees whose turn it was and nobody could steer it.",
     );
     if (block.reveal) {
@@ -200,18 +217,19 @@ function breakdown(
       );
     }
   } else {
-    const work = state.works[block.index] ?? 0;
+    const work = view.state.works[block.index] ?? 0;
     row(
       "Proof",
       yes(`below the target for ${fmtWork(work)} hashes`),
       ` Found on try ${fmt(block.nonce + 1)}. Each try changes the nonce and rehashes; at this difficulty it takes ${fmtWork(work)} tries on average.`,
     );
-    const before = state.works[block.index - 1];
-    const { target_block_secs: target, retarget_interval: n } = consensus();
+    const before = view.state.works[block.index - 1];
+    const { target_block_secs: target, retarget_interval: n } =
+      view.consensus();
     if (block.index > 0 && before && work !== before && target && n) {
       const [last, first] = [
-        blockAt(block.index - 1),
-        blockAt(block.index - 1 - n),
+        view.blockAt(block.index - 1),
+        view.blockAt(block.index - 1 - n),
       ];
       const took =
         last && first
@@ -235,7 +253,7 @@ function breakdown(
       `${fmt(payout.amount - fees)} reward + ${fmt(fees)} in fees = `,
       el("b", { textContent: fmt(payout.amount) }),
       " to ",
-      party(payout.to),
+      party(wallets, payout.to),
     );
   }
   const check = el("span", { textContent: "checking…" });

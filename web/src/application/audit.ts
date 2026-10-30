@@ -12,13 +12,7 @@ import {
   transferIsSigned,
 } from "@domain/verification/signatures";
 import { COINBASE, STAKE, UNSTAKE } from "@domain/transfers";
-import {
-  address as lookUpAddress,
-  block as lookUpBlock,
-  rules,
-  transaction as lookUpTransaction,
-  type FoundTransaction,
-} from "./lookup.ts";
+import type { FoundTransaction, Lookup } from "./lookup.ts";
 import type { Account, Located } from "./ports.ts";
 
 /** How a block was sealed, and whether the seal holds: a validator's signature, or enough work. */
@@ -47,9 +41,12 @@ export interface BlockAudit {
   } | null;
 }
 
-/** A block by height or hash, with every check of it under way. */
-export async function auditBlock(id: string): Promise<BlockAudit> {
-  const { block, prev, work } = await lookUpBlock(id);
+/** A block by height or hash, looked up through `lookup`, with every check of it under way. */
+export async function auditBlock(
+  lookup: Lookup,
+  id: string,
+): Promise<BlockAudit> {
+  const { block, prev, work } = await lookup.block(id);
   const [payout, ...transfers] = block.transactions;
   const fees = feesOf(transfers);
   return {
@@ -76,8 +73,8 @@ export async function auditBlock(id: string): Promise<BlockAudit> {
       : null,
     payout: payout
       ? {
-          passed: payout.amount === rules().reward + fees,
-          reward: rules().reward,
+          passed: payout.amount === lookup.rules().reward + fees,
+          reward: lookup.rules().reward,
           fees,
           amount: payout.amount,
           to: payout.to,
@@ -119,9 +116,10 @@ export interface TransactionAudit extends FoundTransaction {
 
 /** A transaction by signature, with its signature and, once confirmed, its inclusion checked. */
 export async function auditTransaction(
+  lookup: Lookup,
   signature: string,
 ): Promise<TransactionAudit> {
-  const found = await lookUpTransaction(signature);
+  const found = await lookup.transaction(signature);
   const { transaction: tx, placed, proof } = found;
   const inclusion =
     placed && proof
@@ -162,8 +160,11 @@ export interface AddressAudit {
 }
 
 /** An address's account and history, and whether the history adds up to the account. */
-export async function auditAddress(address: string): Promise<AddressAudit> {
-  const { account, history } = await lookUpAddress(address);
+export async function auditAddress(
+  lookup: Lookup,
+  address: string,
+): Promise<AddressAudit> {
+  const { account, history } = await lookup.address(address);
   const totals = totalsOf(address, history);
   const { rewards, received, sent, fees, staked } = totals;
   return {

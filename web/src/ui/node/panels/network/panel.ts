@@ -1,12 +1,12 @@
 // The network panel: this node's peers and whether they're ahead, behind or in step, adding one
 // and syncing now; and the footer, saying which build the node runs.
 
-import { state } from "@application/node_view";
+import type { NodeState } from "@application/node_view";
 import { addPeer, syncNow } from "@application/peers";
 import { $, ago, el, toast } from "@ui/dom";
-import { busy } from "@ui/node/actions";
+import type { NodePage } from "@ui/node/page";
 
-export function renderPeers(): void {
+function renderPeers(state: Readonly<NodeState>): void {
   $("peer-count").textContent = state.peers.length
     ? String(state.peers.length)
     : "";
@@ -54,7 +54,7 @@ export function renderPeers(): void {
   );
 }
 
-export function renderFooter(): void {
+function renderFooter(state: Readonly<NodeState>): void {
   const n = state.node;
   if (!n) return;
   const dirty = n.commit.endsWith("-dirty");
@@ -82,13 +82,22 @@ export function renderFooter(): void {
   );
 }
 
-export function installNetwork(): void {
+/**
+ * Wires up adding a peer and syncing; and draws the peers each time they or the view change, and
+ * the footer each time the view does.
+ */
+export function installNetwork({ node, view, actions }: NodePage): void {
+  view.onChange(() => {
+    renderPeers(view.state);
+    renderFooter(view.state);
+  });
+  view.onPeersChange(() => renderPeers(view.state));
   $<HTMLFormElement>("peer-form").onsubmit = (e) => {
     e.preventDefault();
-    void busy($<HTMLButtonElement>("add-peer"), async () => {
+    void actions.busy($<HTMLButtonElement>("add-peer"), async () => {
       const url = $<HTMLInputElement>("peer-url").value.trim();
       if (!url) return;
-      const { added } = await addPeer(url);
+      const { added } = await addPeer(node, url);
       $<HTMLInputElement>("peer-url").value = "";
       toast(
         added
@@ -99,8 +108,8 @@ export function installNetwork(): void {
   };
   const sync = $<HTMLButtonElement>("sync");
   sync.onclick = () =>
-    busy(sync, async () => {
-      const report = await syncNow();
+    actions.busy(sync, async () => {
+      const report = await syncNow(node);
       toast(
         report.adopted_from
           ? `Adopted the heavier chain from ${report.adopted_from}`

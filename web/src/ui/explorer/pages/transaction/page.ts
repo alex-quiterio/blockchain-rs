@@ -2,21 +2,23 @@
 // Merkle proof that it's in its block, each hash redone here.
 
 import { auditTransaction, type InclusionAudit } from "@application/audit";
+import type { Lookup } from "@application/lookup";
 import { kindOf, signingPayload } from "@domain/transfers";
 import { ago, el, fmt, short } from "@ui/dom";
 import {
   checkRow,
   factRow,
   formula,
-  href,
-  link,
   panel,
-  who,
   type Verdict,
-} from "@ui/explorer/components";
+} from "@ui/explorer/facts";
+import { href, link, who } from "@ui/explorer/links";
 
-export async function txPage(signature: string): Promise<HTMLElement[]> {
-  const audit = await auditTransaction(signature);
+export async function txPage(
+  lookup: Lookup,
+  signature: string,
+): Promise<HTMLElement[]> {
+  const audit = await auditTransaction(lookup, signature);
   const { transaction: tx, placed, block } = audit;
   const kind = kindOf(tx);
 
