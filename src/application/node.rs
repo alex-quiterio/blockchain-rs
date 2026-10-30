@@ -378,7 +378,13 @@ mod tests {
         repo.save(&blocks, &[ChainEvent::Started]).unwrap();
 
         let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
-        assert!(matches!(err, NodeError::Domain(DomainError::Chain(ChainError::InvalidChain))));
+        assert!(matches!(
+            err,
+            NodeError::Domain(DomainError::Chain(ChainError::InvalidBlock {
+                height: 1,
+                reason: BlockError::MerkleRootMismatch
+            }))
+        ));
     }
 
     #[test]
@@ -587,7 +593,7 @@ mod tests {
         );
         assert!(matches!(
             ours.adopt_if_heavier(vec![]),
-            Err(NodeError::Domain(DomainError::Chain(ChainError::InvalidChain)))
+            Err(NodeError::Domain(DomainError::Chain(ChainError::Empty)))
         ));
     }
 }

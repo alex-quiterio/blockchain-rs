@@ -112,10 +112,9 @@ impl Blockchain {
                 && links_up(&blocks[..=s.height], &rules)
         });
         let (kept, from) = match fits {
-            Some(s) => (replay_from(&blocks, s.height + 1, s.tally, &rules, keep), Some(s.height)),
-            None => (replay_kept(&blocks, &rules, keep), None),
+            Some(s) => (replay_from(&blocks, s.height + 1, s.tally, &rules, keep)?, Some(s.height)),
+            None => (replay_kept(&blocks, &rules, keep)?, None),
         };
-        let kept = kept.ok_or(ChainError::InvalidChain)?;
         Ok((Self::from_parts(blocks, kept, rules), from))
     }
 
@@ -321,7 +320,7 @@ impl Blockchain {
 
     /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
     pub fn append_forged(&mut self, block: Block) -> Result<&Block, BlockError> {
-        let validator = block.validator.clone().ok_or(BlockError::InvalidBlock)?;
+        let validator = block.validator.clone().ok_or(BlockError::BadSignature)?;
         self.check_turn(&validator)?;
         self.append_sealed(block)
     }
@@ -331,16 +330,8 @@ impl Blockchain {
         if block.prev_hash != self.tip().hash || block.index != self.blocks.len() as u64 {
             return Err(BlockError::StaleBlock);
         }
-        // Checked here too, so whoever made it hears why, not only that it doesn't validate.
-        let (capacity, transfers) =
-            (self.rules.block_capacity, block.transactions.len().saturating_sub(1));
-        if let (false, Some(max)) = (capacity.holds(transfers), capacity.max()) {
-            return Err(BlockError::TooManyTransfers { max, got: transfers });
-        }
         let mut tally = self.tally().clone();
-        if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
-            return Err(BlockError::InvalidBlock);
-        }
+        apply_block(&self.blocks, &block, &mut tally, &self.rules)?;
         self.blocks.push(block);
         self.tallies.push(tally);
         self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
@@ -390,9 +381,7 @@ impl Blockchain {
         let (index, transactions) = self.next_contents(producer, pending);
         let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
         let mut tally = self.tally().clone();
-        if !apply_block(&self.blocks, &block, &mut tally, &self.rules) {
-            return Err(BlockError::InvalidBlock);
-        }
+        apply_block(&self.blocks, &block, &mut tally, &self.rules)?;
         self.blocks.push(block);
         self.tallies.push(tally);
         self.extended(self.blocks.len() - 1, self.blocks.len() - 1);
@@ -423,15 +412,14 @@ impl Blockchain {
                 let base = base.clone();
                 let mut chain = self.blocks[..shared].to_vec();
                 chain.extend(blocks.into_iter().skip(shared));
-                let kept = replay_from(&chain, shared, base, &self.rules, keep);
+                let kept = replay_from(&chain, shared, base, &self.rules, keep)?;
                 (chain, kept)
             }
             None => {
-                let kept = replay_kept(&blocks, &self.rules, keep);
+                let kept = replay_kept(&blocks, &self.rules, keep)?;
                 (blocks, kept)
             }
         };
-        let kept = kept.ok_or(ChainError::InvalidChain)?;
         let tally = kept.back().expect("replays keep at least the last").clone();
         let theirs =
             (tally.weight, Reverse(&chain.last().expect("replay refuses empty chains").hash));
@@ -468,7 +456,7 @@ impl Blockchain {
     /// stretch that forks off one of our blocks is weighed as a whole chain by `adopt_if_heavier`.
     /// Blocks from height 0 are a whole chain already.
     pub fn extend(&mut self, blocks: Vec<Block>) -> Result<Extension, ChainError> {
-        let start = blocks.first().ok_or(ChainError::InvalidChain)?.index as usize;
+        let start = blocks.first().ok_or(ChainError::Empty)?.index as usize;
         if start == 0 {
             return self.adopt_if_heavier(blocks).map(Extension::from);
         }
@@ -495,9 +483,10 @@ impl Blockchain {
         let height = self.blocks.len();
         let mut tallies = Vec::with_capacity(new.len());
         for block in new {
-            if !apply_block(&self.blocks, block, &mut tally, &self.rules) {
+            if let Err(reason) = apply_block(&self.blocks, block, &mut tally, &self.rules) {
+                let at = self.blocks.len() as u64;
                 self.blocks.truncate(height);
-                return Err(ChainError::InvalidChain);
+                return Err(ChainError::InvalidBlock { height: at, reason });
             }
             self.blocks.push(block.clone());
             tallies.push(tally.clone());
@@ -537,9 +526,14 @@ impl Blockchain {
         })
     }
 
-    /// Replays the whole chain: links, hashes, consensus, rewards, signatures and balances.
-    pub fn is_valid(&self) -> bool {
+    /// Replays the whole chain: links, hashes, consensus, rewards, signatures and balances. Says
+    /// which block first breaks a rule, and how.
+    pub fn validate(&self) -> Result<(), ChainError> {
         validate_blocks(&self.blocks, &self.rules)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
     }
 }
 
@@ -787,10 +781,19 @@ mod tests {
         assert!(Blockchain::restore(chain.blocks().to_vec(), RULES).is_ok());
         assert_eq!(
             Blockchain::restore(chain.blocks().to_vec(), limited).err(),
-            Some(ChainError::InvalidChain)
+            Some(ChainError::InvalidBlock {
+                height: 2,
+                reason: BlockError::TooManyTransfers { max: 2, got: 3 }
+            })
         );
         let mut peer = Blockchain::restore(chain.blocks()[..2].to_vec(), limited).unwrap();
-        assert_eq!(peer.extend(chain.blocks()[2..].to_vec()), Err(ChainError::InvalidChain));
+        assert_eq!(
+            peer.extend(chain.blocks()[2..].to_vec()),
+            Err(ChainError::InvalidBlock {
+                height: 2,
+                reason: BlockError::TooManyTransfers { max: 2, got: 3 }
+            })
+        );
         assert_eq!(
             peer.append_mined(chain.blocks()[2].clone()).err(),
             Some(BlockError::TooManyTransfers { max: 2, got: 3 }),
@@ -851,12 +854,18 @@ mod tests {
 
         let mut blocks = chain.blocks().to_vec();
         blocks[2].transactions[1].amount = Coins::new(50);
-        assert!(!validate_blocks(&blocks, &RULES));
+        assert_eq!(
+            validate_blocks(&blocks, &RULES),
+            Err(ChainError::InvalidBlock { height: 2, reason: BlockError::MerkleRootMismatch })
+        );
 
         let mut blocks = chain.blocks().to_vec();
         blocks[1].transactions[0].amount = Coins::new(1_000);
         blocks[1].hash = blocks[1].computed_hash();
-        assert!(!validate_blocks(&blocks, &RULES));
+        assert_eq!(
+            validate_blocks(&blocks, &RULES),
+            Err(ChainError::InvalidBlock { height: 1, reason: BlockError::MerkleRootMismatch })
+        );
     }
 
     #[test]
@@ -873,10 +882,16 @@ mod tests {
         blocks[2].transactions.pop();
         blocks[2].transactions[0].amount = Coins::new(50);
         assert_eq!(blocks[2].hash, blocks[2].computed_hash());
-        assert!(!validate_blocks(&blocks, &RULES));
+        assert_eq!(
+            validate_blocks(&blocks, &RULES),
+            Err(ChainError::InvalidBlock { height: 2, reason: BlockError::MerkleRootMismatch })
+        );
 
         let mut ours = Pooled::new(RULES);
-        assert_eq!(ours.extend(blocks[1..].to_vec()), Err(ChainError::InvalidChain));
+        assert_eq!(
+            ours.extend(blocks[1..].to_vec()),
+            Err(ChainError::InvalidBlock { height: 2, reason: BlockError::MerkleRootMismatch })
+        );
     }
 
     #[test]
@@ -900,8 +915,11 @@ mod tests {
         chain.mine(&wallet().0).unwrap();
         let mut blocks = chain.blocks().to_vec();
         blocks[1].transactions[0].amount = Coins::new(1_000);
-        assert_eq!(Pooled::restore(blocks, RULES).err(), Some(ChainError::InvalidChain));
-        assert_eq!(Pooled::restore(Vec::new(), RULES).err(), Some(ChainError::InvalidChain));
+        assert_eq!(
+            Pooled::restore(blocks, RULES).err(),
+            Some(ChainError::InvalidBlock { height: 1, reason: BlockError::MerkleRootMismatch })
+        );
+        assert_eq!(Pooled::restore(Vec::new(), RULES).err(), Some(ChainError::Empty));
     }
 
     #[test]
@@ -1100,9 +1118,12 @@ mod tests {
         block.transactions[0].amount = Coins::new(1_000);
         block.hash = block.computed_hash();
 
-        assert_eq!(ours.extend(vec![block]), Err(ChainError::InvalidChain));
+        assert_eq!(
+            ours.extend(vec![block]),
+            Err(ChainError::InvalidBlock { height: 1, reason: BlockError::MerkleRootMismatch })
+        );
         assert_eq!(ours.blocks().len(), 1);
-        assert_eq!(ours.extend(vec![]), Err(ChainError::InvalidChain));
+        assert_eq!(ours.extend(vec![]), Err(ChainError::Empty));
     }
 
     /// The remembered tallies say what a full replay of the chain up to each of them would.
@@ -1267,7 +1288,10 @@ mod tests {
         let mut forged = theirs.blocks().to_vec();
         forged[2].transactions[0].amount = Coins::new(1_000);
 
-        assert_eq!(ours.adopt_if_heavier(forged), Err(ChainError::InvalidChain));
+        assert_eq!(
+            ours.adopt_if_heavier(forged),
+            Err(ChainError::InvalidBlock { height: 2, reason: BlockError::MerkleRootMismatch })
+        );
         assert_eq!(ours.balance(&alice), Coins::new(50));
     }
 
@@ -1426,11 +1450,18 @@ mod tests {
         let mut blocks = chain.blocks().to_vec();
         blocks[1].validator = Some(mallory.clone());
         blocks[1].hash = blocks[1].computed_hash();
-        assert!(!validate_blocks(&blocks, &POS), "signature no longer matches the validator");
+        assert_eq!(
+            validate_blocks(&blocks, &POS),
+            Err(ChainError::InvalidBlock { height: 1, reason: BlockError::BadSignature }),
+            "signature no longer matches the validator"
+        );
 
         let mut blocks = chain.blocks().to_vec();
         blocks[1].signature = None;
-        assert!(!validate_blocks(&blocks, &POS));
+        assert_eq!(
+            validate_blocks(&blocks, &POS),
+            Err(ChainError::InvalidBlock { height: 1, reason: BlockError::BadSignature })
+        );
     }
 
     #[test]
@@ -1441,7 +1472,7 @@ mod tests {
         chain.forge(&alice_key).unwrap();
         chain.submit(stake(&alice_key, 10, 0)).unwrap();
         chain.forge(&alice_key).unwrap();
-        assert_eq!(chain.next_validator(), Some(alice));
+        assert_eq!(chain.next_validator(), Some(alice.clone()));
 
         // Bob forges a block out of turn by going around `forge`.
         let mut blocks = chain.blocks().to_vec();
@@ -1449,7 +1480,13 @@ mod tests {
         let bob_block =
             Block::forge(3, Utc::now(), blocks[2].hash.clone(), vec![reward], &bob_key, None);
         blocks.push(bob_block);
-        assert!(!validate_blocks(&blocks, &POS));
+        assert_eq!(
+            validate_blocks(&blocks, &POS),
+            Err(ChainError::InvalidBlock {
+                height: 3,
+                reason: BlockError::NotYourTurn { expected: alice }
+            })
+        );
     }
 
     #[test]
@@ -1510,16 +1547,16 @@ mod tests {
         let proposal = chain.propose(&alice, reveal_for(&chain, &alice_key)).unwrap();
 
         let mut unsigned = proposal.clone();
-        assert_eq!(chain.append_forged(unsigned.clone()), Err(BlockError::InvalidBlock));
+        assert_eq!(chain.append_forged(unsigned.clone()), Err(BlockError::BadSignature));
         unsigned.sign(&mallory_key);
-        assert_eq!(chain.append_forged(unsigned).err(), Some(BlockError::InvalidBlock));
+        assert_eq!(chain.append_forged(unsigned).err(), Some(BlockError::BadSignature));
 
         let mut padded = proposal.clone();
         padded.transactions[0].amount =
             padded.transactions[0].amount.checked_add(Coins::new(1)).unwrap();
         padded.hash = padded.computed_hash();
         padded.sign(&alice_key);
-        assert_eq!(chain.append_forged(padded).err(), Some(BlockError::InvalidBlock));
+        assert_eq!(chain.append_forged(padded).err(), Some(BlockError::MerkleRootMismatch));
 
         let mut signed = proposal;
         signed.sign(&alice_key);
@@ -1610,7 +1647,7 @@ mod tests {
         forged.reveal = Some(Reveal::of(b"a link of nobody's chain"));
         forged.hash = forged.computed_hash();
         forged.sign(&key);
-        assert_eq!(chain.append_forged(forged).err(), Some(BlockError::InvalidBlock));
+        assert_eq!(chain.append_forged(forged).err(), Some(BlockError::BadReveal));
 
         let beacon = chain.beacon().clone();
         let mut block = chain.propose(&validator, Some(due.clone())).unwrap();
@@ -1737,14 +1774,35 @@ mod tests {
             .unwrap();
         chain.mine(&alice).unwrap();
 
-        let mut blocks = chain.blocks().to_vec();
-        blocks[2].transactions[1].fee = Coins::new(0);
-        blocks[2].hash = blocks[2].computed_hash();
-        assert!(!validate_blocks(&blocks, &RULES), "the signature covers the fee");
-
-        let mut blocks = chain.blocks().to_vec();
-        blocks[2].transactions[0].amount = Coins::new(60);
-        assert!(!validate_blocks(&blocks, &RULES), "the payout must be reward plus fees");
+        // A peer rewrites the block and does all the work again, so only the rules can catch it.
+        let remined = |change: fn(&mut Vec<Transaction>)| {
+            let mut blocks = chain.blocks().to_vec();
+            let mut txs = blocks[2].transactions.clone();
+            change(&mut txs);
+            let (prev, at) = (blocks[1].hash.clone(), blocks[2].timestamp);
+            blocks[2] = Block::mine(2, at, prev, txs, RULES.initial_work());
+            validate_blocks(&blocks, &RULES)
+        };
+        let refused = |reason| Err(ChainError::InvalidBlock { height: 2, reason });
+        assert_eq!(
+            remined(|txs| {
+                txs[1].fee = Coins::new(0);
+                txs[0].amount = Coins::new(50);
+            }),
+            refused(BlockError::BadTransfer {
+                position: 1,
+                reason: TransactionError::BadSignature
+            }),
+            "the signature covers the fee"
+        );
+        assert_eq!(
+            remined(|txs| txs[0].amount = Coins::new(60)),
+            refused(BlockError::WrongPayout {
+                expected: Some(Coins::new(52)),
+                got: Coins::new(60)
+            }),
+            "the payout must be reward plus fees"
+        );
     }
 
     #[test]
@@ -1826,7 +1884,10 @@ mod tests {
             .unwrap();
         let mut blocks = chain.blocks().to_vec();
         blocks.push(easy);
-        assert!(!validate_blocks(&blocks, &ADJUSTING));
+        assert_eq!(
+            validate_blocks(&blocks, &ADJUSTING),
+            Err(ChainError::InvalidBlock { height: 11, reason: BlockError::InsufficientWork })
+        );
     }
 
     #[test]
@@ -1835,9 +1896,9 @@ mod tests {
         mine_paced(&mut chain, 12, 10);
         let miner = wallet().0;
         let median = chain.blocks()[chain.blocks().len() - 6].timestamp;
-        assert_eq!(chain.mine_at(&miner, median).err(), Some(BlockError::InvalidBlock));
+        assert_eq!(chain.mine_at(&miner, median).err(), Some(BlockError::TooEarly));
         let future = Utc::now() + chrono::TimeDelta::hours(3);
-        assert_eq!(chain.mine_at(&miner, future).err(), Some(BlockError::InvalidBlock));
+        assert_eq!(chain.mine_at(&miner, future).err(), Some(BlockError::TooFarAhead));
         chain.mine_at(&miner, median + chrono::TimeDelta::seconds(1)).unwrap();
     }
 

@@ -97,6 +97,8 @@ pub struct BalanceResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ValidityResponse {
     pub valid: bool,
+    /// Which block first breaks a rule, and how. `null` while the chain is valid.
+    pub problem: Option<String>,
     pub length: usize,
     /// Total work or stake behind the chain. A string, since it can outgrow a JSON number.
     pub weight: String,

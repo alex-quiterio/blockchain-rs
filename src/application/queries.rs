@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
 use crate::domain::chain::Blockchain;
-use crate::domain::error::BlockError;
+use crate::domain::error::{BlockError, ChainError};
 use crate::domain::ledger::ValidatorState;
 use crate::domain::mempool::Mempool;
 use crate::domain::merkle;
@@ -24,7 +24,8 @@ pub struct TipStatus {
 }
 
 pub struct ChainStatus {
-    pub valid: bool,
+    /// Which block first breaks a rule, and how, or `None` if the whole chain replays.
+    pub problem: Option<ChainError>,
     pub length: usize,
     pub weight: ChainWeight,
 }
@@ -184,7 +185,7 @@ impl ChainQueries {
     pub fn status(&self) -> ChainStatus {
         let chain = self.chain.lock().unwrap();
         ChainStatus {
-            valid: chain.is_valid(),
+            problem: chain.validate().err(),
             length: chain.blocks().len(),
             weight: chain.weight(),
         }

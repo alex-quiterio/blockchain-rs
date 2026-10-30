@@ -216,7 +216,7 @@ Wallets.load();
 const SHOWN_BLOCKS = 30;
 
 // `blocks` holds the latest few, oldest first; `works` is the required work, by height.
-const state = { height: -1, blocks: [], works: {}, pending: [], valid: null, consensus: null, accounts: {}, peers: [], node: null, seenTip: null };
+const state = { height: -1, blocks: [], works: {}, pending: [], valid: null, problem: null, consensus: null, accounts: {}, peers: [], node: null, seenTip: null };
 
 const isStake = () => state.consensus?.kind === "proof_of_stake";
 const tip = () => state.blocks.at(-1)?.hash;
@@ -235,7 +235,11 @@ async function load() {
   Object.assign(state, { pending, consensus, peers, node });
   const forked = await loadBlocks(status);
   // A full replay of the chain: once on opening, and again only if a fork replaced our tip.
-  if (state.valid === null || forked) state.valid = (await api("GET", "/chain/valid")).valid;
+  if (state.valid === null || forked) {
+    const validity = await api("GET", "/chain/valid");
+    state.valid = validity.valid;
+    state.problem = validity.problem;
+  }
   const accounts = await Promise.all(Wallets.list.map((w) => api("GET", `/balances/${w.address}`)));
   state.accounts = Object.fromEntries(accounts.map((a) => [a.address, a]));
 }
@@ -453,6 +457,7 @@ function renderStats() {
   const pill = $("validity");
   pill.className = `pill ${state.valid ? "ok" : "bad"}`;
   pill.lastChild.textContent = state.valid ? "chain valid" : "chain INVALID";
+  pill.title = state.problem ?? "";
 }
 
 const lockIcon = (open) => el("span", { textContent: open ? "🔓" : "🔒", ariaHidden: "true" });

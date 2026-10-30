@@ -29,7 +29,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | 🏆 **Heaviest chain wins** | Forks are settled by total work (proof of work) or total stake behind the blocks (proof of stake), not length. Ties go to the lower tip hash so every node agrees, and no fork may undo more than `MAX_REORG_DEPTH` blocks. Transfers that dropped out go back to the mempool. |
 | 💾 **Storage** | The chain is saved as JSON, one block per line. A new block is appended, so saving costs the same however long the chain gets; only a fork rewrites the file, atomically. Every `SNAPSHOT_BLOCKS` blocks a snapshot of the balances is saved beside it, so a restart replays only the blocks since; the blocks before it must hash and link up to the snapshot's block, so changed ones are refused. `GET /chain/valid` still replays everything. |
 | 🌳 **Merkle roots** | A block's hash covers the Merkle root of its transactions, not the transactions themselves. A light client keeps only headers and checks that a payment is in a block from a proof of a few hashes. |
-| 🔍 **Validation** | Replays everything: links, hashes, Merkle roots, work or signatures, rewards, fees, nonces, balances and stakes. |
+| 🔍 **Validation** | Replays everything: links, hashes, Merkle roots, work or signatures, rewards, fees, nonces, balances and stakes. A refusal names the block and the rule it broke, such as `block 2: transaction 1: signature does not match sender`. |
 
 ## 🚀 Quick start
 
@@ -237,7 +237,7 @@ flowchart TB
     - `capacity.rs`: `BlockCapacity`, how many transfers a block may hold: at most some number, or any
     - `coins.rs`: `Coins`, every amount, fee, stake, balance and reward, whose sums are checked so they never wrap around
     - `party.rs`: where a transaction's coins come from (`Source`: an account, or new coins for a block reward) and go (`Destination`: an account, or into or out of a stake), instead of strings with magic values
-  - `error.rs`: why something was refused, by what it was: `ValueError`, `TransactionError`, `BlockError` or `ChainError`, each operation failing only in the ways of what it handles, and `DomainError` where they meet
+  - `error.rs`: why something was refused, by what it was: `ValueError`, `TransactionError`, `BlockError` or `ChainError`, each operation failing only in the ways of what it handles, and `DomainError` where they meet. Validation says which rule a block breaks (`BrokenLink`, `MerkleRootMismatch`, `InsufficientWork`, `WrongPayout`, `BadTransfer`…), and a refused chain says at which height
   - `crypto.rs`, `repository.rs`: signing and hashing, and the storage port, which is told the events to save
 - **`application/`**
   - `NodeService` runs each use case that changes the chain on a copy of it, swaps it in only once it's saved, rebases the mempool from the events, then tells its listeners what happened to both. The network listens: every transfer the mempool accepts is gossiped to every peer but the one it came from, however it arrived. The chain and the mempool have separate locks, so submitting a transaction never waits for mining or a peer's blocks.
@@ -270,7 +270,7 @@ flowchart TB
 | GET | `/chain/work` | Proof of work: the work each block required, by height. Takes `?from=N&limit=M` like `/chain`. |
 | GET | `/status` | `{height, tip, weight, pending}`, cheap enough to poll every second. |
 | POST | `/chain` | Offer blocks, the whole chain or just the newest: adopted if they make a valid, heavier chain. `{replaced, length, missing_parent}`, where `missing_parent` asks for blocks from further back. `409` if it would undo too many blocks. |
-| GET | `/chain/valid` | `{valid, length, weight}` after a full replay. |
+| GET | `/chain/valid` | `{valid, problem, length, weight}` after a full replay. `problem` names the first block that breaks a rule and how, or is `null`. |
 | GET · POST | `/peers` | List peers, or add one with `{url}`. |
 | POST | `/sync` | Pull from every peer now. |
 | GET | `/node` | Version and git commit of the running node. |

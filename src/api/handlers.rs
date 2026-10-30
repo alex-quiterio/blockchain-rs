@@ -59,7 +59,9 @@ impl From<DomainError> for ApiError {
             ) => StatusCode::CONFLICT,
             DomainError::Block(_) => StatusCode::BAD_REQUEST,
             DomainError::Chain(ChainError::ReorgTooDeep { .. }) => StatusCode::CONFLICT,
-            DomainError::Chain(ChainError::InvalidChain) => StatusCode::BAD_REQUEST,
+            DomainError::Chain(ChainError::Empty | ChainError::InvalidBlock { .. }) => {
+                StatusCode::BAD_REQUEST
+            }
         };
         Self { status, message: err.to_string() }
     }
@@ -214,7 +216,8 @@ pub async fn replace_chain(
 pub async fn get_validity(State(state): State<AppState>) -> Json<ValidityResponse> {
     let status = state.queries.status();
     Json(ValidityResponse {
-        valid: status.valid,
+        valid: status.problem.is_none(),
+        problem: status.problem.map(|e| e.to_string()),
         length: status.length,
         weight: status.weight.to_string(),
     })

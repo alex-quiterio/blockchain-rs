@@ -8,17 +8,19 @@ use chrono::Utc;
 use super::tally::Tally;
 use crate::domain::block::{Block, Transaction};
 use crate::domain::difficulty::{self, meets_work};
+use crate::domain::error::{BlockError, ChainError};
 use crate::domain::ledger::Ledger;
 use crate::domain::rules::{select_validator, ChainRules, Consensus};
 use crate::domain::values::{BlockHash, Coins};
 
-pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> bool {
-    replay(blocks, rules).is_some()
+/// Replays `blocks` by every rule, or says which block first breaks one and how.
+pub fn validate_blocks(blocks: &[Block], rules: &ChainRules) -> Result<(), ChainError> {
+    replay(blocks, rules).map(|_| ())
 }
 
-/// Checks every block in order and returns what they add up to, or `None` if any check fails.
-pub(super) fn replay(blocks: &[Block], rules: &ChainRules) -> Option<Tally> {
-    replay_kept(blocks, rules, 1)?.pop_back()
+/// Checks every block in order and returns what they add up to.
+pub(super) fn replay(blocks: &[Block], rules: &ChainRules) -> Result<Tally, ChainError> {
+    Ok(replay_kept(blocks, rules, 1)?.pop_back().expect("replays keep at least the last"))
 }
 
 /// Replays the whole chain, keeping what it added up to after each of its last `keep` blocks.
@@ -26,56 +28,71 @@ pub(super) fn replay_kept(
     blocks: &[Block],
     rules: &ChainRules,
     keep: usize,
-) -> Option<VecDeque<Tally>> {
-    let genesis = blocks.first().filter(|genesis| is_genesis(genesis, rules))?;
+) -> Result<VecDeque<Tally>, ChainError> {
+    let genesis = blocks.first().ok_or(ChainError::Empty)?;
+    check_genesis(genesis, rules)
+        .map_err(|reason| ChainError::InvalidBlock { height: 0, reason })?;
     replay_from(blocks, 1, Tally::at_genesis(genesis, rules), rules, keep)
 }
 
 /// Checks `blocks[from..]` in order, starting from `tally`, what `blocks[..from]` add up to.
 /// Returns what the chain added up to after each of its last `keep` blocks, the last one at
-/// least, or `None` if a check fails. `from` is at least 1: genesis is never replayed.
+/// least. `from` is at least 1: genesis is never replayed.
 pub(super) fn replay_from(
     blocks: &[Block],
     from: usize,
     mut tally: Tally,
     rules: &ChainRules,
     keep: usize,
-) -> Option<VecDeque<Tally>> {
+) -> Result<VecDeque<Tally>, ChainError> {
     let first_kept = blocks.len().saturating_sub(keep.max(1));
     let mut kept = VecDeque::new();
     if from > first_kept {
         kept.push_back(tally.clone());
     }
     for height in from..blocks.len() {
-        if !apply_block(&blocks[..height], &blocks[height], &mut tally, rules) {
-            return None;
-        }
+        apply_block(&blocks[..height], &blocks[height], &mut tally, rules)
+            .map_err(|reason| ChainError::InvalidBlock { height: height as u64, reason })?;
         if height >= first_kept {
             kept.push_back(tally.clone());
         }
     }
-    Some(kept)
+    Ok(kept)
 }
 
-/// How many blocks' tallies to keep: enough to check any fork we may adopt from its split.
 /// The reward plus every fee in `transfers`, or `None` if that's too large to hold, which no
 /// valid block can be.
 pub(super) fn payout(reward: Coins, transfers: &[Transaction]) -> Option<Coins> {
     Coins::total(transfers.iter().map(|tx| tx.fee))?.checked_add(reward)
 }
 
+/// How many blocks' tallies to keep: enough to check any fork we may adopt from its split.
 pub(super) fn keep(rules: &ChainRules) -> usize {
     rules.max_reorg_depth as usize + 1
 }
 
-fn is_genesis(genesis: &Block, rules: &ChainRules) -> bool {
-    genesis.index == 0
+fn check_genesis(genesis: &Block, rules: &ChainRules) -> Result<(), BlockError> {
+    let made_by_the_rules = genesis.index == 0
         && genesis.prev_hash == BlockHash::zero()
         && genesis.timestamp.timestamp() == 0
         && genesis.transactions.is_empty()
-        && genesis.has_matching_root()
-        && genesis.hash == genesis.computed_hash()
-        && is_sealed_genesis(genesis, rules)
+        && is_sealed_genesis(genesis, rules);
+    if !made_by_the_rules {
+        return Err(BlockError::BadGenesis);
+    }
+    check_hashes(genesis)
+}
+
+/// The block's header covers its transactions through the Merkle root, and its hash covers the
+/// header.
+fn check_hashes(block: &Block) -> Result<(), BlockError> {
+    if !block.has_matching_root() {
+        return Err(BlockError::MerkleRootMismatch);
+    }
+    if block.hash != block.computed_hash() {
+        return Err(BlockError::HashMismatch);
+    }
+    Ok(())
 }
 
 /// Whether `blocks` are a chain of hashes from our genesis: each block's hash covers its header,
@@ -83,72 +100,74 @@ fn is_genesis(genesis: &Block, rules: &ChainRules) -> bool {
 /// No signatures, work or balances are checked: that's for a snapshot taken after these very
 /// blocks, which already did.
 pub(super) fn links_up(blocks: &[Block], rules: &ChainRules) -> bool {
-    blocks.first().is_some_and(|genesis| is_genesis(genesis, rules))
+    blocks.first().is_some_and(|genesis| check_genesis(genesis, rules).is_ok())
         && blocks
             .windows(2)
             .all(|pair| pair[1].index == pair[0].index + 1 && pair[1].prev_hash == pair[0].hash)
-        && blocks
-            .iter()
-            .all(|block| block.has_matching_root() && block.hash == block.computed_hash())
+        && blocks.iter().all(|block| check_hashes(block).is_ok())
 }
 
-/// Checks that `block` validly follows the blocks `before` it and adds it to `tally`. On `false`
-/// the tally may be half-updated, so callers check a copy.
+/// Checks that `block` validly follows the blocks `before` it and adds it to `tally`, or says
+/// which rule it breaks. On an error the tally may be half-updated, so callers check a copy.
 pub(super) fn apply_block(
     before: &[Block],
     block: &Block,
     tally: &mut Tally,
     rules: &ChainRules,
-) -> bool {
+) -> Result<(), BlockError> {
     let prev = before.last().expect("genesis comes first");
     let work = difficulty::next_work(before, tally.work, rules.retarget());
-    if block.index != prev.index + 1
-        || block.prev_hash != prev.hash
-        || !block.has_matching_root()
-        || block.hash != block.computed_hash()
-        || !difficulty::timestamp_fits(before, block.timestamp, Utc::now())
-        || !is_sealed_by_consensus(block, &tally.ledger, rules, work)
-    {
-        return false;
+    if block.index != prev.index + 1 || block.prev_hash != prev.hash {
+        return Err(BlockError::BrokenLink);
     }
+    check_hashes(block)?;
+    difficulty::check_timestamp(before, block.timestamp, Utc::now())?;
+    check_seal(block, &tally.ledger, rules, work)?;
+
     let ledger = &mut tally.ledger;
-    let Some((coinbase, transfers)) = block.transactions.split_first() else {
-        return false;
-    };
-    let Some(producer) = coinbase.to.account() else {
-        return false;
-    };
+    let (coinbase, transfers) =
+        block.transactions.split_first().ok_or(BlockError::MalformedPayout)?;
+    let producer = coinbase.to.account().ok_or(BlockError::MalformedPayout)?;
     if !coinbase.is_coinbase()
-        || !rules.block_capacity.holds(transfers.len())
-        || Some(coinbase.amount) != payout(rules.reward, transfers)
         || !coinbase.fee.is_zero()
         || coinbase.nonce != block.index
         || block.validator.as_ref().is_some_and(|v| v != producer)
     {
-        return false;
+        return Err(BlockError::MalformedPayout);
     }
-    if !reveals_as_required(block, ledger, rules) {
-        return false;
+    let capacity = rules.block_capacity;
+    if let (false, Some(max)) = (capacity.holds(transfers.len()), capacity.max()) {
+        return Err(BlockError::TooManyTransfers { max, got: transfers.len() });
     }
+    let expected = payout(rules.reward, transfers);
+    if expected != Some(coinbase.amount) {
+        return Err(BlockError::WrongPayout { expected, got: coinbase.amount });
+    }
+    check_reveal(block, ledger, rules)?;
+
     tally.weight = tally.weight.with_block(rules, ledger.staked(producer), work);
     tally.work = work;
     ledger.credit(producer, coinbase.amount);
-    transfers.iter().all(|tx| ledger.apply_transfer(tx).is_ok())
+    for (position, tx) in block.transactions.iter().enumerate().skip(1) {
+        ledger.apply_transfer(tx).map_err(|reason| BlockError::BadTransfer { position, reason })?;
+    }
+    Ok(())
 }
 
 /// Proof of stake: when a validator was selected, the block must open their commitment, which
 /// moves their reveal chain along and mixes the reveal into the beacon. While anyone may forge,
 /// there's nothing to reveal and the beacon stays put, so nobody can steer it then either.
-fn reveals_as_required(block: &Block, ledger: &mut Ledger, rules: &ChainRules) -> bool {
+fn check_reveal(block: &Block, ledger: &mut Ledger, rules: &ChainRules) -> Result<(), BlockError> {
     if !rules.is_proof_of_stake() {
-        return true;
+        return Ok(());
     }
     let selected = select_validator(&ledger.validator_stakes(), ledger.beacon()).is_some();
-    match (&block.validator, &block.reveal) {
+    let opened = match (&block.validator, &block.reveal) {
         (Some(validator), Some(reveal)) if selected => ledger.apply_reveal(validator, reveal),
         (_, None) => !selected,
         _ => false,
-    }
+    };
+    opened.then_some(()).ok_or(BlockError::BadReveal)
 }
 
 /// Genesis is never signed. Under proof of work it still needs the work.
@@ -165,19 +184,32 @@ fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
 
 /// Proof of work: the hash meets the work required at its height and nobody signed it. Proof of
 /// stake: the validator drawn from the stakes and beacon before this block signed it.
-fn is_sealed_by_consensus(block: &Block, ledger: &Ledger, rules: &ChainRules, work: u128) -> bool {
+fn check_seal(
+    block: &Block,
+    ledger: &Ledger,
+    rules: &ChainRules,
+    work: u128,
+) -> Result<(), BlockError> {
     match rules.consensus {
         Consensus::ProofOfWork { .. } => {
-            block.validator.is_none()
-                && block.signature.is_none()
-                && block.reveal.is_none()
-                && meets_work(block.hash.as_str(), work)
+            if block.validator.is_some() || block.signature.is_some() || block.reveal.is_some() {
+                return Err(BlockError::WrongSeal);
+            }
+            meets_work(block.hash.as_str(), work).then_some(()).ok_or(BlockError::InsufficientWork)
         }
         Consensus::ProofOfStake => {
-            block.nonce == 0
-                && block.is_signed_by_validator()
-                && select_validator(&ledger.validator_stakes(), ledger.beacon())
-                    .is_none_or(|expected| block.validator.as_ref() == Some(&expected))
+            if block.nonce != 0 {
+                return Err(BlockError::WrongSeal);
+            }
+            if !block.is_signed_by_validator() {
+                return Err(BlockError::BadSignature);
+            }
+            match select_validator(&ledger.validator_stakes(), ledger.beacon()) {
+                Some(expected) if block.validator.as_ref() != Some(&expected) => {
+                    Err(BlockError::NotYourTurn { expected })
+                }
+                _ => Ok(()),
+            }
         }
     }
 }

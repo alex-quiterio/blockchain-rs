@@ -10,6 +10,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 
 use super::rules::Retarget;
 use crate::domain::block::Block;
+use crate::domain::error::BlockError;
 
 /// The most one adjustment may change the work by, either way, as in Bitcoin.
 pub const MAX_STEP: i64 = 4;
@@ -53,11 +54,20 @@ pub fn next_work(blocks: &[Block], tip_work: u128, retarget: Option<Retarget>) -
 
 /// A block must come after the median of the ones before it, so a miner can't backdate it to
 /// fake a slow pace, and no more than two hours ahead of `now`, so they can't future-date it.
-pub fn timestamp_fits(before: &[Block], timestamp: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+pub fn check_timestamp(
+    before: &[Block],
+    timestamp: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<(), BlockError> {
     let mut recent: Vec<_> = before.iter().rev().take(MEDIAN_OF).map(|b| b.timestamp).collect();
     recent.sort();
-    recent.get(recent.len() / 2).is_none_or(|median| timestamp > *median)
-        && timestamp <= now + MAX_FUTURE
+    if recent.get(recent.len() / 2).is_some_and(|median| timestamp <= *median) {
+        return Err(BlockError::TooEarly);
+    }
+    if timestamp > now + MAX_FUTURE {
+        return Err(BlockError::TooFarAhead);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

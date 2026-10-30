@@ -433,8 +433,11 @@ proptest! {
         forged[block] = serde_json::from_value(json).unwrap();
 
         let before = ours.blocks().to_vec();
-        prop_assert!(!validate_blocks(&forged, &POW));
-        prop_assert_eq!(ours.adopt_if_heavier(forged), Err(ChainError::InvalidChain));
+        // Refused at the altered block, or at the next one whose link it broke, and said so.
+        let refused = validate_blocks(&forged, &POW).unwrap_err();
+        let at = |height: u64| height == block as u64 || height == block as u64 + 1;
+        prop_assert!(matches!(refused, ChainError::InvalidBlock { height, .. } if at(height)), "{}", refused);
+        prop_assert_eq!(ours.adopt_if_heavier(forged), Err(refused));
         prop_assert_eq!(ours.blocks(), &before[..]);
     }
 }

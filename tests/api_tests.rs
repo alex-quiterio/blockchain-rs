@@ -83,7 +83,7 @@ async fn full_round_trip() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     let (_, validity) = call(&app, "GET", "/chain/valid", None).await;
-    assert_eq!(validity, json!({ "valid": true, "length": 3, "weight": "512" }));
+    assert_eq!(validity, json!({ "valid": true, "problem": null, "length": 3, "weight": "512" }));
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ async fn refuses_a_forged_heavier_chain() {
     chain[2]["transactions"][0]["amount"] = json!(1_000_000);
     let (status, body) = call(&ours, "POST", "/chain", Some(chain)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["message"], "chain does not validate");
+    assert_eq!(body["message"], "block 2: the Merkle root doesn't match the transactions");
 }
 
 #[tokio::test]
