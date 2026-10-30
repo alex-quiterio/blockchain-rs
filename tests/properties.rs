@@ -2,6 +2,7 @@
 //! invariants every node relies on.
 
 use std::cmp::Reverse;
+use std::collections::HashSet;
 
 use ed25519_dalek::SigningKey;
 use proptest::prelude::*;
@@ -15,7 +16,7 @@ use blockchain::domain::error::{BlockError, TransactionError};
 use blockchain::domain::mempool::Mempool;
 use blockchain::domain::randao;
 use blockchain::domain::rules::ChainRules;
-use blockchain::domain::values::{BlockHash, Coins, Destination};
+use blockchain::domain::values::{BlockCapacity, BlockHash, Coins, Destination};
 
 /// A chain with a mempool beside it, coordinated as a node does, so a property can submit and
 /// mine in one place. Reads go to the chain itself; what touches what's waiting is here.
@@ -65,15 +66,20 @@ impl Pooled {
         self.pool.commitment_due(address)
     }
 
+    /// What the mempool offers for the next block, as a node asks for it.
+    fn candidates(&self) -> Vec<Transaction> {
+        self.pool.candidates(self.chain.rules().block_capacity)
+    }
+
     fn mine(&mut self, miner: &Address) -> Result<&Block, BlockError> {
-        let pending = self.pool.transactions().to_vec();
+        let pending = self.candidates();
         self.chain.mine(miner, &pending)?;
         self.settle();
         Ok(self.chain.tip())
     }
 
     fn forge(&mut self, key: &SigningKey) -> Result<&Block, BlockError> {
-        let pending = self.pool.transactions().to_vec();
+        let pending = self.candidates();
         self.chain.forge(key, &pending)?;
         self.settle();
         Ok(self.chain.tip())
@@ -109,6 +115,33 @@ fn key(i: usize) -> SigningKey {
 
 fn address(i: usize) -> Address {
     Address::of(&key(i))
+}
+
+/// A transfer to try: from a wallet, to a wallet or (at `WALLETS`) someone who never sends, of
+/// an amount, with a fee.
+fn transfer() -> impl Strategy<Value = (usize, usize, u64, u64)> {
+    (0..WALLETS, 0..=WALLETS, 1..40u64, 0..10u64)
+}
+
+/// A chain whose blocks hold at most `capacity` transfers, with a block mined for each of
+/// `funded`, and `transfers` queued on top. Those that don't apply are turned away, as a node
+/// would; those that spend coins still on their way wait behind the payment bringing them.
+fn queued(
+    capacity: BlockCapacity,
+    funded: &[usize],
+    transfers: &[(usize, usize, u64, u64)],
+) -> Pooled {
+    let mut chain = Pooled::new(POW.with_block_capacity(capacity));
+    for &wallet in funded {
+        chain.mine(&address(wallet)).unwrap();
+    }
+    for &(from, to, amount, fee) in transfers {
+        let to = address(if to == WALLETS { WALLETS + 2 } else { to });
+        let nonce = chain.next_nonce(&address(from));
+        let tx = Transaction::signed(&key(from), &to, Coins::new(amount), nonce, Coins::new(fee));
+        let _ = chain.submit(tx);
+    }
+    chain
 }
 
 /// Coins only enter the chain as block rewards, and fees only move them around.
@@ -439,5 +472,50 @@ proptest! {
         prop_assert!(matches!(refused, ChainError::InvalidBlock { height, .. } if at(height)), "{}", refused);
         prop_assert_eq!(ours.adopt_if_heavier(forged), Err(refused));
         prop_assert_eq!(ours.blocks(), &before[..]);
+    }
+
+    #[test]
+    fn a_full_block_takes_the_highest_fees_it_can(
+        funded in prop::collection::vec(0..WALLETS, 1..6),
+        transfers in prop::collection::vec(transfer(), 0..30),
+        capacity in 1..32u64,
+    ) {
+        let capacity = BlockCapacity::at_most(capacity);
+        let mut chain = queued(capacity, &funded, &transfers);
+        let waiting = chain.pending().to_vec();
+        let chosen = chain.candidates();
+
+        // As many as a block holds, never fewer; while everything fits, in the order it arrived.
+        prop_assert_eq!(chosen.len(), waiting.len().min(capacity.limit()));
+        if capacity.holds(waiting.len()) {
+            prop_assert_eq!(&chosen, &waiting);
+        }
+
+        // Step by step, each chosen transfer applies on what was chosen before it. When more is
+        // waiting than fits, of all that could have gone in at that step instead, none pays
+        // more, nor as much having arrived earlier. Trying every one still waiting, not only each sender's next, keeps
+        // this independent of how the selection is worked out: the ledger refuses the rest.
+        let arrived = |tx: &Transaction| waiting.iter().position(|w| w == tx);
+        let rank = |tx: &Transaction| (tx.fee(), Reverse(arrived(tx)));
+        let full = !capacity.holds(waiting.len());
+        let mut ledger = chain.ledger().clone();
+        let mut taken = HashSet::new();
+        for tx in &chosen {
+            prop_assert!(arrived(tx).is_some(), "offered a transfer that isn't waiting");
+            for (position, other) in waiting.iter().enumerate() {
+                let could_go_in = full
+                    && !taken.contains(&position)
+                    && ledger.clone().apply_transfer(other).is_ok();
+                prop_assert!(!could_go_in || rank(other) <= rank(tx), "{:?} could have gone in ahead of {:?}", other, tx);
+            }
+            prop_assert!(ledger.apply_transfer(tx).is_ok(), "a chosen transfer doesn't apply");
+            prop_assert!(taken.insert(arrived(tx).unwrap()), "chosen twice");
+        }
+
+        // The block mined from them holds exactly those, and pays their fees.
+        let fees = Coins::total(chosen.iter().map(Transaction::fee)).unwrap();
+        let block = chain.mine(&address(0)).unwrap();
+        prop_assert_eq!(&block.transactions()[1..], &chosen[..]);
+        prop_assert_eq!(block.transactions()[0].amount(), Coins::new(REWARD).checked_add(fees).unwrap());
     }
 }

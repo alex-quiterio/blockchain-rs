@@ -128,7 +128,7 @@ The first run of it found a real bottleneck: every new transaction re-checked th
 | `PEERS` | none | Comma-separated peer URLs to join on startup. |
 | `PUBLIC_URL` | `http://$BIND_ADDR` | How peers should reach this node. |
 | `SYNC_SECS` | `5` | How often to pull from peers. |
-| `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. A fork is checked from where it splits off, not from genesis. |
+| `MAX_REORG_DEPTH` | `64` | The most of its own blocks a node will undo to switch forks. A fork is checked from where it splits off, not from genesis. Each node's own choice, not a consensus rule, so changing it keeps the node's snapshots. |
 | `MAX_BLOCK_TRANSFERS` | `100` | The most transfers a block may hold, besides its payout. When more are waiting, the highest fees go first. `0` sets no limit. |
 | `SNAPSHOT_BLOCKS` | `100` | Blocks between snapshots of the balances, which spare a restart replaying the whole chain. `0` takes none. |
 
@@ -220,9 +220,10 @@ flowchart TB
     - `events.rs`: `ChainEvent`, what each change did: `Started`, `Extended` or `Reorganized`. The node saves only what they say is new, then tells its listeners, which log it
     - `validation.rs`: the rules each block is checked by, and replaying a chain by them
     - `tests.rs`: the aggregate's tests, kept apart so `mod.rs` holds only what changes the chain
+    - `reorg.rs`: `ReorgLimit`, how far back this node will follow a fork. Its own choice, kept apart from the `ChainRules` every node must share
     - `tally.rs`: what the blocks add up to, the `TallyLog` of the last few tallies that forks are checked from, and `Snapshot`
   - `consensus/`: how the network agrees on one chain.
-    - `rules.rs`: `ChainRules`, `Consensus` and the stake-weighted `select_validator`
+    - `rules.rs`: `ChainRules`, what every node must share (consensus, reward and block capacity), `Consensus` and the stake-weighted `select_validator`
     - `difficulty.rs`: proof-of-work targets as work, retargeting, and the timestamp rules
     - `weight.rs`: `ChainWeight`, what a fork is worth: 16^difficulty per mined block, or the validator's stake per forged block
     - `randao.rs`: the commit-reveal hash chains and the beacon that pick validators
@@ -288,7 +289,7 @@ flowchart TB
 ## 🧪 Tests
 
 ```sh
-cargo test        # 147 tests: unit, HTTP, property-based and doctests
+cargo test        # 153 tests: unit, HTTP, property-based and doctests
 ```
 
 - **Domain:** consensus rules, staking, fees, picking a full block's transfers by fee, forks and tampering.
@@ -300,7 +301,8 @@ cargo test        # 147 tests: unit, HTTP, property-based and doctests
   - Forks offered in any order settle on the same chain.
   - No version of a block, whatever its timestamp, contents or fees, changes who forges next.
   - Whatever the pace of blocks, the difficulty changes only at adjustment heights, by at most 4×, and the chain's weight is exactly the work its blocks required. This one caught a rounding bug that let an adjustment exceed 4×.
-  - Tampered forks are never adopted.
+  - Tampered forks are never adopted, and the refusal names the altered block.
+  - A full block takes the highest fees it can: whatever is waiting, every transfer it holds applies, and none left out could have gone in instead while paying more. Breaking the selection on purpose, by putting the lowest fees first or by never letting a sender spend coins paid to them in the same block, fails it at once.
 
   Failing cases shrink to a minimal example and are saved to `tests/properties.proptest-regressions`. Run more with `PROPTEST_CASES=1000 cargo test --release --test properties`.
 

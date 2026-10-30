@@ -118,7 +118,7 @@ fn lines_of(blocks: &[Block]) -> Result<Vec<u8>, RepositoryError> {
 mod tests {
     use super::*;
     use crate::domain::address::Address;
-    use crate::domain::chain::Blockchain;
+    use crate::domain::chain::{Blockchain, ReorgLimit};
     use crate::domain::crypto;
     use crate::domain::rules::ChainRules;
 
@@ -226,8 +226,8 @@ mod tests {
         let repo = JsonFileRepository::new(&path.0);
         assert!(repo.load_snapshot().unwrap().is_none());
 
-        let rules = ChainRules::proof_of_work(2, 50).with_max_reorg_depth(1);
-        let mut chain = Blockchain::new(rules);
+        let (rules, limit) = (ChainRules::proof_of_work(2, 50), ReorgLimit::new(1));
+        let mut chain = Blockchain::new(rules).with_reorg_limit(limit);
         for _ in 0..3 {
             chain.mine(&Address::parse(&crypto::generate_keypair().0).unwrap(), &[]).unwrap();
         }
@@ -236,7 +236,7 @@ mod tests {
         assert!(snapshot_path.0.exists());
         let loaded = JsonFileRepository::new(&path.0).load_snapshot().unwrap().unwrap();
         let (restored, from) =
-            Blockchain::restore_from(chain.blocks().to_vec(), rules, Some(loaded)).unwrap();
+            Blockchain::restore_from(chain.blocks().to_vec(), rules, limit, Some(loaded)).unwrap();
         assert_eq!((from, restored.weight()), (Some(snapshot.height), chain.weight()));
     }
 

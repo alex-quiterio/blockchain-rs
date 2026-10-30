@@ -19,13 +19,15 @@ use crate::domain::values::{Beacon, BlockHash, Coins, Reveal};
 use crate::domain::weight::ChainWeight;
 
 mod events;
+mod reorg;
 mod tally;
 mod validation;
 
 use tally::{Tally, TallyLog};
-use validation::{apply_block, keep, links_up, payout, replay_from, replay_kept};
+use validation::{apply_block, links_up, payout, replay_from, replay_kept};
 
 pub use events::ChainEvent;
+pub use reorg::ReorgLimit;
 pub use tally::Snapshot;
 pub use validation::validate_blocks;
 
@@ -35,10 +37,12 @@ pub use validation::validate_blocks;
 #[derive(Clone)]
 pub struct Blockchain {
     blocks: Vec<Block>,
-    /// What the chain added up to after each of its last `max_reorg_depth + 1` blocks; the last
-    /// is what the whole chain adds up to.
+    /// What the chain added up to after each of its last `reorg_limit + 1` blocks; the last is
+    /// what the whole chain adds up to.
     tallies: TallyLog,
     rules: ChainRules,
+    /// How far back this node will follow a fork: its own choice, not one of the rules.
+    reorg_limit: ReorgLimit,
     /// What happened since they were last taken.
     events: Vec<ChainEvent>,
 }
@@ -82,17 +86,26 @@ impl From<bool> for Extension {
 }
 
 impl Blockchain {
+    /// A new chain of just genesis, following forks back as far as `ReorgLimit::DEFAULT`.
     pub fn new(rules: ChainRules) -> Self {
         let genesis = Block::genesis(&rules);
         let tally = Tally::at_genesis(&genesis, &rules);
-        let mut chain = Self::from_parts(vec![genesis], VecDeque::from([tally]), rules);
+        let limit = ReorgLimit::DEFAULT;
+        let mut chain = Self::from_parts(vec![genesis], VecDeque::from([tally]), rules, limit);
         chain.events.push(ChainEvent::Started);
         chain
     }
 
+    /// Follows forks back at most `limit` blocks from now on. Tallies already let go of don't
+    /// come back, so a restored chain should be given its limit by `restore_from` instead.
+    pub fn with_reorg_limit(self, limit: ReorgLimit) -> Self {
+        let tallies = self.tallies.keeping(limit.tallies_to_keep());
+        Self { tallies, reorg_limit: limit, ..self }
+    }
+
     /// Rebuilds a chain from saved blocks. They are replayed in full, so tampered ones are refused.
     pub fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
-        Ok(Self::restore_from(blocks, rules, None)?.0)
+        Ok(Self::restore_from(blocks, rules, ReorgLimit::DEFAULT, None)?.0)
     }
 
     /// Rebuilds a chain from saved blocks, replaying only those after `snapshot` when it fits
@@ -103,9 +116,10 @@ impl Blockchain {
     pub fn restore_from(
         blocks: Vec<Block>,
         rules: ChainRules,
+        limit: ReorgLimit,
         snapshot: Option<Snapshot>,
     ) -> Result<(Self, Option<usize>), ChainError> {
-        let keep = keep(&rules);
+        let keep = limit.tallies_to_keep();
         let fits = snapshot.filter(|s| {
             s.rules == rules
                 && blocks.get(s.height).is_some_and(|block| block.hash == s.hash)
@@ -115,12 +129,17 @@ impl Blockchain {
             Some(s) => (replay_from(&blocks, s.height + 1, s.tally, &rules, keep)?, Some(s.height)),
             None => (replay_kept(&blocks, &rules, keep)?, None),
         };
-        Ok((Self::from_parts(blocks, kept, rules), from))
+        Ok((Self::from_parts(blocks, kept, rules, limit), from))
     }
 
-    fn from_parts(blocks: Vec<Block>, kept: VecDeque<Tally>, rules: ChainRules) -> Self {
-        let tallies = TallyLog::new(blocks.len() - kept.len(), kept, keep(&rules));
-        Self { blocks, tallies, rules, events: Vec::new() }
+    fn from_parts(
+        blocks: Vec<Block>,
+        kept: VecDeque<Tally>,
+        rules: ChainRules,
+        reorg_limit: ReorgLimit,
+    ) -> Self {
+        let tallies = TallyLog::new(blocks.len() - kept.len(), kept, reorg_limit.tallies_to_keep());
+        Self { blocks, tallies, rules, reorg_limit, events: Vec::new() }
     }
 
     /// A snapshot after the oldest block no fork may undo any more, once the chain is long
@@ -149,6 +168,10 @@ impl Blockchain {
 
     pub fn rules(&self) -> ChainRules {
         self.rules
+    }
+
+    pub fn reorg_limit(&self) -> ReorgLimit {
+        self.reorg_limit
     }
 
     pub fn blocks(&self) -> &[Block] {
@@ -396,7 +419,7 @@ impl Blockchain {
 
     /// The fork-choice rule: adopts `blocks` if they form a valid chain heavier than ours. Exact
     /// ties go to the lower tip hash, so every node settles on the same fork. Never undoes more
-    /// than `max_reorg_depth` of our blocks. The transfers of our blocks it drops travel in its
+    /// than `reorg_limit` of our blocks. The transfers of our blocks it drops travel in its
     /// `Reorganized` event, for a mempool to take back.
     ///
     /// Only their blocks after the split are checked, starting from what our chain added up to
@@ -412,7 +435,7 @@ impl Blockchain {
             .zip(&blocks)
             .take_while(|(ours, theirs)| ours.hash == theirs.hash)
             .count();
-        let keep = keep(&self.rules);
+        let keep = self.reorg_limit.tallies_to_keep();
         let (chain, kept) = match shared.checked_sub(1).and_then(|h| self.tallies.after(h)) {
             Some(base) => {
                 let base = base.clone();
@@ -434,8 +457,8 @@ impl Blockchain {
         }
 
         let depth = self.blocks.len() - shared;
-        if depth as u64 > self.rules.max_reorg_depth {
-            return Err(ChainError::ReorgTooDeep { depth, max: self.rules.max_reorg_depth });
+        if !self.reorg_limit.allows(depth) {
+            return Err(ChainError::ReorgTooDeep { depth, max: self.reorg_limit.blocks() });
         }
         let returned: Vec<Transaction> = self.blocks[shared..]
             .iter()

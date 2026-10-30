@@ -57,6 +57,13 @@ impl TallyLog {
         log
     }
 
+    /// The same log, keeping the last `keep` from now on.
+    pub(super) fn keeping(mut self, keep: usize) -> Self {
+        self.keep = keep.max(1);
+        self.trim();
+        self
+    }
+
     /// The tally after the tip: what the whole chain adds up to.
     pub(super) fn latest(&self) -> &Tally {
         self.tallies.back().expect("never empty")

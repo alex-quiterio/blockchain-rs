@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::address::Address;
 use crate::domain::block::{Block, BlockHeader, Transaction};
-use crate::domain::chain::Blockchain;
+use crate::domain::chain::{Blockchain, ReorgLimit};
 use crate::domain::error::{BlockError, ChainError};
 use crate::domain::mempool::Mempool;
 use crate::domain::merkle;
@@ -225,6 +225,11 @@ impl ChainQueries {
 
     pub fn rules(&self) -> ChainRules {
         self.chain.lock().unwrap().rules()
+    }
+
+    /// How far back this node will follow a fork.
+    pub fn reorg_limit(&self) -> ReorgLimit {
+        self.chain.lock().unwrap().reorg_limit()
     }
 
     /// Proof of work: the work each block required, by height.

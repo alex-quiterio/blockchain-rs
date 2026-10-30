@@ -66,11 +66,6 @@ pub(super) fn payout(reward: Coins, transfers: &[Transaction]) -> Option<Coins> 
     Coins::total(transfers.iter().map(|tx| tx.fee))?.checked_add(reward)
 }
 
-/// How many blocks' tallies to keep: enough to check any fork we may adopt from its split.
-pub(super) fn keep(rules: &ChainRules) -> usize {
-    rules.max_reorg_depth as usize + 1
-}
-
 fn check_genesis(genesis: &Block, rules: &ChainRules) -> Result<(), BlockError> {
     let made_by_the_rules = genesis.index == 0
         && genesis.prev_hash == BlockHash::zero()

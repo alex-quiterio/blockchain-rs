@@ -45,6 +45,10 @@ impl Pooled {
         Blockchain::new(rules).into()
     }
 
+    fn limited(rules: ChainRules, limit: ReorgLimit) -> Self {
+        Blockchain::new(rules).with_reorg_limit(limit).into()
+    }
+
     fn restore(blocks: Vec<Block>, rules: ChainRules) -> Result<Self, ChainError> {
         Blockchain::restore(blocks, rules).map(Self::from)
     }
@@ -52,9 +56,10 @@ impl Pooled {
     fn restore_from(
         blocks: Vec<Block>,
         rules: ChainRules,
+        limit: ReorgLimit,
         snapshot: Option<Snapshot>,
     ) -> Result<(Self, Option<usize>), ChainError> {
-        Blockchain::restore_from(blocks, rules, snapshot).map(|(c, from)| (c.into(), from))
+        Blockchain::restore_from(blocks, rules, limit, snapshot).map(|(c, from)| (c.into(), from))
     }
 
     fn submit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
@@ -477,8 +482,8 @@ fn a_mempool_that_lags_the_chain_cannot_spoil_a_block() {
 
 #[test]
 fn every_change_says_what_happened() {
-    let rules = RULES.with_max_reorg_depth(5);
-    let mut ours = Pooled::new(rules);
+    let (rules, limit) = (RULES, ReorgLimit::new(5));
+    let mut ours = Pooled::limited(rules, limit);
     assert_eq!(ours.take_events(), [ChainEvent::Started]);
     assert_eq!(ours.take_events(), [], "taken once");
     ours.mine(&wallet().0).unwrap();
@@ -583,7 +588,7 @@ fn extend_refuses_a_bad_block_and_keeps_ours() {
 /// The remembered tallies say what a full replay of the chain up to each of them would.
 fn assert_remembers_correctly(chain: &Pooled, watched: &[Address]) {
     let heights = chain.tallies.heights();
-    assert_eq!(heights.len(), keep(&chain.rules).min(chain.blocks.len()));
+    assert_eq!(heights.len(), chain.reorg_limit.tallies_to_keep().min(chain.blocks.len()));
     assert_eq!(heights.end, chain.blocks.len(), "the last is after the tip");
     for height in heights {
         let replayed = replay(&chain.blocks[..=height], &chain.rules).unwrap();
@@ -598,10 +603,10 @@ fn assert_remembers_correctly(chain: &Pooled, watched: &[Address]) {
 
 #[test]
 fn forks_are_checked_from_where_they_split() {
-    let rules = RULES.with_max_reorg_depth(3);
+    let (rules, limit) = (RULES, ReorgLimit::new(3));
     let (alice, alice_key) = wallet();
     let (bob, _) = wallet();
-    let mut ours = Pooled::new(rules);
+    let mut ours = Pooled::limited(rules, limit);
     for _ in 0..6 {
         ours.mine(&alice).unwrap();
     }
@@ -628,10 +633,10 @@ fn forks_are_checked_from_where_they_split() {
 
 #[test]
 fn a_restart_from_a_snapshot_replays_only_what_came_after() {
-    let rules = RULES.with_max_reorg_depth(2);
+    let (rules, limit) = (RULES, ReorgLimit::new(2));
     let (alice, alice_key) = wallet();
     let (bob, _) = wallet();
-    let mut chain = Pooled::new(rules);
+    let mut chain = Pooled::limited(rules, limit);
     chain.mine(&alice).unwrap();
     chain.submit(transfer(&alice_key, &bob, 20, 0)).unwrap();
     for _ in 0..4 {
@@ -641,7 +646,8 @@ fn a_restart_from_a_snapshot_replays_only_what_came_after() {
     assert_eq!(snapshot.height, chain.blocks().len() - 3, "the oldest block no fork may undo");
 
     let (restored, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, Some(snapshot.clone())).unwrap();
+        Pooled::restore_from(chain.blocks().to_vec(), rules, limit, Some(snapshot.clone()))
+            .unwrap();
     assert_eq!(from, Some(snapshot.height));
     assert_eq!(
         (restored.balance(&alice), restored.balance(&bob)),
@@ -654,28 +660,36 @@ fn a_restart_from_a_snapshot_replays_only_what_came_after() {
     let mut generous = snapshot.clone();
     generous.tally.ledger.credit(&bob, Coins::new(1_000));
     let (trusting, _) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, Some(generous)).unwrap();
+        Pooled::restore_from(chain.blocks().to_vec(), rules, limit, Some(generous)).unwrap();
     assert_eq!(trusting.balance(&bob), Coins::new(1_020));
 
     // Blocks it covers that were changed don't lead to its block, so it isn't used.
     let mut tampered = chain.blocks().to_vec();
     tampered[2].transactions[1].amount = Coins::new(25);
-    assert!(Pooled::restore_from(tampered, rules, Some(snapshot.clone())).is_err());
+    assert!(Pooled::restore_from(tampered, rules, limit, Some(snapshot.clone())).is_err());
 
-    // Nor under other rules, or for a chain where its block was replaced.
-    let other = rules.with_max_reorg_depth(9);
+    // A node's own reorg limit isn't one of the rules: changing it keeps the snapshot.
+    let wider = ReorgLimit::new(9);
     let (_, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), other, Some(snapshot.clone())).unwrap();
+        Pooled::restore_from(chain.blocks().to_vec(), rules, wider, Some(snapshot.clone()))
+            .unwrap();
+    assert_eq!(from, Some(snapshot.height));
+
+    // But it isn't used under other rules, or for a chain where its block was replaced.
+    let other = rules.with_block_capacity(BlockCapacity::at_most(9));
+    let (_, from) =
+        Pooled::restore_from(chain.blocks().to_vec(), other, limit, Some(snapshot.clone()))
+            .unwrap();
     assert_eq!(from, None);
     let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot };
     let (full, from) =
-        Pooled::restore_from(chain.blocks().to_vec(), rules, Some(replaced)).unwrap();
+        Pooled::restore_from(chain.blocks().to_vec(), rules, limit, Some(replaced)).unwrap();
     assert_eq!((from, full.balance(&bob)), (None, Coins::new(20)));
 }
 
 #[test]
 fn a_short_chain_has_no_snapshot_yet() {
-    let mut chain = Pooled::new(RULES.with_max_reorg_depth(3));
+    let mut chain = Pooled::limited(RULES, ReorgLimit::new(3));
     chain.mine(&wallet().0).unwrap();
     assert!(chain.snapshot().is_none());
 }
@@ -709,9 +723,9 @@ fn equal_forks_settle_on_the_lower_tip_hash_from_either_side() {
 
 #[test]
 fn a_deep_reorg_is_refused_however_heavy() {
-    let rules = RULES.with_max_reorg_depth(2);
-    let mut ours = Pooled::new(rules);
-    let mut theirs = Pooled::new(rules);
+    let (rules, limit) = (RULES, ReorgLimit::new(2));
+    let mut ours = Pooled::limited(rules, limit);
+    let mut theirs = Pooled::limited(rules, limit);
     for _ in 0..3 {
         ours.mine(&wallet().0).unwrap();
     }
@@ -723,7 +737,7 @@ fn a_deep_reorg_is_refused_however_heavy() {
         Err(ChainError::ReorgTooDeep { depth: 3, max: 2 })
     );
 
-    let mut shallow = Pooled::new(rules);
+    let mut shallow = Pooled::limited(rules, limit);
     shallow.adopt_if_heavier(ours.blocks()[..2].to_vec()).unwrap();
     shallow.mine(&wallet().0).unwrap();
     shallow.mine(&wallet().0).unwrap();

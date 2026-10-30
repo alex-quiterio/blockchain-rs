@@ -13,6 +13,7 @@ use std::sync::Arc;
 use blockchain::api::dto::ProofResponse;
 use blockchain::application::{Network, NodeService};
 use blockchain::domain::block::BlockHeader;
+use blockchain::domain::chain::ReorgLimit;
 use blockchain::domain::merkle;
 use blockchain::domain::rules::ChainRules;
 use blockchain::domain::values::Coins;
@@ -23,7 +24,11 @@ fn app() -> Router {
 }
 
 fn app_with(rules: ChainRules) -> Router {
-    let node = NodeService::open(Box::new(InMemoryRepository::default()), rules).unwrap();
+    app_limited(rules, ReorgLimit::DEFAULT)
+}
+
+fn app_limited(rules: ChainRules, limit: ReorgLimit) -> Router {
+    let node = NodeService::open(Box::new(InMemoryRepository::default()), rules, limit).unwrap();
     router(AppState::new(Network::new(Arc::new(node), Box::new(HttpPeerClient::new()), None)))
 }
 
@@ -218,8 +223,8 @@ async fn proof_of_stake_round_trip() {
 
 #[tokio::test]
 async fn refuses_to_rewrite_history_deeper_than_allowed() {
-    let rules = ChainRules::proof_of_work(2, 50).with_max_reorg_depth(1);
-    let (ours, theirs) = (app_with(rules), app_with(rules));
+    let (rules, limit) = (ChainRules::proof_of_work(2, 50), ReorgLimit::new(1));
+    let (ours, theirs) = (app_limited(rules, limit), app_limited(rules, limit));
     let (_, miner) = call(&ours, "POST", "/wallets", None).await;
     let miner = json!({ "miner": miner["address"] });
     for _ in 0..2 {

@@ -253,8 +253,8 @@ impl Network {
     /// Where the blocks a fork could reach back to begin, for chains whose shorter one has
     /// `length` blocks. Never genesis, which every node shares.
     fn recent_start(&self, length: usize) -> usize {
-        let depth = self.queries.rules().max_reorg_depth as usize;
-        length.saturating_sub(depth + 1).max(1)
+        let depth = usize::try_from(self.queries.reorg_limit().blocks()).unwrap_or(usize::MAX);
+        length.saturating_sub(depth.saturating_add(1)).max(1)
     }
 
     fn peers_except(&self, except: Option<&str>) -> Vec<String> {
@@ -282,6 +282,7 @@ mod tests {
 
     use super::*;
     use crate::domain::address::Address;
+    use crate::domain::chain::ReorgLimit;
     use crate::domain::crypto;
     use crate::domain::rules::ChainRules;
     use crate::infrastructure::InMemoryRepository;
@@ -308,7 +309,8 @@ mod tests {
         fn join(&self, url: &str) -> Arc<Network> {
             let node = NodeService::open(
                 Box::new(InMemoryRepository::default()),
-                ChainRules::proof_of_work(2, 50).with_max_reorg_depth(3),
+                ChainRules::proof_of_work(2, 50),
+                ReorgLimit::new(3),
             )
             .unwrap();
             let network =
@@ -549,7 +551,8 @@ mod tests {
                 Arc::new(
                     NodeService::open(
                         Box::new(InMemoryRepository::default()),
-                        ChainRules::proof_of_work(2, 50).with_max_reorg_depth(3),
+                        ChainRules::proof_of_work(2, 50),
+                        ReorgLimit::new(3),
                     )
                     .unwrap(),
                 ),

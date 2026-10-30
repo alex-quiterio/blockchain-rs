@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use blockchain::api::{router, AppState};
 use blockchain::application::{Network, NodeEvent, NodeService, SNAPSHOT_BLOCKS};
-use blockchain::domain::chain::ChainEvent;
+use blockchain::domain::chain::{ChainEvent, ReorgLimit};
 use blockchain::domain::mempool::MempoolEvent;
-use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS, DEFAULT_MAX_REORG_DEPTH};
+use blockchain::domain::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS};
 use blockchain::domain::values::BlockCapacity;
 use blockchain::infrastructure::{HttpPeerClient, JsonFileRepository};
 
@@ -30,7 +30,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_retarget(env_or("TARGET_BLOCK_SECS", 10), env_or("RETARGET_BLOCKS", 10)),
         Ok(other) => return Err(format!("CONSENSUS must be pow or pos, not {other}").into()),
     }
-    .with_max_reorg_depth(env_or("MAX_REORG_DEPTH", DEFAULT_MAX_REORG_DEPTH))
     .with_block_capacity(BlockCapacity::at_most(env_or(
         "MAX_BLOCK_TRANSFERS",
         DEFAULT_MAX_BLOCK_TRANSFERS,
@@ -40,7 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let repository = Box::new(JsonFileRepository::new(&chain_file));
     let started = std::time::Instant::now();
-    let node = NodeService::open(repository, rules)
+    let reorg_limit = ReorgLimit::new(env_or("MAX_REORG_DEPTH", ReorgLimit::DEFAULT.blocks()));
+    let node = NodeService::open(repository, rules, reorg_limit)
         .map_err(|e| format!("{chain_file}: {e}"))?
         .with_snapshots_every(env_or("SNAPSHOT_BLOCKS", SNAPSHOT_BLOCKS));
     let length = node.queries().tip().height + 1;

@@ -34,16 +34,11 @@ pub struct ChainRules {
     pub consensus: Consensus,
     /// Coins paid to whoever adds a block.
     pub reward: Coins,
-    /// The most of its own blocks a node will throw away to switch forks. Anything deeper is
-    /// treated as an attack rewriting old history, however heavy the other fork is.
-    pub max_reorg_depth: u64,
     /// How many transfers a block may hold besides its payout. When more are waiting, the
     /// highest fees go first, so fees decide what gets in.
     #[serde(default)]
     pub block_capacity: BlockCapacity,
 }
-
-pub const DEFAULT_MAX_REORG_DEPTH: u64 = 64;
 
 /// The most transfers a node's blocks hold unless told otherwise.
 pub const DEFAULT_MAX_BLOCK_TRANSFERS: u64 = 100;
@@ -53,7 +48,6 @@ impl ChainRules {
         Self {
             consensus: Consensus::ProofOfWork { difficulty, retarget: None },
             reward: Coins::new(reward),
-            max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
             block_capacity: BlockCapacity::ANY,
         }
     }
@@ -62,13 +56,8 @@ impl ChainRules {
         Self {
             consensus: Consensus::ProofOfStake,
             reward: Coins::new(reward),
-            max_reorg_depth: DEFAULT_MAX_REORG_DEPTH,
             block_capacity: BlockCapacity::ANY,
         }
-    }
-
-    pub const fn with_max_reorg_depth(self, max_reorg_depth: u64) -> Self {
-        Self { max_reorg_depth, ..self }
     }
 
     pub const fn with_block_capacity(self, block_capacity: BlockCapacity) -> Self {
@@ -161,6 +150,15 @@ mod tests {
 
     fn someone() -> Address {
         Address::parse(&crypto::generate_keypair().0).unwrap()
+    }
+
+    #[test]
+    fn rules_saved_with_a_reorg_depth_still_read_as_the_same_rules() {
+        // Snapshots from before the reorg limit was each node's own carry it in their rules.
+        let mut saved = serde_json::to_value(ChainRules::default()).unwrap();
+        saved["max_reorg_depth"] = 64.into();
+        let read: ChainRules = serde_json::from_value(saved).unwrap();
+        assert_eq!(read, ChainRules::default());
     }
 
     #[test]

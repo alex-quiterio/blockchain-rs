@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 
 use crate::domain::address::Address;
 use crate::domain::block::{Block, Transaction};
-use crate::domain::chain::{Blockchain, ChainEvent, Extension};
+use crate::domain::chain::{Blockchain, ChainEvent, Extension, ReorgLimit};
 use crate::domain::error::{BlockError, ChainError, DomainError, TransactionError};
 use crate::domain::mempool::{Mempool, MempoolEvent};
 use crate::domain::repository::{ChainRepository, RepositoryError};
@@ -75,20 +75,22 @@ pub enum NodeEvent {
 pub const SNAPSHOT_BLOCKS: usize = 100;
 
 impl NodeService {
-    /// Restores the saved chain, or starts and saves a new one if nothing is saved yet. A saved
-    /// snapshot that fits the chain spares replaying the blocks before it.
+    /// Restores the saved chain, or starts and saves a new one if nothing is saved yet, under
+    /// the network's `rules` and this node's own `reorg_limit`. A saved snapshot that fits the
+    /// chain spares replaying the blocks before it.
     pub fn open(
         repository: Box<dyn ChainRepository>,
         rules: ChainRules,
+        reorg_limit: ReorgLimit,
     ) -> Result<Self, NodeError> {
         let (chain, restored_from) = match repository.load().map_err(NodeError::Storage)? {
             Some(blocks) => {
                 // A snapshot that can't be read is no worse than none: the chain is replayed.
                 let snapshot = repository.load_snapshot().unwrap_or(None);
-                Blockchain::restore_from(blocks, rules, snapshot)?
+                Blockchain::restore_from(blocks, rules, reorg_limit, snapshot)?
             }
             None => {
-                let mut chain = Blockchain::new(rules);
+                let mut chain = Blockchain::new(rules).with_reorg_limit(reorg_limit);
                 let events = chain.take_events();
                 repository.save(chain.blocks(), &events).map_err(NodeError::Storage)?;
                 (chain, None)
@@ -318,7 +320,7 @@ mod tests {
     }
 
     fn node(repository: impl ChainRepository + 'static) -> NodeService {
-        NodeService::open(Box::new(repository), RULES).unwrap()
+        NodeService::open(Box::new(repository), RULES, ReorgLimit::DEFAULT).unwrap()
     }
 
     #[test]
@@ -343,24 +345,30 @@ mod tests {
 
     #[test]
     fn a_restart_picks_up_from_the_last_snapshot() {
-        let rules = RULES.with_max_reorg_depth(2);
+        let (rules, limit) = (RULES, ReorgLimit::new(2));
         let repo = SharedRepository::default();
         let miner = new_address();
-        let first =
-            NodeService::open(Box::new(repo.clone()), rules).unwrap().with_snapshots_every(3);
+        let first = NodeService::open(Box::new(repo.clone()), rules, limit)
+            .unwrap()
+            .with_snapshots_every(3);
         assert_eq!(first.restored_from(), None);
         for _ in 0..8 {
             first.mine(&miner).unwrap();
         }
 
         // Nine blocks; the last two may still be undone, so the snapshot is after block 6.
-        let second = NodeService::open(Box::new(repo.clone()), rules).unwrap();
+        let second = NodeService::open(Box::new(repo.clone()), rules, limit).unwrap();
         assert_eq!(second.restored_from(), Some(6));
         assert_eq!(second.queries().blocks(), first.queries().blocks());
         assert_eq!(second.queries().account(&miner).balance, Coins::new(400));
 
-        let none =
-            NodeService::open(Box::new(repo.clone()), rules).unwrap().with_snapshots_every(0);
+        // The reorg limit is this node's own choice, not a rule, so changing it keeps the snapshot.
+        let wider = NodeService::open(Box::new(repo.clone()), rules, ReorgLimit::new(5)).unwrap();
+        assert_eq!(wider.restored_from(), Some(6));
+
+        let none = NodeService::open(Box::new(repo.clone()), rules, limit)
+            .unwrap()
+            .with_snapshots_every(0);
         for _ in 0..4 {
             none.mine(&miner).unwrap();
         }
@@ -377,7 +385,7 @@ mod tests {
         let blocks: Vec<Block> = serde_json::from_value(json).unwrap();
         repo.save(&blocks, &[ChainEvent::Started]).unwrap();
 
-        let err = NodeService::open(Box::new(repo), RULES).err().unwrap();
+        let err = NodeService::open(Box::new(repo), RULES, ReorgLimit::DEFAULT).err().unwrap();
         assert!(matches!(
             err,
             NodeError::Domain(DomainError::Chain(ChainError::InvalidBlock {
@@ -400,9 +408,13 @@ mod tests {
     #[test]
     fn mining_gives_up_when_a_peer_takes_the_tip() {
         let rules = ChainRules::proof_of_work(4, 50);
-        let ours =
-            Arc::new(NodeService::open(Box::new(InMemoryRepository::default()), rules).unwrap());
-        let theirs = NodeService::open(Box::new(InMemoryRepository::default()), rules).unwrap();
+        let ours = Arc::new(
+            NodeService::open(Box::new(InMemoryRepository::default()), rules, ReorgLimit::DEFAULT)
+                .unwrap(),
+        );
+        let theirs =
+            NodeService::open(Box::new(InMemoryRepository::default()), rules, ReorgLimit::DEFAULT)
+                .unwrap();
         let theirs_block = theirs.mine(&new_address()).unwrap();
 
         let miner = new_address();
