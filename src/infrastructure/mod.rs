@@ -3,12 +3,12 @@
 
 mod config;
 mod event;
-mod http_peer;
+mod http;
 mod json;
 mod memory;
 
 pub use config::Config;
 pub use event::log_event;
-pub use http_peer::HttpPeerClient;
+pub use http::HttpPeerClient;
 pub use json::ChainJsonFileRepository;
 pub use memory::ChainInMemoryRepository;
