@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::accounting::ChainId;
 use crate::domain::chain::block::BlockHash;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -28,6 +29,8 @@ pub struct ReplaceResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct StatusResponse {
+    /// The chain every transfer must name, so it can't be replayed on another: the genesis hash.
+    pub chain: ChainId,
     pub height: u64,
     pub tip: BlockHash,
     /// A string, since it can outgrow a JSON number.

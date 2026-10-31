@@ -25,6 +25,7 @@ async function serving(blocks: Block[], placedHash = mined.block.hash) {
   };
   const fake = fakeNode({
     status: () => ({
+      chain: "00".repeat(32),
       height: 3,
       tip: "ff".repeat(32),
       weight: "1",

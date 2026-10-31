@@ -1,6 +1,6 @@
 //! A whole network in one process, and what goes over the wire as nodes join, sync and gossip.
 
-use crate::domain::accounting::Coins;
+use crate::domain::accounting::{ChainId, Coins};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -150,6 +150,11 @@ impl PeerClient for Mesh {
     }
 }
 
+/// The chain a transfer under `rules` names: the hash of their genesis block.
+fn id(rules: ChainRules) -> ChainId {
+    ChainId::parse(Block::genesis(&rules).hash().as_str()).unwrap()
+}
+
 fn miner() -> Address {
     Address::parse(&crypto::generate_keypair().0).unwrap()
 }
@@ -179,7 +184,16 @@ async fn sync_adopts_the_heaviest_chain_and_pending_transactions() {
     let rich = Address::of(&key);
     b.node().mine(&rich).unwrap();
     b.node().mine(&miner()).unwrap();
-    b.node().submit(Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::new(1))).unwrap();
+    b.node()
+        .submit(Transaction::signed(
+            &key,
+            &id(ChainRules::proof_of_work(2, 50)),
+            miner(),
+            Coins::new(5),
+            0,
+            Coins::new(1),
+        ))
+        .unwrap();
 
     let report = a.sync().await;
     assert_eq!(report.adopted_from.as_deref(), Some("http://b"));
@@ -206,7 +220,14 @@ async fn an_accepted_transaction_travels_on_but_not_back() {
     mesh.sent();
 
     // It came from b, so only c hears of it from a.
-    let tx = Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::ZERO);
+    let tx = Transaction::signed(
+        &key,
+        &id(ChainRules::proof_of_work(2, 50)),
+        miner(),
+        Coins::new(5),
+        0,
+        Coins::ZERO,
+    );
     a.node().submit_from(tx.clone(), Some("http://b")).unwrap();
     for _ in 0..100 {
         if !c.queries().pending().is_empty() {
@@ -235,7 +256,14 @@ async fn broadcasting_spreads_new_blocks_and_transactions() {
     assert_eq!(b.queries().blocks(), a.queries().blocks());
     assert_eq!(c.queries().blocks(), a.queries().blocks());
 
-    let tx = Transaction::signed(&key, miner(), Coins::new(5), 0, Coins::new(0));
+    let tx = Transaction::signed(
+        &key,
+        &id(ChainRules::proof_of_work(2, 50)),
+        miner(),
+        Coins::new(5),
+        0,
+        Coins::new(0),
+    );
     a.node().submit(tx.clone()).unwrap();
     a.broadcast_transaction(&tx, None).await;
     assert_eq!(c.queries().pending(), [tx]);
@@ -402,6 +430,7 @@ async fn a_slow_peer_holds_up_nobody() {
     assert_eq!(started.elapsed(), Duration::from_secs(1));
     let tx = Transaction::signed(
         &crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap(),
+        &id(ChainRules::proof_of_work(2, 50)),
         miner(),
         Coins::new(1),
         0,

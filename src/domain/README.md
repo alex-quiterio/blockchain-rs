@@ -39,10 +39,11 @@ Both aggregates use these, so they live outside both.
 
 | | |
 | --- | --- |
+| `chain_id.rs` | `ChainId` (**value object**): the genesis hash a transfer names, so it can't be replayed on another network, and when that became required. |
 | `coins.rs` | `Coins` (**value object**): every amount, fee, stake and reward. Sums are checked and never wrap around. |
 | `party.rs` | `Source` (an account, or the coinbase for new coins) and `Destination` (an account, `stake` or `unstake`): **value objects** instead of magic strings. |
 | `transaction.rs` | `Transaction` (**value object**): signed once, then never changed. `TxKind` says what it does. |
-| `ledger.rs` | `Ledger` (**value object** holding an aggregate's state): balances, stakes, nonces and validators, and the rules a transaction must pass before it's applied. |
+| `ledger.rs` | `Ledger` (**value object** holding an aggregate's state): balances, stakes, nonces and validators, the chain they're of, and the rules a transaction must pass before it's applied, its `ChainId` among them. |
 | `error.rs` | `TransactionError`: why a transaction is refused, such as `BadNonce`, `InsufficientFunds` or `AlreadyPending`. |
 
 ## `consensus/`: how nodes agree on one chain

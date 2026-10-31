@@ -149,7 +149,14 @@ fn queued(
     for &(from, to, amount, fee) in transfers {
         let to = address(if to == WALLETS { WALLETS + 2 } else { to });
         let nonce = chain.next_nonce(&address(from));
-        let tx = Transaction::signed(&key(from), &to, Coins::new(amount), nonce, Coins::new(fee));
+        let tx = Transaction::signed(
+            &key(from),
+            chain.ledger().chain(),
+            &to,
+            Coins::new(amount),
+            nonce,
+            Coins::new(fee),
+        );
         let _ = chain.submit(tx);
     }
     chain
@@ -218,6 +225,7 @@ fn run(rules: ChainRules, ops: &[Op]) -> Pooled {
                 let nonce = (chain.next_nonce(&address(from)) as i64 + skew).max(0) as u64;
                 Some(Transaction::signed(
                     &key(from),
+                    chain.ledger().chain(),
                     address(to),
                     Coins::new(amount),
                     nonce,
@@ -230,6 +238,7 @@ fn run(rules: ChainRules, ops: &[Op]) -> Pooled {
                     chain.commitment_due(&address(from)).map(|e| randao::commitment(&key(from), e));
                 Some(Transaction::stake(
                     &key(from),
+                    chain.ledger().chain(),
                     Coins::new(amount),
                     nonce,
                     Coins::new(fee),
@@ -240,6 +249,7 @@ fn run(rules: ChainRules, ops: &[Op]) -> Pooled {
                 let nonce = chain.next_nonce(&address(from));
                 Some(Transaction::signed(
                     &key(from),
+                    chain.ledger().chain(),
                     Destination::Unstake,
                     Coins::new(amount),
                     nonce,
@@ -326,7 +336,7 @@ proptest! {
             .iter()
             .map(|&(from, to, amount, fee)| {
                 nonces[from] += 1;
-                Transaction::signed(&key(from), address(to), Coins::new(amount), nonces[from] - 1, Coins::new(fee))
+                Transaction::signed(&key(from), funded.ledger().chain(), address(to), Coins::new(amount), nonces[from] - 1, Coins::new(fee))
             })
             .collect();
         let mut shuffled = batch.clone();
@@ -397,7 +407,7 @@ proptest! {
         }
         for (i, &amount) in stakes.iter().enumerate() {
             let commitment = chain.commitment_due(&address(i)).map(|e| randao::commitment(&key(i), e));
-            chain.submit(Transaction::stake(&key(i), Coins::new(amount), 0, Coins::new(0), commitment)).unwrap();
+            chain.submit(Transaction::stake(&key(i), chain.ledger().chain(), Coins::new(amount), 0, Coins::new(0), commitment)).unwrap();
         }
         add_block(&mut chain, 0);
         let selected = chain.next_validator().expect("validators are being drawn");
@@ -409,7 +419,7 @@ proptest! {
             let mut attempt = chain.clone();
             if amount > 0 {
                 let nonce = attempt.next_nonce(&selected);
-                let tx = Transaction::signed(&key(forger), address(to), Coins::new(amount), nonce, Coins::new(fee));
+                let tx = Transaction::signed(&key(forger), attempt.ledger().chain(), address(to), Coins::new(amount), nonce, Coins::new(fee));
                 let _ = attempt.submit(tx);
             }
             attempt.forge(&key(forger)).unwrap();
@@ -516,10 +526,10 @@ proptest! {
             for (position, other) in waiting.iter().enumerate() {
                 let could_go_in = full
                     && !taken.contains(&position)
-                    && ledger.clone().apply_transfer(other).is_ok();
+                    && ledger.clone().apply_transfer(other, chrono::Utc::now()).is_ok();
                 prop_assert!(!could_go_in || rank(other) <= rank(tx), "{:?} could have gone in ahead of {:?}", other, tx);
             }
-            prop_assert!(ledger.apply_transfer(tx).is_ok(), "a chosen transfer doesn't apply");
+            prop_assert!(ledger.apply_transfer(tx, chrono::Utc::now()).is_ok(), "a chosen transfer doesn't apply");
             prop_assert!(taken.insert(arrived(tx).unwrap()), "chosen twice");
         }
 
@@ -541,7 +551,7 @@ proptest! {
         let estimate = chain.pool.fee_estimate(capacity);
         let newcomer_pays = |fee: Coins| {
             let mut chain = chain.clone();
-            let tx = Transaction::signed(&key(NEWCOMER), address(0), Coins::new(1), 0, fee);
+            let tx = Transaction::signed(&key(NEWCOMER), chain.ledger().chain(), address(0), Coins::new(1), 0, fee);
             chain.submit(tx.clone()).unwrap();
             chain.mine(&address(0)).unwrap().transactions().contains(&tx)
         };

@@ -22,7 +22,10 @@ export async function send(
   { from, to, amount, fee }: Sending,
 ): Promise<Transfer> {
   const secret = wallets.secretOf(from.address);
-  const { next_nonce, commitment_due } = await node.balance(from.address);
+  const [{ next_nonce, commitment_due }, { chain }] = await Promise.all([
+    node.balance(from.address),
+    node.status(),
+  ]);
   // A first stake commits to the reveal chain this wallet will forge with.
   const committed =
     to === STAKE && commitment_due != null
@@ -35,6 +38,7 @@ export async function send(
     nonce: next_nonce,
     fee,
     commitment: committed,
+    chain,
   });
   await node.submitTransaction(tx);
   return tx;

@@ -4,6 +4,8 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 
+use chrono::Utc;
+
 use crate::domain::accounting::ledger::Ledger;
 use crate::domain::accounting::transaction::Transaction;
 use crate::domain::consensus::BlockCapacity;
@@ -50,7 +52,7 @@ pub(super) fn by_fee(
             (Reverse(tx.fee()), arrived)
         });
         let Some(next) = ranked.into_iter().find(|&q| {
-            let applies = ledger.apply_transfer(queues[q][0].1).is_ok();
+            let applies = ledger.apply_transfer(queues[q][0].1, Utc::now()).is_ok();
             waiting_for_coins[q] = !applies;
             applies
         }) else {
@@ -68,7 +70,7 @@ pub(super) fn by_fee(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::accounting::Coins;
+    use crate::domain::accounting::{ChainId, Coins};
     use crate::domain::crypto;
     use ed25519_dalek::SigningKey;
 
@@ -79,7 +81,7 @@ mod tests {
     }
 
     fn pay(key: &SigningKey, to: &Address, amount: u64, nonce: u64, fee: u64) -> Transaction {
-        Transaction::signed(key, to, Coins::new(amount), nonce, Coins::new(fee))
+        Transaction::signed(key, &ChainId::zero(), to, Coins::new(amount), nonce, Coins::new(fee))
     }
 
     fn fees(txs: &[Transaction]) -> Vec<u64> {

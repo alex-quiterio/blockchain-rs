@@ -6,7 +6,13 @@ import { fakeNode } from "./fake_node.ts";
 
 const known = mined.block.hash;
 const fake = fakeNode({
-  status: () => ({ height: 2, tip: known, weight: "512", pending: 0 }),
+  status: () => ({
+    chain: "00".repeat(32),
+    height: 2,
+    tip: known,
+    weight: "512",
+    pending: 0,
+  }),
   consensus: () => ({ kind: "proof_of_work", reward: 50 }) as never,
   block: (id) => {
     if (id === known || id === 2 || id === "2") return mined.block;

@@ -27,6 +27,10 @@ pub enum TransactionError {
     MissingCommitment,
     /// Only a first stake carries a commitment.
     UnexpectedCommitment,
+    /// It names another chain than this one.
+    WrongChain,
+    /// It names no chain, which only transfers in blocks from before `chain_bound_since` may.
+    NoChain,
     /// The exact transaction is already waiting in the mempool, usually because of gossip.
     AlreadyPending,
     /// The mempool holds all it may. `needed` is the fee that would push out the cheapest
@@ -54,6 +58,10 @@ impl fmt::Display for TransactionError {
             }
             Self::UnexpectedCommitment => {
                 write!(f, "only a first stake carries a commitment; this one is still in use")
+            }
+            Self::WrongChain => write!(f, "transaction is signed for another chain"),
+            Self::NoChain => {
+                write!(f, "transaction must name its chain: the genesis hash, under `chain`")
             }
             Self::AlreadyPending => write!(f, "transaction is already waiting to be mined"),
             Self::MempoolFull { needed: Some(fee) } => {

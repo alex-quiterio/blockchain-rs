@@ -5,7 +5,7 @@ use super::block::owned;
 use super::validation::replay;
 use super::*;
 use crate::domain::accounting::TransactionError;
-use crate::domain::accounting::{Destination, Source};
+use crate::domain::accounting::{ChainId, Destination, Source};
 use crate::domain::consensus::difficulty::meets_work;
 use crate::domain::consensus::BlockCapacity;
 use crate::domain::crypto;
@@ -152,13 +152,18 @@ impl Pooled {
     }
 }
 
+/// The chain a transfer under `rules` names: the hash of their genesis block.
+fn id(rules: ChainRules) -> ChainId {
+    ChainId::parse(Block::genesis(&rules).hash().as_str()).unwrap()
+}
+
 fn wallet() -> (Address, SigningKey) {
     let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
     (Address::of(&key), key)
 }
 
 fn transfer(key: &SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-    Transaction::signed(key, to, Coins::new(amount), nonce, Coins::new(0))
+    Transaction::signed(key, &id(RULES), to, Coins::new(amount), nonce, Coins::new(0))
 }
 
 fn chain() -> Pooled {
@@ -202,7 +207,9 @@ fn a_full_block_takes_the_highest_fees_and_leaves_the_rest_waiting() {
         chain.mine(address).unwrap();
     }
     for ((_, key), fee) in senders.iter().zip([1, 5, 3]) {
-        chain.submit(Transaction::signed(key, &dave, Coins::new(10), 0, Coins::new(fee))).unwrap();
+        chain
+            .submit(Transaction::signed(key, &id(RULES), &dave, Coins::new(10), 0, Coins::new(fee)))
+            .unwrap();
     }
 
     let block = chain.mine(&dave).unwrap();
@@ -823,6 +830,7 @@ const POS: ChainRules = ChainRules::proof_of_stake(50);
 fn stake(key: &SigningKey, amount: u64, nonce: u64) -> Transaction {
     Transaction::stake(
         key,
+        &id(POS),
         Coins::new(amount),
         nonce,
         Coins::new(0),
@@ -882,6 +890,7 @@ fn unstaking_returns_coins_but_never_more_than_staked() {
     assert_eq!(
         chain.submit(Transaction::signed(
             &alice_key,
+            &id(POS),
             Destination::Unstake,
             Coins::new(31),
             1,
@@ -892,6 +901,7 @@ fn unstaking_returns_coins_but_never_more_than_staked() {
     chain
         .submit(Transaction::signed(
             &alice_key,
+            &id(POS),
             Destination::Unstake,
             Coins::new(30),
             1,
@@ -996,7 +1006,9 @@ fn a_proposal_signed_elsewhere_is_appended_like_a_forged_block() {
     let (_, alice_key) = wallet();
     let (bob, bob_key) = wallet();
     chain.forge(&alice_key).unwrap();
-    chain.submit(Transaction::signed(&alice_key, &bob, Coins::new(5), 0, Coins::new(2))).unwrap();
+    chain
+        .submit(Transaction::signed(&alice_key, &id(POS), &bob, Coins::new(5), 0, Coins::new(2)))
+        .unwrap();
 
     let before = chain.blocks().len();
     let mut block = chain.propose(&bob, None).unwrap();
@@ -1087,7 +1099,14 @@ fn a_forger_cannot_steer_who_forges_next() {
             // Small enough for either validator: each holds at least 20 unstaked.
             let to = Address::of(&carol_key);
             attempt
-                .submit(Transaction::signed(&forger, &to, Coins::new(1), 1, Coins::new(i / 2)))
+                .submit(Transaction::signed(
+                    &forger,
+                    &id(POS),
+                    &to,
+                    Coins::new(1),
+                    1,
+                    Coins::new(i / 2),
+                ))
                 .unwrap();
         }
         attempt.forge(&forger).unwrap();
@@ -1135,7 +1154,14 @@ fn only_a_first_stake_commits() {
     chain.forge(&alice_key).unwrap();
 
     assert_eq!(
-        chain.submit(Transaction::stake(&alice_key, Coins::new(10), 0, Coins::new(0), None)),
+        chain.submit(Transaction::stake(
+            &alice_key,
+            &id(POS),
+            Coins::new(10),
+            0,
+            Coins::new(0),
+            None
+        )),
         Err(TransactionError::MissingCommitment)
     );
     assert_eq!(chain.commitment_due(&alice), Some(0));
@@ -1144,6 +1170,7 @@ fn only_a_first_stake_commits() {
     assert_eq!(
         chain.submit(Transaction::stake(
             &alice_key,
+            &id(POS),
             Coins::new(5),
             1,
             Coins::ZERO,
@@ -1151,7 +1178,9 @@ fn only_a_first_stake_commits() {
         )),
         Err(TransactionError::UnexpectedCommitment)
     );
-    chain.submit(Transaction::stake(&alice_key, Coins::new(5), 1, Coins::new(0), None)).unwrap();
+    chain
+        .submit(Transaction::stake(&alice_key, &id(POS), Coins::new(5), 1, Coins::new(0), None))
+        .unwrap();
     chain.forge(&alice_key).unwrap();
     assert_eq!(chain.staked(&alice), Coins::new(15));
 
@@ -1159,6 +1188,7 @@ fn only_a_first_stake_commits() {
     chain
         .submit(Transaction::signed(
             &alice_key,
+            &id(POS),
             Destination::Unstake,
             Coins::new(15),
             2,
@@ -1170,6 +1200,7 @@ fn only_a_first_stake_commits() {
     assert_eq!(chain.commitment_due(&alice), Some(1));
     let again = Transaction::stake(
         &alice_key,
+        &id(POS),
         Coins::new(10),
         3,
         Coins::new(0),
@@ -1203,7 +1234,9 @@ fn fees_go_to_whoever_adds_the_block() {
     let (bob, _) = wallet();
     let (carol, _) = wallet();
     chain.mine(&alice).unwrap();
-    chain.submit(Transaction::signed(&alice_key, &bob, Coins::new(20), 0, Coins::new(3))).unwrap();
+    chain
+        .submit(Transaction::signed(&alice_key, &id(RULES), &bob, Coins::new(20), 0, Coins::new(3)))
+        .unwrap();
 
     let block = chain.mine(&carol).unwrap();
     assert_eq!(block.transactions[0].amount, Coins::new(53));
@@ -1220,7 +1253,14 @@ fn the_fee_must_be_affordable_too() {
     let (bob, _) = wallet();
     chain.mine(&alice).unwrap();
     assert_eq!(
-        chain.submit(Transaction::signed(&alice_key, &bob, Coins::new(50), 0, Coins::new(1))),
+        chain.submit(Transaction::signed(
+            &alice_key,
+            &id(RULES),
+            &bob,
+            Coins::new(50),
+            0,
+            Coins::new(1)
+        )),
         Err(TransactionError::InsufficientFunds {
             balance: Coins::new(50),
             amount: Coins::new(51)
@@ -1234,7 +1274,9 @@ fn fees_are_signed_and_counted_in_the_payout() {
     let (alice, alice_key) = wallet();
     let (bob, _) = wallet();
     chain.mine(&alice).unwrap();
-    chain.submit(Transaction::signed(&alice_key, &bob, Coins::new(5), 0, Coins::new(2))).unwrap();
+    chain
+        .submit(Transaction::signed(&alice_key, &id(RULES), &bob, Coins::new(5), 0, Coins::new(2)))
+        .unwrap();
     chain.mine(&alice).unwrap();
 
     // A peer rewrites the block and does all the work again, so only the rules can catch it.

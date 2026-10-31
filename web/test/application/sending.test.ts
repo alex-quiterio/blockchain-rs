@@ -9,10 +9,18 @@ import { reveal, LENGTH } from "@domain/wallets/reveals";
 import { Wallets } from "@domain/wallets/wallets";
 import { account, emptyRepository, fakeNode } from "./fake_node.ts";
 
+const genesis = "0a".repeat(32);
 const fake = fakeNode({
   balance: (address) =>
     account({ address: address as string, next_nonce: 4, commitment_due: 0 }),
   submitTransaction: (tx) => tx,
+  status: () => ({
+    chain: genesis,
+    height: 0,
+    tip: genesis,
+    weight: "1",
+    pending: 0,
+  }),
 });
 const wallets = new Wallets(emptyRepository()).load();
 await wallets.setUp("correct horse");
@@ -33,7 +41,8 @@ test("a transfer is signed here, with the sender's next nonce, and submitted", a
   assert.equal(tx.nonce, 4, "the node's next nonce for the sender");
   assert.equal(tx.fee, 2);
   assert.equal(tx.commitment, undefined, "only a first stake commits");
-  assert.ok(await transferIsSigned(tx));
+  assert.equal(tx.chain, genesis, "it names the node's chain");
+  assert.ok(await transferIsSigned(tx), "the signature covers the chain");
 });
 
 test("a first stake commits to the reveal chain the wallet will forge with", async () => {

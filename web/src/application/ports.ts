@@ -6,6 +6,8 @@ import type { Block, BlockHeader, ProofStep } from "@domain/blocks";
 import type { Transfer } from "@domain/transfers";
 
 export interface Status {
+  /** The chain every transfer must name: its genesis hash. */
+  chain: string;
   height: number;
   tip: string;
   weight: string;

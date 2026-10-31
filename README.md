@@ -109,6 +109,7 @@ Each block names the hash of the one before it, so changing an old block breaks 
 
 - **Forks.** A node keeps the *heaviest* valid chain: most work under proof of work, most stake behind the blocks under proof of stake. Ties go to the lower tip hash, so every node picks the same one.
 - **Fees.** When more is waiting than a block holds, the highest fees go first, each sender's transfers staying in nonce order. Only the size limit is a consensus rule; which transfers fill a block is the producer's choice. At most `MAX_WAITING` may wait at once; once full, a new transfer must outbid the cheapest last transfer of another sender, which leaves. Paying yourself costs nothing, so without that limit one coin could fill every node's memory.
+- **Replays.** Every transfer names its chain, the hash of its genesis block, and the signature covers it. Networks with different rules have different genesis blocks, so a transfer signed on one is refused on another even where its nonce is still free. `GET /status` gives the id to sign with. Transfers in blocks from before 1 November 2026 may name none, so older chains still load.
 - **Difficulty.** Every `RETARGET_BLOCKS` blocks, the work is scaled by how far the last ones were from the target pace, by at most 4×. As in Bitcoin, a block's time must be after the median of the last 11 and at most 2 hours ahead, so miners can't fake the pace.
 - **Validator turns.** Like Ethereum's RANDAO, a validator commits to the end of a secret hash chain when they first stake, and each block they forge reveals the next link back. Reveals are fixed in advance and mixed into the beacon that picks the next validator, so no choice of timestamp or contents can steer the draw.
 - **Catching up.** A node behind a peer fetches its headers first and checks them: hashes, links, times, and the work or the validator's signature. It fetches blocks only if they hold up, only from where the peer's chain leaves its own, and under proof of work only if they're heavier, so a peer that claims more than it has costs just its headers.
@@ -139,7 +140,7 @@ Each file's doc comment says what it holds and which building block it is.
 
 | Method | Path | What it does |
 | --- | --- | --- |
-| GET | `/status` | `{height, tip, weight, pending}`, cheap enough to poll. |
+| GET | `/status` | `{chain, height, tip, weight, pending}`, cheap enough to poll. `chain` is what every transfer must name. |
 | GET | `/chain` | The blocks, `?from=N&limit=M` for a range. |
 | POST | `/chain` | Offer blocks; adopted if they make a valid, heavier chain. |
 | GET | `/chain/valid` | A full replay: `{valid, problem, length, weight}`. |

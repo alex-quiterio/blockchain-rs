@@ -1,6 +1,6 @@
 //! Opening, restarting, saving, mining and offering blocks, as one node sees them.
 
-use crate::domain::accounting::Coins;
+use crate::domain::accounting::{ChainId, Coins};
 use crate::domain::chain::block::merkle;
 use std::sync::Arc;
 
@@ -17,6 +17,11 @@ use crate::infrastructure::ChainInMemoryRepository;
 use std::sync::atomic::AtomicBool;
 
 const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
+
+/// The chain a transfer under `rules` names: the hash of their genesis block.
+fn id(rules: ChainRules) -> ChainId {
+    ChainId::parse(Block::genesis(&rules).hash().as_str()).unwrap()
+}
 
 fn new_address() -> Address {
     Address::parse(&crypto::generate_keypair().0).unwrap()
@@ -93,7 +98,8 @@ fn mined_blocks_survive_a_restart() {
 fn a_restart_picks_up_from_the_last_snapshot() {
     let (rules, limit) = (RULES, ReorgLimit::new(2));
     let repo = SharedRepository::default();
-    let miner = new_address();
+    let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
+    let miner = Address::of(&key);
     let first =
         NodeService::open(Box::new(repo.clone()), rules, limit).unwrap().with_snapshots_every(3);
     assert_eq!(first.restored_from(), None);
@@ -106,6 +112,11 @@ fn a_restart_picks_up_from_the_last_snapshot() {
     assert_eq!(second.restored_from(), Some(6));
     assert_eq!(second.queries().blocks(), first.queries().blocks());
     assert_eq!(second.queries().account(&miner).balance, Coins::new(400));
+    // A snapshot doesn't say which chain it's of, yet the restored node still knows.
+    assert_eq!(second.queries().chain_id(), id(rules));
+    let payment =
+        Transaction::signed(&key, &id(rules), new_address(), Coins::new(1), 0, Coins::ZERO);
+    second.submit(payment).unwrap();
 
     // The reorg limit is this node's own choice, not a rule, so changing it keeps the snapshot.
     let wider = NodeService::open(Box::new(repo.clone()), rules, ReorgLimit::new(5)).unwrap();
@@ -201,7 +212,14 @@ fn a_confirmed_transfer_can_be_proven_from_its_header() {
     node.mine(&alice).unwrap();
     let mut payments = Vec::new();
     for nonce in 0..5 {
-        let tx = Transaction::signed(&key, new_address(), Coins::new(1), nonce, Coins::new(0));
+        let tx = Transaction::signed(
+            &key,
+            &id(RULES),
+            new_address(),
+            Coins::new(1),
+            nonce,
+            Coins::new(0),
+        );
         node.submit(tx.clone()).unwrap();
         payments.push(tx);
     }
@@ -228,7 +246,7 @@ fn transactions_are_found_pending_then_confirmed_and_in_histories() {
     let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
     let (alice, bob) = (Address::of(&key), new_address());
     node.mine(&alice).unwrap();
-    let payment = Transaction::signed(&key, &bob, Coins::new(7), 0, Coins::new(1));
+    let payment = Transaction::signed(&key, &id(RULES), &bob, Coins::new(7), 0, Coins::new(1));
     node.submit(payment.clone()).unwrap();
 
     let pending = node.queries().locate(payment.signature().unwrap().as_str()).unwrap();
@@ -278,7 +296,8 @@ fn a_fork_gives_the_mempool_back_what_its_dropped_block_carried() {
     theirs.extend(ours.queries().blocks()[1..].to_vec()).unwrap();
 
     // Our next block confirms Alice's payment; their heavier fork never saw it.
-    let payment = Transaction::signed(&key, new_address(), Coins::new(5), 0, Coins::ZERO);
+    let payment =
+        Transaction::signed(&key, &id(RULES), new_address(), Coins::new(5), 0, Coins::ZERO);
     ours.submit(payment.clone()).unwrap();
     ours.mine(&alice).unwrap();
     assert!(ours.queries().pending().is_empty(), "confirmed, so no longer waiting");

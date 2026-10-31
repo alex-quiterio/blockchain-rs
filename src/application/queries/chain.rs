@@ -2,12 +2,15 @@
 //! replays, and the work each block needed.
 
 use super::ChainQueries;
+use crate::domain::accounting::ChainId;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::block::{owned, Block, BlockHeader};
 use crate::domain::chain::{ChainError, HeaderVerdict};
 use crate::domain::consensus::weight::ChainWeight;
 
 pub struct TipStatus {
+    /// The chain every transfer must name.
+    pub chain: ChainId,
     pub height: u64,
     pub hash: BlockHash,
     pub weight: ChainWeight,
@@ -69,11 +72,17 @@ impl ChainQueries {
     pub fn tip(&self) -> TipStatus {
         let chain = self.chain.lock().unwrap();
         TipStatus {
+            chain: chain.ledger().chain().clone(),
             height: chain.blocks().len() as u64 - 1,
             hash: chain.tip().hash().clone(),
             weight: chain.weight(),
             pending: self.mempool.lock().unwrap().transactions().len(),
         }
+    }
+
+    /// The chain every transfer must name: its genesis hash.
+    pub fn chain_id(&self) -> ChainId {
+        self.chain.lock().unwrap().ledger().chain().clone()
     }
 
     /// Whether the chain replays cleanly, how long it is and what it weighs in a fork. The replay

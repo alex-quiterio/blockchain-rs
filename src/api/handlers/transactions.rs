@@ -83,12 +83,13 @@ pub async fn sign_transaction(
     let from = Address::of(&key);
     let nonce = req.nonce.unwrap_or_else(|| state.queries.next_nonce(&from));
     let to = Destination::parse(&req.to)?;
+    let chain = state.queries.chain_id();
     if to != Destination::Stake {
-        return Ok(Json(Transaction::signed(&key, to, req.amount, nonce, req.fee)));
+        return Ok(Json(Transaction::signed(&key, &chain, to, req.amount, nonce, req.fee)));
     }
     let due = state.queries.account(&from).commitment_due;
     let commitment = req.commitment.or_else(|| due.map(|epoch| randao::commitment(&key, epoch)));
-    Ok(Json(Transaction::stake(&key, req.amount, nonce, req.fee, commitment)))
+    Ok(Json(Transaction::stake(&key, &chain, req.amount, nonce, req.fee, commitment)))
 }
 
 pub async fn submit_transaction(

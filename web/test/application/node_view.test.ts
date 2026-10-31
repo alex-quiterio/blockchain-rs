@@ -34,6 +34,7 @@ async function watching(start: number) {
   let peers: Peer[] = [];
   const fake = fakeNode({
     status: () => ({
+      chain: chain[0]!.hash,
       height: chain.length - 1,
       tip: chain.at(-1)!.hash,
       weight: "1",

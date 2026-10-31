@@ -27,7 +27,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use blockchain::domain::accounting::transaction::Transaction;
-use blockchain::domain::accounting::Coins;
+use blockchain::domain::accounting::{ChainId, Coins};
 use blockchain::domain::chain::block::Block;
 use blockchain::domain::crypto::address::Address;
 
@@ -82,6 +82,7 @@ struct Stats {
 
 #[derive(Deserialize, Clone, PartialEq)]
 struct Status {
+    chain: ChainId,
     height: u64,
     tip: String,
     pending: usize,
@@ -93,6 +94,8 @@ struct Load {
     wallets: Mutex<Vec<Wallet>>,
     stats: Mutex<Stats>,
     proof_of_stake: bool,
+    /// The chain every transfer names.
+    chain: ChainId,
 }
 
 #[tokio::main]
@@ -102,6 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let consensus: Value =
         http.get(format!("{}/consensus", config.nodes[0])).send().await?.json().await?;
     let proof_of_stake = consensus["kind"] == "proof_of_stake";
+    let status: Status =
+        http.get(format!("{}/status", config.nodes[0])).send().await?.json().await?;
 
     let wallets = (0..config.wallets)
         .map(|i| {
@@ -115,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         wallets: Mutex::new(wallets),
         stats: Mutex::default(),
         proof_of_stake,
+        chain: status.chain,
     });
     let c = &load.config;
     println!(
@@ -175,7 +181,7 @@ impl Load {
         let to = wallets[to].address.clone();
         let wallet = &mut wallets[from];
         let (amount, fee) = (Coins::new(amount), Coins::new(fee));
-        let tx = Transaction::signed(&wallet.key, to, amount, wallet.nonce, fee);
+        let tx = Transaction::signed(&wallet.key, &self.chain, to, amount, wallet.nonce, fee);
         wallet.nonce += 1;
         (tx, wallet.home)
     }

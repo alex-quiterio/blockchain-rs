@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::transaction::{Transaction, TxKind};
-use crate::domain::accounting::Coins;
 use crate::domain::accounting::TransactionError;
+use crate::domain::accounting::{chain_bound_since, ChainId, Coins};
 use crate::domain::chain::block::BlockHash;
 use crate::domain::consensus::validators::{ValidatorState, Validators};
 use crate::domain::consensus::{Beacon, Reveal};
@@ -27,13 +28,30 @@ pub struct Ledger {
     /// Flattened, so a snapshot reads the same as when these were the ledger's own fields.
     #[serde(flatten)]
     validators: Validators,
+    /// The chain these are the accounts of. Left out of snapshots, which only the same chain
+    /// restores, so it's set again when one is.
+    #[serde(skip)]
+    chain: ChainId,
 }
 
 impl Ledger {
-    /// An empty ledger whose beacon starts at the genesis hash.
+    /// An empty ledger for the chain that starts at `genesis_hash`, whose beacon starts there.
     pub fn starting_at(genesis_hash: &BlockHash) -> Self {
         let beacon = Beacon::parse(genesis_hash.as_str()).expect("both are SHA-256 hex");
-        Self { validators: Validators::starting_at(beacon), ..Self::default() }
+        let chain = ChainId::parse(genesis_hash.as_str()).expect("both are SHA-256 hex");
+        Self { validators: Validators::starting_at(beacon), chain, ..Self::default() }
+    }
+
+    /// The same ledger, on the chain that starts at `genesis_hash`: for one read back from a
+    /// snapshot, which doesn't say.
+    pub(in crate::domain) fn on_chain(self, genesis_hash: &BlockHash) -> Self {
+        let chain = ChainId::parse(genesis_hash.as_str()).expect("both are SHA-256 hex");
+        Self { chain, ..self }
+    }
+
+    /// The chain a transfer must name.
+    pub fn chain(&self) -> &ChainId {
+        &self.chain
     }
 
     pub fn beacon(&self) -> &Beacon {
@@ -84,8 +102,14 @@ impl Ledger {
         *balance = balance.saturating_add(amount);
     }
 
-    /// Checks a signed transfer, stake or unstake against this state and applies it.
-    pub fn apply_transfer(&mut self, tx: &Transaction) -> Result<(), TransactionError> {
+    /// Checks a signed transfer, stake or unstake against this state and applies it. `at` is
+    /// when its block was made, or now for one that's waiting: from `chain_bound_since` on, a
+    /// transfer must name this chain.
+    pub fn apply_transfer(
+        &mut self,
+        tx: &Transaction,
+        at: DateTime<Utc>,
+    ) -> Result<(), TransactionError> {
         let kind = tx.kind();
         // A recipient account is a valid address by its type; only the sender needs unpacking.
         let Some(sender) = tx.sender() else {
@@ -94,6 +118,11 @@ impl Ledger {
         let from = sender;
         if tx.amount.is_zero() {
             return Err(TransactionError::ZeroAmount);
+        }
+        match &tx.chain {
+            Some(chain) if *chain != self.chain => return Err(TransactionError::WrongChain),
+            None if at >= chain_bound_since() => return Err(TransactionError::NoChain),
+            _ => {}
         }
         // The nonce is checked before the signature: stale and replayed transactions, the
         // common case when peers gossip, are turned away without the costly verification.
@@ -155,6 +184,54 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::accounting::chain_bound_since;
+    use crate::domain::crypto::{self, Signature};
+    use chrono::TimeDelta;
+    use ed25519_dalek::SigningKey;
+
+    fn funded_on(genesis: &BlockHash) -> (Ledger, SigningKey, Address) {
+        let key = crypto::parse_secret_key(&crypto::generate_keypair().1).unwrap();
+        let mut ledger = Ledger::starting_at(genesis);
+        ledger.credit(&Address::of(&key), Coins::new(50));
+        (ledger, key, Address::parse(&crypto::generate_keypair().0).unwrap())
+    }
+
+    /// A transfer as they were signed before they named a chain.
+    fn unbound(key: &SigningKey, to: &Address) -> Transaction {
+        let mut tx = Transaction::signed(key, &ChainId::zero(), to, Coins::new(5), 0, Coins::ZERO);
+        tx.chain = None;
+        tx.signature = Some(Signature::sign(key, &tx.payload()));
+        tx
+    }
+
+    #[test]
+    fn a_transfer_signed_for_another_chain_is_refused_even_with_its_nonce_free() {
+        let (ours, theirs) = (BlockHash::of(b"our genesis"), BlockHash::of(b"their genesis"));
+        let (mut ledger, key, to) = funded_on(&ours);
+        let their_chain = Ledger::starting_at(&theirs).chain().clone();
+        let replayed = Transaction::signed(&key, &their_chain, &to, Coins::new(5), 0, Coins::ZERO);
+        assert_eq!(ledger.apply_transfer(&replayed, Utc::now()), Err(TransactionError::WrongChain));
+
+        let mut relabelled = replayed;
+        relabelled.chain = Some(ledger.chain().clone());
+        assert_eq!(
+            ledger.apply_transfer(&relabelled, Utc::now()),
+            Err(TransactionError::BadSignature),
+            "the signature covers the chain, so it can't be swapped"
+        );
+
+        let ours = Transaction::signed(&key, ledger.chain(), &to, Coins::new(5), 0, Coins::ZERO);
+        assert_eq!(ledger.apply_transfer(&ours, Utc::now()), Ok(()));
+    }
+
+    #[test]
+    fn a_transfer_naming_no_chain_is_only_taken_in_blocks_from_before_they_had_to() {
+        let (mut ledger, key, to) = funded_on(&BlockHash::of(b"genesis"));
+        let tx = unbound(&key, &to);
+        let since = chain_bound_since();
+        assert_eq!(ledger.clone().apply_transfer(&tx, since), Err(TransactionError::NoChain));
+        assert_eq!(ledger.apply_transfer(&tx, since - TimeDelta::seconds(1)), Ok(()));
+    }
 
     #[test]
     fn a_snapshot_reads_the_same_as_before_validators_had_their_own_type() {

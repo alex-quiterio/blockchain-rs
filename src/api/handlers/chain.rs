@@ -53,6 +53,7 @@ pub async fn get_status(State(state): State<AppState>, headers: HeaderMap) -> Js
     sender(&state, &headers);
     let tip = state.queries.tip();
     Json(StatusResponse {
+        chain: tip.chain,
         height: tip.height,
         tip: tip.hash,
         weight: tip.weight.to_string(),

@@ -55,12 +55,12 @@ export async function sign(
 }
 
 /**
- * A transfer signed with `secretKey`. A fee or commitment is left out when there's none, as the
+ * A transfer signed with `secretKey`. A fee, commitment or chain is left out when there's none, as the
  * node expects.
  */
 export async function signTransfer(
   secretKey: string,
-  { from, to, amount, nonce, fee, commitment }: UnsignedTransfer,
+  { from, to, amount, nonce, fee, commitment, chain }: UnsignedTransfer,
 ): Promise<Transfer> {
   const tx: UnsignedTransfer = {
     from,
@@ -69,6 +69,7 @@ export async function signTransfer(
     nonce,
     ...(fee ? { fee } : {}),
     ...(commitment ? { commitment } : {}),
+    ...(chain ? { chain } : {}),
   };
   return { ...tx, signature: await sign(secretKey, signingPayload(tx)) };
 }

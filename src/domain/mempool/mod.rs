@@ -5,6 +5,8 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
+use chrono::Utc;
+
 use crate::domain::accounting::ledger::Ledger;
 use crate::domain::accounting::transaction::Transaction;
 use crate::domain::accounting::Coins;
@@ -227,7 +229,7 @@ impl Mempool {
         if tx.signature.as_ref().is_some_and(|s| self.signatures.contains(s)) {
             return Err(TransactionError::AlreadyPending);
         }
-        self.projected.apply_transfer(&tx)?;
+        self.projected.apply_transfer(&tx, Utc::now())?;
         // Only signed transfers get this far: a block reward is refused above.
         self.signatures.extend(tx.signature.clone());
         self.waiting.push(tx);
@@ -238,7 +240,7 @@ impl Mempool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::accounting::Coins;
+    use crate::domain::accounting::{ChainId, Coins};
     use crate::domain::crypto;
     use crate::domain::crypto::address::Address;
 
@@ -251,7 +253,7 @@ mod tests {
     }
 
     fn pay(key: &ed25519_dalek::SigningKey, to: &Address, amount: u64, nonce: u64) -> Transaction {
-        Transaction::signed(key, to, Coins::new(amount), nonce, Coins::new(0))
+        Transaction::signed(key, &ChainId::zero(), to, Coins::new(amount), nonce, Coins::new(0))
     }
 
     #[test]
@@ -284,7 +286,7 @@ mod tests {
 
         // A block confirmed the first; a fork gave back a payment from someone else.
         let mut confirmed = ledger.clone();
-        confirmed.apply_transfer(&first).unwrap();
+        confirmed.apply_transfer(&first, Utc::now()).unwrap();
         let (_, other, _) = funded();
         confirmed.credit(&Address::of(&other), Coins::new(50));
         pool.rebase(&confirmed, vec![pay(&other, &to, 3, 0)]);
@@ -299,8 +301,10 @@ mod tests {
         let (_, other, _) = funded();
         ledger.credit(&Address::of(&other), Coins::new(50));
         let mut pool = Mempool::on(&ledger);
-        let cheap = Transaction::signed(&key, &to, Coins::new(1), 0, Coins::new(1));
-        let dear = Transaction::signed(&other, &to, Coins::new(1), 0, Coins::new(9));
+        let cheap =
+            Transaction::signed(&key, &ChainId::zero(), &to, Coins::new(1), 0, Coins::new(1));
+        let dear =
+            Transaction::signed(&other, &ChainId::zero(), &to, Coins::new(1), 0, Coins::new(9));
         pool.admit(cheap.clone()).unwrap();
         pool.admit(dear.clone()).unwrap();
         assert_eq!(pool.candidates(BlockCapacity::ANY), [cheap.clone(), dear.clone()]);
@@ -318,8 +322,24 @@ mod tests {
             pool.fee_estimate(BlockCapacity::at_most(2)),
             FeeEstimate { room: 2, fee: Coins::ZERO }
         );
-        pool.admit(Transaction::signed(&key, &to, Coins::new(1), 0, Coins::new(3))).unwrap();
-        pool.admit(Transaction::signed(&other, &to, Coins::new(1), 0, Coins::new(5))).unwrap();
+        pool.admit(Transaction::signed(
+            &key,
+            &ChainId::zero(),
+            &to,
+            Coins::new(1),
+            0,
+            Coins::new(3),
+        ))
+        .unwrap();
+        pool.admit(Transaction::signed(
+            &other,
+            &ChainId::zero(),
+            &to,
+            Coins::new(1),
+            0,
+            Coins::new(5),
+        ))
+        .unwrap();
         assert_eq!(
             pool.fee_estimate(BlockCapacity::at_most(3)),
             FeeEstimate { room: 1, fee: Coins::ZERO }
@@ -380,7 +400,8 @@ mod tests {
         assert_eq!(pool.fee_estimate(BlockCapacity::ANY).fee, Coins::new(1));
 
         let _ = pool.take_events();
-        let paying = Transaction::signed(&other, &to, Coins::new(1), 0, Coins::new(1));
+        let paying =
+            Transaction::signed(&other, &ChainId::zero(), &to, Coins::new(1), 0, Coins::new(1));
         pool.admit(paying.clone()).unwrap();
         assert_eq!(pool.take_events(), [MempoolEvent::Accepted(paying.clone())]);
         let nonces: Vec<_> = pool.transactions().iter().map(Transaction::nonce).collect();
@@ -397,7 +418,8 @@ mod tests {
         let mut pool = Mempool::on(&ledger).with_limit(1);
         let waiting = pay(&key, &to, 1, 0);
         pool.admit(waiting.clone()).unwrap();
-        let replayed = Transaction::signed(&other, &to, Coins::new(1), 5, Coins::new(9));
+        let replayed =
+            Transaction::signed(&other, &ChainId::zero(), &to, Coins::new(1), 5, Coins::new(9));
         assert_eq!(pool.admit(replayed), Err(TransactionError::BadNonce { expected: 0, got: 5 }));
         assert_eq!(pool.transactions(), [waiting]);
     }

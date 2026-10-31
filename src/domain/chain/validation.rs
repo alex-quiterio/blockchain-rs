@@ -155,7 +155,9 @@ pub(super) fn apply_block(
     tally.work = work;
     ledger.credit(producer, coinbase.amount);
     for (position, tx) in block.transactions.iter().enumerate().skip(1) {
-        ledger.apply_transfer(tx).map_err(|reason| BlockError::BadTransfer { position, reason })?;
+        ledger
+            .apply_transfer(tx, block.timestamp)
+            .map_err(|reason| BlockError::BadTransfer { position, reason })?;
     }
     Ok(())
 }

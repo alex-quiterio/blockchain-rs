@@ -142,7 +142,10 @@ impl Blockchain {
                 && links_up(&blocks[..=s.height], &rules)
         });
         let (kept, from) = match fits {
-            Some(s) => (replay_from(&blocks, s.height + 1, s.tally, &rules, keep)?, Some(s.height)),
+            Some(mut s) => {
+                s.tally.ledger = s.tally.ledger.on_chain(&blocks[0].hash);
+                (replay_from(&blocks, s.height + 1, s.tally, &rules, keep)?, Some(s.height))
+            }
             None => (replay_kept(&blocks, &rules, keep)?, None),
         };
         let blocks = blocks.into_iter().map(Arc::new).collect();
@@ -405,7 +408,7 @@ impl Blockchain {
         let mut ledger = self.ledger().clone();
         let fitting: Vec<_> = pending
             .iter()
-            .filter(|tx| ledger.apply_transfer(tx).is_ok())
+            .filter(|tx| ledger.apply_transfer(tx, Utc::now()).is_ok())
             .take(self.rules.block_capacity.limit())
             .cloned()
             .collect();

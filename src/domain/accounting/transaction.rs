@@ -8,7 +8,7 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::accounting::{Coins, Destination, Source};
+use crate::domain::accounting::{ChainId, Coins, Destination, Source};
 use crate::domain::consensus::Commitment;
 use crate::domain::crypto::address::Address;
 use crate::domain::crypto::signature::{self, Signature};
@@ -58,6 +58,11 @@ pub struct Transaction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(in crate::domain) commitment: Option<Commitment>,
+    /// The chain it's for, so it can't be replayed on another. Left out only by transfers made
+    /// before transfers named one; see `chain_bound_since`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub(in crate::domain) chain: Option<ChainId>,
 }
 
 impl Transaction {
@@ -92,6 +97,10 @@ impl Transaction {
         self.commitment.as_ref()
     }
 
+    pub fn chain(&self) -> Option<&ChainId> {
+        self.chain.as_ref()
+    }
+
     pub fn signing_payload(
         from: &str,
         to: &str,
@@ -99,6 +108,7 @@ impl Transaction {
         nonce: u64,
         fee: Coins,
         commitment: Option<&str>,
+        chain: Option<&str>,
     ) -> Vec<u8> {
         let mut payload = format!("{from}|{to}|{amount}|{nonce}");
         if !fee.is_zero() {
@@ -107,34 +117,41 @@ impl Transaction {
         if let Some(commitment) = commitment {
             payload.push_str(&format!("|commit={commitment}"));
         }
+        if let Some(chain) = chain {
+            payload.push_str(&format!("|chain={chain}"));
+        }
         payload.into_bytes()
     }
 
-    /// A transfer (or unstake, or later stake, by `to`) from `key`'s address, signed with it.
+    /// A transfer (or unstake, or later stake, by `to`) from `key`'s address on `chain`, signed
+    /// with it.
     pub fn signed(
         key: &SigningKey,
+        chain: &ChainId,
         to: impl Into<Destination>,
         amount: Coins,
         nonce: u64,
         fee: Coins,
     ) -> Self {
-        Self::signed_with(key, to.into(), amount, nonce, fee, None)
+        Self::signed_with(key, chain, to.into(), amount, nonce, fee, None)
     }
 
-    /// A stake from `key`'s address. `commitment` is required the first time, and refused
-    /// while an earlier one is still in use.
+    /// A stake from `key`'s address on `chain`. `commitment` is required the first time, and
+    /// refused while an earlier one is still in use.
     pub fn stake(
         key: &SigningKey,
+        chain: &ChainId,
         amount: Coins,
         nonce: u64,
         fee: Coins,
         commitment: Option<Commitment>,
     ) -> Self {
-        Self::signed_with(key, Destination::Stake, amount, nonce, fee, commitment)
+        Self::signed_with(key, chain, Destination::Stake, amount, nonce, fee, commitment)
     }
 
     fn signed_with(
         key: &SigningKey,
+        chain: &ChainId,
         to: Destination,
         amount: Coins,
         nonce: u64,
@@ -144,9 +161,18 @@ impl Transaction {
         let from = Source::Account(Address::of(key));
         let (sender, recipient) = (from.to_string(), to.to_string());
         let commit = commitment.as_ref().map(Commitment::as_str);
-        let payload = Self::signing_payload(&sender, &recipient, amount, nonce, fee, commit);
+        let payload = Self::signing_payload(
+            &sender,
+            &recipient,
+            amount,
+            nonce,
+            fee,
+            commit,
+            Some(chain.as_str()),
+        );
         let signature = Some(Signature::sign(key, &payload));
-        Self { from, to, amount, nonce, signature, fee, commitment }
+        let chain = Some(chain.clone());
+        Self { from, to, amount, nonce, signature, fee, commitment, chain }
     }
 
     pub fn payload(&self) -> Vec<u8> {
@@ -157,6 +183,7 @@ impl Transaction {
             self.nonce,
             self.fee,
             self.commitment.as_ref().map(Commitment::as_str),
+            self.chain.as_ref().map(ChainId::as_str),
         )
     }
 
@@ -194,6 +221,7 @@ impl Transaction {
             signature: None,
             fee: Coins::ZERO,
             commitment: None,
+            chain: None,
         }
     }
 }
