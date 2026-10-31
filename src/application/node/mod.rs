@@ -127,6 +127,14 @@ impl NodeService {
         Self { snapshot_every: blocks, ..self }
     }
 
+    /// Lets at most `transfers` wait for a block instead of `MAX_WAITING` (at least one).
+    pub fn with_max_waiting(self, transfers: usize) -> Self {
+        let mut mempool = self.mempool.lock().unwrap();
+        *mempool = std::mem::take(&mut *mempool).with_limit(transfers);
+        drop(mempool);
+        self
+    }
+
     /// The height of the snapshot the chain was restored from on opening, if one was used.
     pub fn restored_from(&self) -> Option<usize> {
         self.restored_from

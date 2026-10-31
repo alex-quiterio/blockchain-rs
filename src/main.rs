@@ -24,7 +24,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .listening(log_event)
         .open()
         .map_err(|e| format!("{chain_file}: {e}"))?
-        .with_snapshots_every(config.snapshot_every);
+        .with_snapshots_every(config.snapshot_every)
+        .with_max_waiting(config.max_waiting);
     // A new chain says so through the log; a restored one says how much was loaded.
     if !node.started() {
         let length = node.queries().tip().height + 1;

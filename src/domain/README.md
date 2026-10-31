@@ -81,7 +81,7 @@ The chain keeps its blocks behind `Arc`s, since a block never changes once it's 
 
 | | |
 | --- | --- |
-| `mod.rs` | `Mempool`: `admit` a transaction, offer `candidates` for a block, `rebase` onto the chain after it changes (taking back what a fork dropped), and `MempoolEvent` (`Accepted`, `Rebased`). |
+| `mod.rs` | `Mempool`: `admit` a transaction (at most `MAX_WAITING`; once full, only by outbidding the cheapest one it can push out), offer `candidates` for a block, `rebase` onto the chain after it changes (taking back what a fork dropped), and `MempoolEvent` (`Accepted`, `Rebased`). |
 | `selection.rs` | What it offers when more is waiting than fits: the highest fees first, each sender's transfers in nonce order. A producer's choice, not a consensus rule. |
 
 ## The invariants

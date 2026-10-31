@@ -79,6 +79,7 @@ In the Docker network, node C and node A only know node B, and gossip carries ev
 | `RETARGET_BLOCKS` | `10` | Blocks between difficulty adjustments. |
 | `REWARD` | `50` | Coins per block, before fees. |
 | `MAX_BLOCK_TRANSFERS` | `100` | Transfers a block may hold. `0` means no limit. |
+| `MAX_WAITING` | `5000` | Transfers that may wait for a block at once. When full, a new one must pay more than the cheapest it pushes out. |
 | `BIND_ADDR` | `127.0.0.1:3000` | Where the node listens. |
 | `CHAIN_FILE` | `chain.json` | Where the chain is saved. |
 | `PEERS` | none | Comma-separated peer URLs to join on startup. |
@@ -107,7 +108,7 @@ flowchart LR
 Each block names the hash of the one before it, so changing an old block breaks every block after it. Its first transaction is the **payout**: the reward plus the block's fees, to whoever produced it.
 
 - **Forks.** A node keeps the *heaviest* valid chain: most work under proof of work, most stake behind the blocks under proof of stake. Ties go to the lower tip hash, so every node picks the same one.
-- **Fees.** When more is waiting than a block holds, the highest fees go first, each sender's transfers staying in nonce order. Only the size limit is a consensus rule; which transfers fill a block is the producer's choice.
+- **Fees.** When more is waiting than a block holds, the highest fees go first, each sender's transfers staying in nonce order. Only the size limit is a consensus rule; which transfers fill a block is the producer's choice. At most `MAX_WAITING` may wait at once; once full, a new transfer must outbid the cheapest last transfer of another sender, which leaves. Paying yourself costs nothing, so without that limit one coin could fill every node's memory.
 - **Difficulty.** Every `RETARGET_BLOCKS` blocks, the work is scaled by how far the last ones were from the target pace, by at most 4×. As in Bitcoin, a block's time must be after the median of the last 11 and at most 2 hours ahead, so miners can't fake the pace.
 - **Validator turns.** Like Ethereum's RANDAO, a validator commits to the end of a secret hash chain when they first stake, and each block they forge reveals the next link back. Reveals are fixed in advance and mixed into the beacon that picks the next validator, so no choice of timestamp or contents can steer the draw.
 - **Catching up.** A node behind a peer fetches its headers first and checks them: hashes, links, times, and the work or the validator's signature. It fetches blocks only if they hold up, only from where the peer's chain leaves its own, and under proof of work only if they're heavier, so a peer that claims more than it has costs just its headers.

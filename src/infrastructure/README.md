@@ -47,7 +47,7 @@ The adapters: what plugs the [domain](../domain/README.md) and the [application]
 
 ## Configuration (`config.rs`)
 
-`Config::from_env` reads a node's settings from the environment: the chain rules, reorg limit, snapshot interval, address, chain file, public URL, peers, how many peers to discover, sync interval and how long to keep an unreachable peer. Every setting has a default, so a node starts with none set. A value that doesn't parse falls back to its default, except `CONSENSUS`, which must be `pow` or `pos`. The [main README](../../README.md) lists them all, under Configuration.
+`Config::from_env` reads a node's settings from the environment: the chain rules, reorg limit, snapshot interval, mempool limit, address, chain file, public URL, peers, how many peers to discover, sync interval and how long to keep an unreachable peer. Every setting has a default, so a node starts with none set. A value that doesn't parse falls back to its default, except `CONSENSUS`, which must be `pow` or `pos`. The [main README](../../README.md) lists them all, under Configuration.
 
 ## Adding an adapter
 

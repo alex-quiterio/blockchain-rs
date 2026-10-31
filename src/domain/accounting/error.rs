@@ -29,6 +29,11 @@ pub enum TransactionError {
     UnexpectedCommitment,
     /// The exact transaction is already waiting in the mempool, usually because of gossip.
     AlreadyPending,
+    /// The mempool holds all it may. `needed` is the fee that would push out the cheapest
+    /// transfer waiting, or `None` when only the sender's own are there to push out.
+    MempoolFull {
+        needed: Option<Coins>,
+    },
 }
 
 impl fmt::Display for TransactionError {
@@ -51,6 +56,12 @@ impl fmt::Display for TransactionError {
                 write!(f, "only a first stake carries a commitment; this one is still in use")
             }
             Self::AlreadyPending => write!(f, "transaction is already waiting to be mined"),
+            Self::MempoolFull { needed: Some(fee) } => {
+                write!(f, "the mempool is full: a fee of at least {fee} gets a place")
+            }
+            Self::MempoolFull { needed: None } => {
+                write!(f, "the mempool is full of this sender's own transfers; wait for a block")
+            }
         }
     }
 }

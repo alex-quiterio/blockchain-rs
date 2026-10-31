@@ -2,7 +2,8 @@
 //! (`Mempool`), and what it offers when more is waiting than a block holds (`selection`). Its
 //! lock in a node is its own, so the chain, the other aggregate, never waits on it.
 
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::accounting::ledger::Ledger;
 use crate::domain::accounting::transaction::Transaction;
@@ -13,6 +14,11 @@ use crate::domain::crypto::address::Address;
 use crate::domain::crypto::Signature;
 
 mod selection;
+
+/// How many transfers may wait at once, unless the node is told otherwise. Without a limit,
+/// anyone holding a single coin could queue zero-fee transfers to themselves without end, since
+/// each hands the coin straight back, and every node would hold and gossip them all.
+pub const MAX_WAITING: usize = 5_000;
 
 /// Signed transfers waiting to be mined, in the order they arrived. Together they always apply
 /// cleanly on top of the confirmed ledger.
@@ -26,9 +32,15 @@ mod selection;
 /// transaction only checks that one, instead of the whole queue again. Under load, with hundreds
 /// waiting and peers gossiping each other's queues, that's the difference between a node that
 /// keeps up and one that stalls.
+///
+/// It holds at most `limit` transfers. Once full, a new one gets in only by paying a higher fee
+/// than the cheapest it can push out: the last one waiting from some other sender, since nothing
+/// of that sender's comes after it to break.
 #[derive(Debug, Clone, Default)]
 pub struct Mempool {
     waiting: Vec<Transaction>,
+    /// The most that may wait at once. Taking back what a fork dropped may briefly go past it.
+    limit: usize,
     /// The confirmed ledger it sits on, which candidates for a block are picked against.
     confirmed: Ledger,
     /// The confirmed ledger with every waiting transaction applied.
@@ -63,7 +75,17 @@ pub struct FeeEstimate {
 impl Mempool {
     /// An empty mempool on top of `confirmed`.
     pub fn on(confirmed: &Ledger) -> Self {
-        Self { confirmed: confirmed.clone(), projected: confirmed.clone(), ..Self::default() }
+        let projected = confirmed.clone();
+        Self { confirmed: confirmed.clone(), projected, limit: MAX_WAITING, ..Self::default() }
+    }
+
+    /// The same mempool, holding at most `limit` transfers (at least one).
+    pub fn with_limit(self, limit: usize) -> Self {
+        Self { limit: limit.max(1), ..self }
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
     }
 
     /// Keeps the candidates that still apply on top of `confirmed`, in order, dropping the rest.
@@ -110,7 +132,12 @@ impl Mempool {
             Some(lowest) if room == 0 => lowest.saturating_add(Coins::new(1)),
             _ => Coins::ZERO,
         };
-        FeeEstimate { room, fee }
+        // A full mempool asks more of a newcomer than the cheapest it would push out.
+        let to_get_in = match self.is_full().then(|| self.cheapest_to_push_out(None)) {
+            Some(Some((_, lowest))) => lowest.saturating_add(Coins::new(1)),
+            _ => Coins::ZERO,
+        };
+        FeeEstimate { room, fee: fee.max(to_get_in) }
     }
 
     /// After the chain changed: keeps what still applies on top of its new `confirmed` ledger,
@@ -119,7 +146,8 @@ impl Mempool {
     pub fn rebase(&mut self, confirmed: &Ledger, returned: Vec<Transaction>) {
         let (waiting, mut events) = (std::mem::take(&mut self.waiting), self.take_events());
         let (before, had) = (waiting.len(), std::mem::take(&mut self.signatures));
-        *self = Self::rebuilt(returned.into_iter().chain(waiting), confirmed);
+        *self =
+            Self::rebuilt(returned.into_iter().chain(waiting), confirmed).with_limit(self.limit);
         let kept = self.signatures.intersection(&had).count();
         let returned = self.waiting.len() - kept;
         events.push(MempoolEvent::Rebased { kept, dropped: before - kept, returned });
@@ -149,11 +177,49 @@ impl Mempool {
         state.reveals_left.is_none().then_some(state.next_epoch)
     }
 
-    /// Queues `tx` if it applies after everything already waiting.
+    fn is_full(&self) -> bool {
+        self.waiting.len() >= self.limit
+    }
+
+    /// Queues `tx` if it applies after everything already waiting. When the mempool is full, it
+    /// must also pay more than the cheapest transfer it can push out, which then leaves, along
+    /// with anything that spent coins only it brought.
     pub fn admit(&mut self, tx: Transaction) -> Result<(), TransactionError> {
-        self.take_in(tx.clone())?;
+        if !self.is_full() {
+            self.take_in(tx.clone())?;
+        } else {
+            let needed = |lowest: Coins| lowest.saturating_add(Coins::new(1));
+            let (at, lowest) = self
+                .cheapest_to_push_out(tx.sender())
+                .ok_or(TransactionError::MempoolFull { needed: None })?;
+            if tx.fee <= lowest {
+                return Err(TransactionError::MempoolFull { needed: Some(needed(lowest)) });
+            }
+            // Made on a copy, so a newcomer that doesn't apply pushes nothing out.
+            let rest = self.waiting.iter().enumerate().filter(|&(i, _)| i != at);
+            let mut made_room = Self::rebuilt(rest.map(|(_, tx)| tx.clone()), &self.confirmed)
+                .with_limit(self.limit);
+            made_room.take_in(tx.clone())?;
+            made_room.events = std::mem::take(&mut self.events);
+            *self = made_room;
+        }
         self.events.push(MempoolEvent::Accepted(tx));
         Ok(())
+    }
+
+    /// Where the cheapest transfer that can be pushed out waits, and its fee: the last one of
+    /// some sender other than `newcomer`, whose transfer comes after their own last. Among equal
+    /// fees, the latest to arrive goes first.
+    fn cheapest_to_push_out(&self, newcomer: Option<&Address>) -> Option<(usize, Coins)> {
+        let mut lasts = HashMap::new();
+        for (at, tx) in self.waiting.iter().enumerate() {
+            lasts.insert(tx.sender(), at);
+        }
+        lasts
+            .into_iter()
+            .filter(|&(sender, _)| sender != newcomer)
+            .map(|(_, at)| (at, self.waiting[at].fee))
+            .min_by_key(|&(at, fee)| (fee, Reverse(at)))
     }
 
     /// Queues `tx` like `admit`, but quietly: rebuilding takes back what was already there.
@@ -289,6 +355,59 @@ mod tests {
         assert_eq!(pool.admit(forged), Err(TransactionError::BadSignature));
         pool.admit(pay(&key, &to, 50, 0)).unwrap();
         assert_eq!(pool.projected().balance(&Address::of(&key)), Coins::new(0));
+    }
+
+    #[test]
+    fn a_full_mempool_takes_a_higher_fee_in_place_of_the_cheapest_last_transfer() {
+        let (mut ledger, spammer, to) = funded();
+        let (_, other, _) = funded();
+        ledger.credit(&Address::of(&other), Coins::new(50));
+        let mut pool = Mempool::on(&ledger).with_limit(3);
+        let me = Address::of(&spammer);
+        // Paying yourself costs nothing, so without a limit this could go on forever.
+        for nonce in 0..3 {
+            pool.admit(pay(&spammer, &me, 1, nonce)).unwrap();
+        }
+        assert_eq!(
+            pool.admit(pay(&spammer, &me, 1, 3)),
+            Err(TransactionError::MempoolFull { needed: None }),
+            "a sender can't push out their own, which theirs comes after"
+        );
+        assert_eq!(
+            pool.admit(pay(&other, &to, 1, 0)),
+            Err(TransactionError::MempoolFull { needed: Some(Coins::new(1)) })
+        );
+        assert_eq!(pool.fee_estimate(BlockCapacity::ANY).fee, Coins::new(1));
+
+        let _ = pool.take_events();
+        let paying = Transaction::signed(&other, &to, Coins::new(1), 0, Coins::new(1));
+        pool.admit(paying.clone()).unwrap();
+        assert_eq!(pool.take_events(), [MempoolEvent::Accepted(paying.clone())]);
+        let nonces: Vec<_> = pool.transactions().iter().map(Transaction::nonce).collect();
+        assert_eq!(nonces, [0, 1, 0], "the spammer's last went, and the rest still apply");
+        assert_eq!(pool.next_nonce(&me), 2);
+        assert_eq!(pool.limit(), 3);
+    }
+
+    #[test]
+    fn a_newcomer_that_doesnt_apply_pushes_nothing_out() {
+        let (mut ledger, key, to) = funded();
+        let (_, other, _) = funded();
+        ledger.credit(&Address::of(&other), Coins::new(50));
+        let mut pool = Mempool::on(&ledger).with_limit(1);
+        let waiting = pay(&key, &to, 1, 0);
+        pool.admit(waiting.clone()).unwrap();
+        let replayed = Transaction::signed(&other, &to, Coins::new(1), 5, Coins::new(9));
+        assert_eq!(pool.admit(replayed), Err(TransactionError::BadNonce { expected: 0, got: 5 }));
+        assert_eq!(pool.transactions(), [waiting]);
+    }
+
+    #[test]
+    fn a_rebase_keeps_the_limit() {
+        let (ledger, _, _) = funded();
+        let mut pool = Mempool::on(&ledger).with_limit(7);
+        pool.rebase(&ledger, Vec::new());
+        assert_eq!(pool.limit(), 7);
     }
 
     #[test]

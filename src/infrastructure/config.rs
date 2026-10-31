@@ -8,6 +8,7 @@ use crate::application::{FORGET_AFTER, MAX_PEERS, SNAPSHOT_BLOCKS};
 use crate::domain::chain::ReorgLimit;
 use crate::domain::consensus::rules::{ChainRules, DEFAULT_MAX_BLOCK_TRANSFERS};
 use crate::domain::consensus::BlockCapacity;
+use crate::domain::mempool::MAX_WAITING;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_CHAIN_FILE: &str = "chain.json";
@@ -20,6 +21,8 @@ pub struct Config {
     pub reorg_limit: ReorgLimit,
     /// Blocks between snapshots. 0 takes none.
     pub snapshot_every: usize,
+    /// The most transfers that may wait for a block at once.
+    pub max_waiting: usize,
     /// Where the node listens.
     pub bind_addr: String,
     /// Where the chain is saved.
@@ -55,6 +58,7 @@ impl Config {
             rules,
             reorg_limit: ReorgLimit::new(env_or("MAX_REORG_DEPTH", ReorgLimit::DEFAULT.blocks())),
             snapshot_every: env_or("SNAPSHOT_BLOCKS", SNAPSHOT_BLOCKS),
+            max_waiting: env_or("MAX_WAITING", MAX_WAITING),
             chain_file: std::env::var("CHAIN_FILE")
                 .unwrap_or_else(|_| DEFAULT_CHAIN_FILE.to_string()),
             public_url: std::env::var("PUBLIC_URL")
