@@ -87,6 +87,8 @@ export interface Peer {
   height: number | null;
   last_seen: string | null;
   error: string | null;
+  /** Until when the node ignores it for sending invalid chains. */
+  banned_until: string | null;
 }
 export interface SyncReport {
   adopted_from: string | null;

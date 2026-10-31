@@ -15,13 +15,17 @@ function renderPeers(state: Readonly<NodeState>): void {
       ? state.peers.map((p) => {
           const known = p.height != null;
           const diff = p.height != null ? p.height - ours : 0;
-          const rel = !known
-            ? "not reached yet"
-            : diff > 0
-              ? `${diff} ahead`
-              : diff < 0
-                ? `${-diff} behind`
-                : "in step";
+          const banned =
+            p.banned_until != null && new Date(p.banned_until) > new Date();
+          const rel = banned
+            ? `banned until ${new Date(p.banned_until!).toLocaleTimeString()}`
+            : !known
+              ? "not reached yet"
+              : diff > 0
+                ? `${diff} ahead`
+                : diff < 0
+                  ? `${-diff} behind`
+                  : "in step";
           return el(
             "li",
             { className: "peer" },

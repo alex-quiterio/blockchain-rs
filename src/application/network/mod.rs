@@ -28,6 +28,17 @@ pub struct PeerStatus {
     pub error: Option<String>,
     /// When the attempts that have failed since it last answered began.
     pub failing_since: Option<DateTime<Utc>>,
+    /// How many syncs in a row it answered with headers or blocks that break a rule.
+    pub strikes: u32,
+    /// Until when it's ignored, after `BAN_AFTER` strikes: not pulled from, gossiped to or asked
+    /// for its peers, and its pushes are refused.
+    pub banned_until: Option<DateTime<Utc>>,
+}
+
+impl PeerStatus {
+    pub fn is_banned(&self, now: DateTime<Utc>) -> bool {
+        self.banned_until.is_some_and(|until| until > now)
+    }
 }
 
 /// The other nodes this one keeps in step with. New blocks and transactions are pushed to peers
@@ -48,6 +59,8 @@ pub struct Network {
     max_peers: usize,
     /// How long a peer may go unanswered before it's forgotten.
     forget_after: TimeDelta,
+    /// How long a peer that keeps sending invalid chains is ignored for.
+    ban_for: TimeDelta,
 }
 
 /// Blocks per request when catching up: small enough to arrive well within a request's timeout,
@@ -57,6 +70,15 @@ pub const SYNC_PAGE: usize = 500;
 /// How long a peer may go without answering before it's forgotten: long enough to ride out a
 /// restart or a deploy, short enough that a node gone for good stops costing a request per sync.
 pub const FORGET_AFTER: Duration = Duration::from_secs(600);
+
+/// Syncs in a row a peer may answer with an invalid chain before it's banned. Only what this
+/// node fetched counts: a push names its sender in a header anyone could write, so counting
+/// those would let a node get an honest peer banned by sending garbage in its name.
+pub const BAN_AFTER: u32 = 3;
+
+/// How long a banned peer is ignored for: long enough that a node feeding us garbage stops
+/// costing us a fetch per sync, short enough that one fixed by a restart is soon back.
+pub const BAN_FOR: Duration = Duration::from_secs(3600);
 
 /// Headers per request when catching up. A header is a fraction of a block, so more fit.
 pub const HEADER_PAGE: usize = 2000;
@@ -75,6 +97,7 @@ impl Network {
             page: SYNC_PAGE,
             max_peers: MAX_PEERS,
             forget_after: TimeDelta::from_std(FORGET_AFTER).unwrap(),
+            ban_for: TimeDelta::from_std(BAN_FOR).unwrap(),
         }
     }
 
@@ -91,6 +114,11 @@ impl Network {
     /// Forgets a peer that hasn't answered for `forget_after`, instead of `FORGET_AFTER`.
     pub fn with_forget_after(self, forget_after: Duration) -> Self {
         Self { forget_after: TimeDelta::from_std(forget_after).unwrap_or(TimeDelta::MAX), ..self }
+    }
+
+    /// Ignores a peer that keeps sending invalid chains for `ban_for`, instead of `BAN_FOR`.
+    pub fn with_ban_for(self, ban_for: Duration) -> Self {
+        Self { ban_for: TimeDelta::from_std(ban_for).unwrap_or(TimeDelta::MAX), ..self }
     }
 
     pub fn node(&self) -> &Arc<NodeService> {
@@ -154,8 +182,20 @@ impl Network {
         self.peer_urls().into_iter().filter(|url| Some(url.as_str()) != except).collect()
     }
 
+    /// Whether `url` is a peer this node is ignoring for now.
+    pub fn is_banned(&self, url: &str) -> bool {
+        let peers = self.peers.lock().unwrap();
+        peers.get(&normalize(url)).is_some_and(|status| status.is_banned(Utc::now()))
+    }
+
+    /// The peers to talk to: every one but those banned for now.
     fn peer_urls(&self) -> Vec<String> {
-        self.peers.lock().unwrap().keys().cloned().collect()
+        let (peers, now) = (self.peers.lock().unwrap(), Utc::now());
+        peers
+            .iter()
+            .filter(|(_, status)| !status.is_banned(now))
+            .map(|(url, _)| url.clone())
+            .collect()
     }
 
     fn status_of(&self, url: &str) -> PeerStatus {

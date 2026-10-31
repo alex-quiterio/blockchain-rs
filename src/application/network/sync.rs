@@ -9,10 +9,18 @@ use std::time::Duration;
 use chrono::Utc;
 use futures_util::future::join_all;
 
-use super::{Network, PeerStatus, PeerTip, DISCOVER_EVERY, HEADER_PAGE};
-use crate::application::off_runtime;
+use super::{Network, PeerStatus, PeerTip, BAN_AFTER, DISCOVER_EVERY, HEADER_PAGE};
+use crate::application::{off_runtime, ApplicationError, NodeError};
 use crate::domain::chain::block::{Block, BlockHeader};
-use crate::domain::chain::{Extension, HeaderVerdict};
+use crate::domain::chain::{ChainError, Extension, HeaderVerdict};
+
+/// What a peer that answered sent: a chain that was adopted, nothing new, or one that breaks a
+/// rule, and how.
+enum Pulled {
+    Adopted,
+    Nothing,
+    Invalid(String),
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -59,16 +67,29 @@ impl Network {
         let now = Utc::now();
         for (url, pulled) in urls.into_iter().zip(pulls) {
             let status = match pulled {
-                Ok((theirs, adopted)) => {
+                Ok((theirs, pulled)) => {
                     report.reached += 1;
-                    if adopted {
-                        report.adopted_from = Some(url.clone());
+                    let (mut strikes, mut banned_until, mut error) = (0, None, None);
+                    match pulled {
+                        Pulled::Adopted => report.adopted_from = Some(url.clone()),
+                        Pulled::Nothing => {}
+                        Pulled::Invalid(rule) => {
+                            strikes = self.status_of(&url).strikes + 1;
+                            if strikes >= BAN_AFTER {
+                                let until = now + self.ban_for;
+                                tracing::warn!("Banned peer {url} until {until}: {strikes} invalid chains in a row, the last {rule}");
+                                (strikes, banned_until) = (0, Some(until));
+                            }
+                            error = Some(format!("sent a chain whose {rule}"));
+                        }
                     }
                     PeerStatus {
                         height: Some(theirs.height as usize + 1),
                         last_seen: Some(now),
-                        error: None,
+                        error,
                         failing_since: None,
+                        strikes,
+                        banned_until,
                     }
                 }
                 Err(error) => {
@@ -88,11 +109,11 @@ impl Network {
         report
     }
 
-    /// Catches up with one peer. Returns its status and whether its chain was adopted.
-    async fn pull(&self, url: &str) -> Result<(PeerTip, bool), String> {
+    /// Catches up with one peer. Returns its status and what its chain came to.
+    async fn pull(&self, url: &str) -> Result<(PeerTip, Pulled), String> {
         let theirs = self.client.status(url, self.me.as_deref()).await?;
         let ours = self.queries.tip();
-        let mut adopted = false;
+        let mut pulled = Pulled::Nothing;
         if theirs.tip != ours.hash && theirs.weight >= ours.weight.value() {
             // Headers from as far back as a fork may reach, which say whether the peer's chain
             // holds up and where it leaves ours, before a single block is fetched.
@@ -102,9 +123,13 @@ impl Network {
             match off_runtime(move || queries.weigh_headers(&headers)).await {
                 Ok(HeaderVerdict::FetchFrom(from)) => {
                     let ours = ours.height as usize + 1;
-                    adopted = self.fetch_blocks(url, from, from < ours).await?;
+                    pulled = self.fetch_blocks(url, from, from < ours).await?;
                 }
                 Ok(HeaderVerdict::Ignore | HeaderVerdict::MissingParent) => {}
+                Err(refused) if breaks_a_rule(&refused) => {
+                    tracing::warn!("Not fetching from {url}: its headers {refused}");
+                    pulled = Pulled::Invalid(format!("headers {refused}"));
+                }
                 Err(refused) => tracing::warn!("Not fetching from {url}: its headers {refused}"),
             }
         }
@@ -118,7 +143,7 @@ impl Network {
             })
             .await;
         }
-        Ok((theirs, adopted))
+        Ok((theirs, pulled))
     }
 }
 
@@ -141,11 +166,11 @@ impl Network {
     }
 
     /// Fetches the peer's blocks from `from` on and offers them to the node. Returns whether
-    /// they were adopted. Blocks on top of our tip are offered a page at a time, each checked as
+    /// they were adopted, or the rule one broke. Blocks on top of our tip are offered a page at a time, each checked as
     /// it comes, so a node far behind makes progress and no response grows with the chain. A
     /// `fork` is fetched whole first: a page of it alone may weigh less than the blocks of ours
     /// it would replace, and the next page wouldn't build on anything we have.
-    async fn fetch_blocks(&self, url: &str, from: usize, fork: bool) -> Result<bool, String> {
+    async fn fetch_blocks(&self, url: &str, from: usize, fork: bool) -> Result<Pulled, String> {
         let mut adopted = false;
         let mut whole: Vec<Block> = Vec::new();
         let mut next = from;
@@ -157,8 +182,9 @@ impl Network {
                 whole.extend(page);
             } else {
                 match self.offer(page).await {
-                    Some(taken) => adopted |= taken,
-                    None => break,
+                    Ok(Some(taken)) => adopted |= taken,
+                    Ok(None) => break,
+                    Err(rule) => return Ok(Pulled::Invalid(rule)),
                 }
             }
             if fetched < self.page {
@@ -166,22 +192,37 @@ impl Network {
             }
         }
         if fork && !whole.is_empty() {
-            adopted = self.offer(whole).await.unwrap_or(false);
+            match self.offer(whole).await {
+                Ok(taken) => adopted = taken.unwrap_or(false),
+                Err(rule) => return Ok(Pulled::Invalid(rule)),
+            }
         }
-        Ok(adopted)
+        Ok(if adopted { Pulled::Adopted } else { Pulled::Nothing })
     }
 
-    /// Offers blocks to the node. Returns whether they were adopted, or `None` when it's no use
-    /// going on: they build on a block we don't have, or one breaks a rule.
-    async fn offer(&self, blocks: Vec<Block>) -> Option<bool> {
+    /// Offers blocks to the node. Returns whether they were adopted, `None` when it's no use
+    /// going on because they build on a block we don't have, or the rule one breaks.
+    async fn offer(&self, blocks: Vec<Block>) -> Result<Option<bool>, String> {
         let node = self.node.clone();
         match off_runtime(move || node.extend(blocks)).await {
-            Ok((extension, _)) => match extension {
+            Ok((extension, _)) => Ok(match extension {
                 Extension::Adopted => Some(true),
                 Extension::Ignored => Some(false),
                 Extension::MissingParent => None,
-            },
-            Err(_) => None,
+            }),
+            Err(NodeError::Domain(ApplicationError::Chain(refused))) if breaks_a_rule(&refused) => {
+                Err(format!("blocks {refused}"))
+            }
+            Err(NodeError::Domain(ApplicationError::Block(refused))) => {
+                Err(format!("blocks {refused}"))
+            }
+            Err(_) => Ok(None),
         }
     }
+}
+
+/// Whether a refusal is the peer's fault: a block or header that breaks a rule. A fork deeper
+/// than we follow is only a different view of the chain, and an empty answer only a short one.
+fn breaks_a_rule(refused: &ChainError) -> bool {
+    matches!(refused, ChainError::InvalidBlock { .. })
 }

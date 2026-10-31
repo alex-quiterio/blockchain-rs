@@ -29,6 +29,10 @@ impl ApiError {
     pub(super) fn not_found(message: impl Into<String>) -> Self {
         Self { status: StatusCode::NOT_FOUND, message: message.into() }
     }
+
+    pub(super) fn forbidden(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::FORBIDDEN, message: message.into() }
+    }
 }
 
 impl From<ApplicationError> for ApiError {

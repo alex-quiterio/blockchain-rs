@@ -24,6 +24,8 @@ struct Mesh {
     slow: Arc<Mutex<HashSet<String>>>,
     /// Peers that claim far more weight than their chain has.
     boasting: Arc<Mutex<HashSet<String>>>,
+    /// Peers whose headers are tampered with on the way out, so they break a rule.
+    lying: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Mesh {
@@ -85,7 +87,13 @@ impl PeerClient for Mesh {
     ) -> PeerResult<'a, Vec<BlockHeader>> {
         Box::pin(async move {
             let network = self.reach(peer, format!("headers from {height}")).await?;
-            Ok(network.queries().headers_between(height, limit))
+            let mut headers = network.queries().headers_between(height, limit);
+            if let Some(last) =
+                headers.last_mut().filter(|_| self.lying.lock().unwrap().contains(peer))
+            {
+                last.timestamp += chrono::TimeDelta::seconds(1);
+            }
+            Ok(headers)
         })
     }
     fn chain_from<'a>(
@@ -626,4 +634,72 @@ async fn a_peer_down_for_a_moment_is_kept() {
     a.sync().await;
     let back = &a.peers()[0].1;
     assert_eq!((back.failing_since, back.error.as_deref()), (None, None), "answering ends it");
+}
+
+/// `a`, banning for `ban_for`, with `liar` as a peer: a heavier chain whose headers break a rule.
+async fn facing_a_liar(mesh: &Mesh, ban_for: Duration) -> Arc<Network> {
+    let a = Arc::new(
+        Network::new(
+            Arc::new(
+                NodeService::open(
+                    Box::new(ChainInMemoryRepository::default()),
+                    ChainRules::proof_of_work(2, 50),
+                    ReorgLimit::new(3),
+                )
+                .unwrap(),
+            ),
+            Box::new(mesh.clone()),
+            Some("http://a".into()),
+        )
+        .with_ban_for(ban_for),
+    );
+    mesh.nodes.lock().unwrap().insert("http://a".into(), a.clone());
+    let liar = mesh.join("http://liar");
+    liar.node().mine(&miner()).unwrap();
+    mesh.lying.lock().unwrap().insert("http://liar".into());
+    a.add_peer("http://liar").await.unwrap();
+    a
+}
+
+#[tokio::test]
+async fn a_peer_that_keeps_sending_invalid_chains_is_banned_and_left_alone() {
+    let mesh = Mesh::default();
+    let a = facing_a_liar(&mesh, BAN_FOR).await;
+
+    for strikes in 1..BAN_AFTER {
+        a.sync().await;
+        let status = &a.peers()[0].1;
+        assert_eq!((status.strikes, status.banned_until), (strikes, None));
+        assert!(status.error.as_deref().unwrap().contains("headers"), "{status:?}");
+    }
+    a.sync().await;
+    let status = &a.peers()[0].1;
+    assert!(status.is_banned(chrono::Utc::now()), "{status:?}");
+    assert!(a.is_banned("http://liar/"));
+    assert_eq!(a.queries().tip().height, 0, "none of its blocks were taken");
+
+    mesh.sent();
+    a.sync().await;
+    a.discover().await;
+    a.broadcast_tip(None).await;
+    assert_eq!(mesh.sent(), Vec::<String>::new(), "a banned peer isn't pulled, asked or told");
+}
+
+#[tokio::test]
+async fn a_ban_runs_out_and_an_honest_answer_clears_the_strikes() {
+    let mesh = Mesh::default();
+    let a = facing_a_liar(&mesh, Duration::ZERO).await;
+    for _ in 0..BAN_AFTER {
+        a.sync().await;
+    }
+    assert!(a.peers()[0].1.banned_until.is_some());
+    assert!(!a.is_banned("http://liar"), "a ban of no time is over at once");
+
+    a.sync().await;
+    assert_eq!(a.peers()[0].1.strikes, 1, "back, and striking again");
+    mesh.lying.lock().unwrap().clear();
+    a.sync().await;
+    let status = &a.peers()[0].1;
+    assert_eq!((status.strikes, status.error.as_deref()), (0, None));
+    assert_eq!(a.queries().tip().height, 1, "its honest chain is adopted");
 }

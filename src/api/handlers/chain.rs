@@ -8,7 +8,7 @@ use axum::{
 };
 
 use super::error::ApiError;
-use super::{gossip_chain, sender};
+use super::{gossip_chain, sender, unbanned_sender};
 use crate::api::dto::chain::{ChainQuery, ReplaceResponse, StatusResponse, ValidityResponse};
 use crate::api::AppState;
 use crate::application::off_runtime;
@@ -68,9 +68,9 @@ pub async fn replace_chain(
     headers: HeaderMap,
     Json(blocks): Json<Vec<Block>>,
 ) -> Result<Json<ReplaceResponse>, ApiError> {
+    let from = unbanned_sender(&state, &headers)?;
     let node = state.node.clone();
     let (extension, length) = off_runtime(move || node.extend(blocks)).await?;
-    let from = sender(&state, &headers);
     let replaced = extension == Extension::Adopted;
     if replaced {
         gossip_chain(&state, from);

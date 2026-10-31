@@ -16,8 +16,10 @@ pub struct PeerResponse {
     /// The peer's chain length when last reached.
     pub height: Option<usize>,
     pub last_seen: Option<DateTime<Utc>>,
-    /// Why the last attempt to reach it failed, if it did.
+    /// Why the last attempt to reach it failed, or what was wrong with what it sent.
     pub error: Option<String>,
+    /// Until when it's ignored for sending invalid chains, if it is.
+    pub banned_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

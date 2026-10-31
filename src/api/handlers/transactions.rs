@@ -8,7 +8,7 @@ use axum::{
 };
 
 use super::error::ApiError;
-use super::sender;
+use super::unbanned_sender;
 use crate::api::dto::transactions::{
     BlockFeesEntry, FeesResponse, PlacementResponse, ProofResponse, SignRequest,
     TransactionResponse,
@@ -98,7 +98,8 @@ pub async fn submit_transaction(
     Json(tx): Json<Transaction>,
 ) -> Result<(StatusCode, Json<Transaction>), ApiError> {
     // Gossip follows from the mempool accepting it; see `Network::gossip_accepted`.
-    state.node.submit_from(tx.clone(), sender(&state, &headers).as_deref())?;
+    let from = unbanned_sender(&state, &headers)?;
+    state.node.submit_from(tx.clone(), from.as_deref())?;
     Ok((StatusCode::ACCEPTED, Json(tx)))
 }
 

@@ -176,7 +176,13 @@ test("polling says whether the node moved; if not, it brings the peers up to dat
   view.onChange(() => changes++);
   view.onPeersChange(() => peerChanges++);
 
-  const peer = { url: "http://b", height: 4, last_seen: null, error: null };
+  const peer = {
+    url: "http://b",
+    height: 4,
+    last_seen: null,
+    error: null,
+    banned_until: null,
+  };
   setPeers([peer]);
   assert.equal(await view.hasMoved(), false);
   assert.deepEqual(view.state.peers, [peer]);

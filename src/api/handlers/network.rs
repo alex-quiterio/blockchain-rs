@@ -20,6 +20,7 @@ pub async fn get_peers(State(state): State<AppState>) -> Json<Vec<PeerResponse>>
                 height: s.height,
                 last_seen: s.last_seen,
                 error: s.error,
+                banned_until: s.banned_until,
             })
             .collect(),
     )

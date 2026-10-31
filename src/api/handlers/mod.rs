@@ -10,6 +10,7 @@ pub mod wallets;
 
 use axum::http::HeaderMap;
 
+use self::error::ApiError;
 use super::{AppState, PEER_HEADER};
 
 /// Tells peers, except the one it came from, about a new tip without making the caller wait.
@@ -25,4 +26,15 @@ fn sender(state: &AppState, headers: &HeaderMap) -> Option<String> {
     let (network, peer) = (state.network.clone(), url.clone());
     tokio::spawn(async move { network.add_peer(&peer).await });
     Some(url)
+}
+
+/// The peer that pushed this, as `sender` gives it, unless it's one this node has banned for
+/// sending invalid chains, whose pushes are refused unread.
+fn unbanned_sender(state: &AppState, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    match sender(state, headers) {
+        Some(url) if state.network.is_banned(&url) => {
+            Err(ApiError::forbidden(format!("{url} is banned for sending invalid chains")))
+        }
+        from => Ok(from),
+    }
 }
