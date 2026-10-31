@@ -6,3 +6,5 @@
 /public/
 # Written by `cargo test` from the Rust bodies, and checked against by `npm run check`.
 /web/src/infrastructure/node_wire.ts
+/life*.json
+/life*.json.tmp

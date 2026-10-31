@@ -23,7 +23,7 @@ test("fees add up, counting none as zero", () => {
   assert.equal(feesOf([]), 0);
 });
 
-test("what's signed names a fee or commitment only when there is one", () => {
+test("what's signed names a fee, commitment or memo only when there is one", () => {
   assert.equal(signingPayload(base), "aa|bb|5|2");
   assert.equal(
     signingPayload({ ...base, fee: 0 }),
@@ -34,5 +34,9 @@ test("what's signed names a fee or commitment only when there is one", () => {
   assert.equal(
     signingPayload({ ...base, to: STAKE, commitment: "cc" }),
     "aa|stake|5|2|commit=cc",
+  );
+  assert.equal(
+    signingPayload({ ...base, fee: 1, memo: "dd" }),
+    "aa|bb|5|2|fee=1|memo=dd",
   );
 });

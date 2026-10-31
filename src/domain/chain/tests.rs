@@ -5,7 +5,7 @@ use super::block::owned;
 use super::validation::replay;
 use super::*;
 use crate::domain::accounting::TransactionError;
-use crate::domain::accounting::{Destination, Source};
+use crate::domain::accounting::{Destination, Memo, Source};
 use crate::domain::consensus::difficulty::meets_work;
 use crate::domain::consensus::BlockCapacity;
 use crate::domain::crypto;
@@ -274,6 +274,26 @@ fn rejects_forged_signature() {
     let mut tx = transfer(&mallory_key, &Address::of(&mallory_key), 10, 0);
     tx.from = Source::Account(alice.clone());
     assert_eq!(chain.submit(tx), Err(TransactionError::BadSignature));
+}
+
+#[test]
+fn a_memo_is_confirmed_under_the_senders_signature() {
+    let mut chain = chain();
+    let (alice, alice_key) = wallet();
+    let (bob, _) = wallet();
+    chain.mine(&alice).unwrap();
+
+    let memo = Memo::of(b"ran 5k by the river");
+    let mut swapped =
+        Transaction::with_memo(&alice_key, &bob, Coins::new(1), 0, Coins::ZERO, memo.clone());
+    swapped.memo = Some(Memo::of(b"ran 10k by the river"));
+    assert_eq!(chain.submit(swapped), Err(TransactionError::BadSignature));
+
+    let tx = Transaction::with_memo(&alice_key, &bob, Coins::new(1), 0, Coins::ZERO, memo.clone());
+    chain.submit(tx).unwrap();
+    let block = chain.mine(&bob).unwrap();
+    assert_eq!(block.transactions[1].memo(), Some(&memo));
+    assert!(chain.is_valid());
 }
 
 #[test]

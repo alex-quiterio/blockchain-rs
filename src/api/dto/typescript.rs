@@ -13,7 +13,7 @@ use ts_rs::{Config, TS};
 
 use super::*;
 use crate::domain::accounting::transaction::Transaction;
-use crate::domain::accounting::{Coins, Destination, Source};
+use crate::domain::accounting::{Coins, Destination, Memo, Source};
 use crate::domain::chain::block::{
     Block, BlockHash, BlockHeader, MerkleNode, MerkleRoot, Side, Step,
 };
@@ -55,6 +55,7 @@ on_the_wire_as! {
     MerkleRoot => String,
     MerkleNode => String,
     Commitment => String,
+    Memo => String,
     Reveal => String,
     Beacon => String,
     Coins => u64,

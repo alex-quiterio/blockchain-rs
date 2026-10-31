@@ -8,7 +8,7 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::accounting::{Coins, Destination, Source};
+use crate::domain::accounting::{Coins, Destination, Memo, Source};
 use crate::domain::consensus::Commitment;
 use crate::domain::crypto::address::Address;
 use crate::domain::crypto::signature::{self, Signature};
@@ -58,6 +58,11 @@ pub struct Transaction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub(in crate::domain) commitment: Option<Commitment>,
+    /// The hash of a note kept off the chain, which the signature covers, so the sender vouches
+    /// for it. Left out when there's none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub(in crate::domain) memo: Option<Memo>,
 }
 
 impl Transaction {
@@ -92,6 +97,10 @@ impl Transaction {
         self.commitment.as_ref()
     }
 
+    pub fn memo(&self) -> Option<&Memo> {
+        self.memo.as_ref()
+    }
+
     pub fn signing_payload(
         from: &str,
         to: &str,
@@ -99,6 +108,7 @@ impl Transaction {
         nonce: u64,
         fee: Coins,
         commitment: Option<&str>,
+        memo: Option<&str>,
     ) -> Vec<u8> {
         let mut payload = format!("{from}|{to}|{amount}|{nonce}");
         if !fee.is_zero() {
@@ -106,6 +116,9 @@ impl Transaction {
         }
         if let Some(commitment) = commitment {
             payload.push_str(&format!("|commit={commitment}"));
+        }
+        if let Some(memo) = memo {
+            payload.push_str(&format!("|memo={memo}"));
         }
         payload.into_bytes()
     }
@@ -118,7 +131,19 @@ impl Transaction {
         nonce: u64,
         fee: Coins,
     ) -> Self {
-        Self::signed_with(key, to.into(), amount, nonce, fee, None)
+        Self::signed_with(key, to.into(), amount, nonce, fee, None, None)
+    }
+
+    /// A transfer like `signed`'s that also carries `memo`, under the same signature.
+    pub fn with_memo(
+        key: &SigningKey,
+        to: impl Into<Destination>,
+        amount: Coins,
+        nonce: u64,
+        fee: Coins,
+        memo: Memo,
+    ) -> Self {
+        Self::signed_with(key, to.into(), amount, nonce, fee, None, Some(memo))
     }
 
     /// A stake from `key`'s address. `commitment` is required the first time, and refused
@@ -130,7 +155,7 @@ impl Transaction {
         fee: Coins,
         commitment: Option<Commitment>,
     ) -> Self {
-        Self::signed_with(key, Destination::Stake, amount, nonce, fee, commitment)
+        Self::signed_with(key, Destination::Stake, amount, nonce, fee, commitment, None)
     }
 
     fn signed_with(
@@ -140,13 +165,15 @@ impl Transaction {
         nonce: u64,
         fee: Coins,
         commitment: Option<Commitment>,
+        memo: Option<Memo>,
     ) -> Self {
         let from = Source::Account(Address::of(key));
         let (sender, recipient) = (from.to_string(), to.to_string());
         let commit = commitment.as_ref().map(Commitment::as_str);
-        let payload = Self::signing_payload(&sender, &recipient, amount, nonce, fee, commit);
+        let note = memo.as_ref().map(Memo::as_str);
+        let payload = Self::signing_payload(&sender, &recipient, amount, nonce, fee, commit, note);
         let signature = Some(Signature::sign(key, &payload));
-        Self { from, to, amount, nonce, signature, fee, commitment }
+        Self { from, to, amount, nonce, signature, fee, commitment, memo }
     }
 
     pub fn payload(&self) -> Vec<u8> {
@@ -157,6 +184,7 @@ impl Transaction {
             self.nonce,
             self.fee,
             self.commitment.as_ref().map(Commitment::as_str),
+            self.memo.as_ref().map(Memo::as_str),
         )
     }
 
@@ -194,6 +222,7 @@ impl Transaction {
             signature: None,
             fee: Coins::ZERO,
             commitment: None,
+            memo: None,
         }
     }
 }

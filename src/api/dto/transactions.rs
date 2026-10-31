@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::accounting::transaction::Transaction;
-use crate::domain::accounting::Coins;
+use crate::domain::accounting::{Coins, Memo};
 use crate::domain::chain::block::BlockHeader;
 use crate::domain::chain::block::{BlockHash, MerkleNode, Step};
 use crate::domain::consensus::Commitment;
@@ -25,6 +25,10 @@ pub struct SignRequest {
     /// For a first stake. Worked out from `secret_key` when left out.
     #[cfg_attr(test, ts(optional = nullable))]
     pub commitment: Option<Commitment>,
+    /// The hash of a note kept off the chain, for a transfer to carry.
+    #[cfg_attr(test, ts(optional = nullable))]
+    #[serde(default)]
+    pub memo: Option<Memo>,
 }
 
 /// A transaction and where it is.
