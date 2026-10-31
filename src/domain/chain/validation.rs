@@ -4,7 +4,7 @@
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use super::tally::Tally;
 use crate::domain::accounting::ledger::Ledger;
@@ -15,7 +15,9 @@ use crate::domain::chain::block::BlockError;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::chain::ChainError;
 use crate::domain::consensus::difficulty::{self, meets_work};
-use crate::domain::consensus::rules::{select_validator, ChainRules, Consensus};
+use crate::domain::consensus::rules::{ChainRules, Consensus};
+use crate::domain::consensus::turns::{opens_at, places_open, turn_order, STAND_IN_DRIFT};
+use crate::domain::crypto::address::Address;
 
 /// Replays `blocks` by every rule, or says which block first breaks one and how.
 pub fn validate_blocks(
@@ -127,8 +129,9 @@ pub(super) fn apply_block(
         return Err(BlockError::BrokenLink);
     }
     check_hashes(block)?;
-    difficulty::check_timestamp(before, block.timestamp, Utc::now())?;
-    check_seal(block, &tally.ledger, rules, work)?;
+    let now = Utc::now();
+    difficulty::check_timestamp(before, block.timestamp, now)?;
+    let place = check_seal(block, prev, &tally.ledger, rules, work, now)?;
 
     let ledger = &mut tally.ledger;
     let (coinbase, transfers) =
@@ -149,9 +152,11 @@ pub(super) fn apply_block(
     if expected != Some(coinbase.amount) {
         return Err(BlockError::WrongPayout { expected, got: coinbase.amount });
     }
+    let in_line = Coins::total(ledger.validator_stakes().iter().map(|(_, n)| *n));
     check_reveal(block, ledger, rules)?;
 
-    tally.weight = tally.weight.with_block(rules, ledger.staked(producer), work);
+    let in_line = in_line.expect("stakes are owned coins, so they add up");
+    tally.weight = tally.weight.with_block(rules, in_line, place, work);
     tally.work = work;
     ledger.credit(producer, coinbase.amount);
     for (position, tx) in block.transactions.iter().enumerate().skip(1) {
@@ -169,7 +174,7 @@ fn check_reveal(block: &Block, ledger: &mut Ledger, rules: &ChainRules) -> Resul
     if !rules.is_proof_of_stake() {
         return Ok(());
     }
-    let selected = select_validator(&ledger.validator_stakes(), ledger.beacon()).is_some();
+    let selected = !turn_order(&ledger.validator_stakes(), ledger.beacon()).is_empty();
     let opened = match (&block.validator, &block.reveal) {
         (Some(validator), Some(reveal)) if selected => ledger.apply_reveal(validator, reveal),
         (_, None) => !selected,
@@ -191,19 +196,23 @@ fn is_sealed_genesis(genesis: &Block, rules: &ChainRules) -> bool {
 }
 
 /// Proof of work: the hash meets the work required at its height and nobody signed it. Proof of
-/// stake: the validator drawn from the stakes and beacon before this block signed it.
+/// stake: a validator in line, whose turn had come by the block's time, signed it. A stand-in's
+/// turn must also have come by `now`, give or take `STAND_IN_DRIFT`, so a block can't claim one
+/// early. Returns the forger's place in line: 0 for the one drawn first, or anyone, or a miner.
 fn check_seal(
     block: &Block,
+    prev: &Block,
     ledger: &Ledger,
     rules: &ChainRules,
     work: u128,
-) -> Result<(), BlockError> {
+    now: DateTime<Utc>,
+) -> Result<usize, BlockError> {
     match rules.consensus {
         Consensus::ProofOfWork { .. } => {
             if block.validator.is_some() || block.signature.is_some() || block.reveal.is_some() {
                 return Err(BlockError::WrongSeal);
             }
-            meets_work(block.hash.as_str(), work).then_some(()).ok_or(BlockError::InsufficientWork)
+            meets_work(block.hash.as_str(), work).then_some(0).ok_or(BlockError::InsufficientWork)
         }
         Consensus::ProofOfStake => {
             if block.nonce != 0 {
@@ -212,13 +221,34 @@ fn check_seal(
             if !block.is_signed_by_validator() {
                 return Err(BlockError::BadSignature);
             }
-            match select_validator(&ledger.validator_stakes(), ledger.beacon()) {
-                Some(expected) if block.validator.as_ref() != Some(&expected) => {
-                    Err(BlockError::NotYourTurn { expected })
-                }
-                _ => Ok(()),
+            let order = turn_order(&ledger.validator_stakes(), ledger.beacon());
+            let validator = block.validator.as_ref().expect("a signed block names its validator");
+            let place = check_place(&order, validator, prev.timestamp, block.timestamp)?;
+            if place > 0 && block.timestamp > now + STAND_IN_DRIFT {
+                return Err(BlockError::TurnNotYet { from: opens_at(prev.timestamp, place) });
             }
+            Ok(place)
         }
+    }
+}
+
+/// `validator`'s place in `order`, if its turn has come by `at`, after a parent made at `after`.
+/// Anyone may forge while `order` is empty.
+pub(super) fn check_place(
+    order: &[Address],
+    validator: &Address,
+    after: DateTime<Utc>,
+    at: DateTime<Utc>,
+) -> Result<usize, BlockError> {
+    let Some(first) = order.first() else {
+        return Ok(0);
+    };
+    match order.iter().position(|v| v == validator) {
+        None => Err(BlockError::NotYourTurn { expected: first.clone() }),
+        Some(place) if place >= places_open(after, at) => {
+            Err(BlockError::TurnNotYet { from: opens_at(after, place) })
+        }
+        Some(place) => Ok(place),
     }
 }
 

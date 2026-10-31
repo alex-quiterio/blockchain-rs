@@ -1,6 +1,8 @@
 //! Questions about who adds the next block: the rules, whose turn it is, and the block a
 //! validator should sign.
 
+use chrono::{DateTime, Utc};
+
 use super::ChainQueries;
 use crate::domain::accounting::Coins;
 use crate::domain::chain::block::Block;
@@ -13,8 +15,11 @@ use crate::domain::crypto::address::Address;
 /// How the chain picks its next block, as of now.
 pub struct ConsensusState {
     pub rules: ChainRules,
-    /// Under proof of stake, who must forge next. `None` means anyone may.
+    /// Under proof of stake, who is drawn to forge next. `None` means anyone may.
     pub next_validator: Option<Address>,
+    /// Under proof of stake, everyone in line to forge next, from when: the drawn validator
+    /// first, then each stand-in a turn later. Empty while anyone may.
+    pub turns: Vec<(Address, DateTime<Utc>)>,
     pub stakes: Vec<(Address, Coins)>,
     /// The randomness the next validator is drawn from.
     pub beacon: String,
@@ -30,6 +35,7 @@ impl ChainQueries {
         ConsensusState {
             rules: chain.rules(),
             next_validator: chain.next_validator(),
+            turns: chain.turns_open_at(),
             stakes: chain.stakes(),
             beacon: chain.beacon().to_string(),
             next_work: chain.next_work(),

@@ -74,6 +74,7 @@ fn declarations(cfg: &Config) -> Vec<String> {
         declaration::<ProposalRequest>,
         declaration::<ConsensusResponse>,
         declaration::<StakeEntry>,
+        declaration::<TurnEntry>,
         declaration::<SignRequest>,
         declaration::<TransactionResponse>,
         declaration::<PlacementResponse>,

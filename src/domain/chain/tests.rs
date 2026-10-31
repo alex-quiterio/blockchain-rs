@@ -7,9 +7,11 @@ use super::*;
 use crate::domain::accounting::TransactionError;
 use crate::domain::accounting::{ChainId, Destination, Source};
 use crate::domain::consensus::difficulty::meets_work;
+use crate::domain::consensus::turns;
 use crate::domain::consensus::BlockCapacity;
 use crate::domain::crypto;
 use crate::domain::mempool::Mempool;
+use chrono::TimeDelta;
 
 const RULES: ChainRules = ChainRules::proof_of_work(2, 50);
 
@@ -104,6 +106,12 @@ impl Pooled {
 
     fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, BlockError> {
         self.settling(|chain| chain.mine_at(miner, at).map(drop))?;
+        Ok(self.chain.tip())
+    }
+
+    fn forge_at(&mut self, key: &SigningKey, at: DateTime<Utc>) -> Result<&Block, BlockError> {
+        let pending = self.candidates();
+        self.settling(|chain| chain.forge_at(key, &pending, at).map(drop))?;
         Ok(self.chain.tip())
     }
 
@@ -700,10 +708,17 @@ fn a_restart_from_a_snapshot_replays_only_what_came_after() {
     let (_, from) =
         Pooled::restore_from(owned(chain.blocks()), other, limit, Some(snapshot.clone())).unwrap();
     assert_eq!(from, None);
-    let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot };
+    let replaced = Snapshot { hash: BlockHash::of(b"another block"), ..snapshot.clone() };
     let (full, from) =
         Pooled::restore_from(owned(chain.blocks()), rules, limit, Some(replaced)).unwrap();
     assert_eq!((from, full.balance(&bob)), (None, Coins::new(20)));
+
+    // Nor is one from before tallies were worked out the way they are now, read back from disk.
+    let mut json = serde_json::to_value(&snapshot).unwrap();
+    json.as_object_mut().unwrap().remove("version");
+    let older: Snapshot = serde_json::from_value(json).unwrap();
+    let (_, from) = Pooled::restore_from(owned(chain.blocks()), rules, limit, Some(older)).unwrap();
+    assert_eq!(from, None);
 }
 
 #[test]
@@ -843,6 +858,65 @@ fn reveal_for(chain: &Pooled, key: &SigningKey) -> Option<Reveal> {
     chain.next_validator()?;
     let state = chain.validator_state(&Address::of(key));
     Some(randao::reveal(key, state.next_epoch - 1, state.reveals_left?))
+}
+
+/// A chain on which two validators have staked the same, its tip forged `ago`, and the keys of
+/// the one drawn to forge next and of the one after it in line.
+fn two_in_line(ago: TimeDelta) -> (Pooled, SigningKey, SigningKey) {
+    let mut chain = Pooled::new(POS);
+    let ((_, alice_key), (_, bob_key)) = (wallet(), wallet());
+    let tip = Utc::now() - ago;
+    chain.forge_at(&alice_key, tip - TimeDelta::seconds(2)).unwrap();
+    chain.forge_at(&bob_key, tip - TimeDelta::seconds(1)).unwrap();
+    chain.submit(stake(&alice_key, 30, 0)).unwrap();
+    chain.submit(stake(&bob_key, 30, 0)).unwrap();
+    chain.forge_at(&alice_key, tip).unwrap();
+    let first = chain.next_validator().unwrap();
+    let (first, second) =
+        if first == Address::of(&alice_key) { (alice_key, bob_key) } else { (bob_key, alice_key) };
+    (chain, first, second)
+}
+
+#[test]
+fn an_absent_validator_is_stood_in_for_once_its_turn_has_passed() {
+    let (mut chain, first, second) = two_in_line(TimeDelta::hours(1));
+    let tip = chain.tip().timestamp;
+    let turn = TimeDelta::seconds(turns::TURN_SECS);
+    assert_eq!(chain.turn_order(), [Address::of(&first), Address::of(&second)]);
+    assert_eq!(chain.turns_open_at()[1], (Address::of(&second), tip + turn));
+
+    assert_eq!(
+        chain.forge_at(&second, tip + turn - TimeDelta::seconds(1)).err(),
+        Some(BlockError::TurnNotYet { from: tip + turn }),
+        "the drawn validator has a whole turn first"
+    );
+    let block = chain.forge_at(&second, tip + turn).unwrap();
+    assert_eq!(block.validator, Some(Address::of(&second)));
+    assert!(chain.is_valid(), "a stand-in's block replays like any other");
+}
+
+#[test]
+fn a_stand_in_cant_claim_a_turn_that_hasnt_come_yet() {
+    let (mut chain, _, second) = two_in_line(TimeDelta::seconds(5));
+    let turn = chain.tip().timestamp + TimeDelta::seconds(turns::TURN_SECS);
+    assert_eq!(
+        chain.forge_at(&second, turn).err(),
+        Some(BlockError::TurnNotYet { from: turn }),
+        "stamped 25 seconds ahead of the clock, past the drift allowed"
+    );
+}
+
+#[test]
+fn the_drawn_validators_block_beats_a_stand_ins_at_the_same_height() {
+    let (chain, first, second) = two_in_line(TimeDelta::hours(1));
+    let tip = chain.tip().timestamp;
+    let (mut late, mut stood_in) = (chain.clone(), chain);
+    late.forge_at(&first, tip + TimeDelta::seconds(turns::TURN_SECS * 3)).unwrap();
+    stood_in.forge_at(&second, tip + TimeDelta::seconds(turns::TURN_SECS)).unwrap();
+
+    assert!(late.weight() > stood_in.weight());
+    assert_eq!(late.adopt_if_heavier(owned(stood_in.blocks())), Ok(false));
+    assert_eq!(stood_in.adopt_if_heavier(owned(late.blocks())), Ok(true), "even arriving later");
 }
 
 #[test]
@@ -987,7 +1061,8 @@ fn a_short_fork_backed_by_stake_beats_a_long_one_nobody_staked() {
         unstaked.forge(&nobody_key).unwrap();
     }
 
-    // Three blocks, the last forged by Alice with 30 staked: weight 1 + 1 + 30.
+    // Three blocks, the last forged in turn with 30 in line: weight 1 + 1 + 30, the last scaled
+    // up so it outweighs any stand-in's.
     let mut staked = Pooled::new(POS);
     staked.forge(&alice_key).unwrap();
     staked.submit(stake(&alice_key, 30, 0)).unwrap();
@@ -995,7 +1070,7 @@ fn a_short_fork_backed_by_stake_beats_a_long_one_nobody_staked() {
     staked.forge(&alice_key).unwrap();
 
     assert_eq!(unstaked.weight().value(), 4);
-    assert_eq!(staked.weight().value(), 32);
+    assert_eq!(staked.weight().value(), 2 + (30 << 32));
     assert_eq!(unstaked.adopt_if_heavier(owned(staked.blocks())), Ok(true));
     assert_eq!(unstaked.blocks().len(), 4, "the shorter chain won");
 }

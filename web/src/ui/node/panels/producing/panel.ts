@@ -17,15 +17,18 @@ const pct = (part: number, whole: number): string =>
   `${whole ? Math.round((part / whole) * 100) : 0}%`;
 
 /**
- * Draws mining or forging, whichever the node's rules call for, each time the view changes. The
- * controls are rebuilt only when what they offer changes, so a chosen wallet stays chosen; what
- * they're about is redrawn each time, keeping its explanation open if it was.
+ * Draws mining or forging, whichever the node's rules call for, each time the view changes, and
+ * under proof of stake again when the next validator in line may stand in. The controls are
+ * rebuilt only when what they offer changes, so a chosen wallet stays chosen; what they're about
+ * is redrawn each time, keeping its explanation open if it was.
  */
 export function installProducing(page: NodePage): void {
   const controls = el("div");
   const about = el("div");
   $("producer").replaceChildren(controls, about);
-  page.view.onChange(() => {
+  let nextTurn: ReturnType<typeof setTimeout> | undefined;
+  const draw = () => {
+    clearTimeout(nextTurn);
     const open = isOpen(about);
     if (page.view.isStake()) renderForge(page, controls, about);
     else renderMine(page, controls, about);
@@ -33,7 +36,15 @@ export function installProducing(page: NodePage): void {
     if (details) details.open = open;
     const select = controls.querySelector("select");
     if (select) fillWalletSelect(select, page.wallets);
-  });
+    const opens = page.view.isStake()
+      ? page.view
+          .consensus()
+          .turns.map((t) => Date.parse(t.from) - Date.now())
+          .find((wait) => wait > 0)
+      : undefined;
+    if (opens !== undefined) nextTurn = setTimeout(draw, opens + 100);
+  };
+  page.view.onChange(draw);
 }
 
 function renderMine(
@@ -102,10 +113,21 @@ function renderForge(
   $("producer-title").textContent = "Forge";
   const {
     next_validator: next,
+    turns,
+    turn_secs: turnSecs,
     stakes,
     total_stake: total,
   } = page.view.consensus();
-  const ours = next ? wallets.byAddress(next) : undefined;
+  const now = Date.now();
+  const inBrowser = (t: { validator: string }) =>
+    wallets.byAddress(t.validator);
+  // The first wallet here whose turn has come, drawn or standing in, and else the next to come.
+  const ours = turns
+    .filter((t) => Date.parse(t.from) <= now)
+    .map(inBrowser)
+    .find(Boolean);
+  const later = turns.find((t) => inBrowser(t) && Date.parse(t.from) > now);
+  const standingIn = ours !== undefined && ours.address !== next;
 
   if (!next) {
     rebuildOn(controls, "anyone", () => {
@@ -144,10 +166,15 @@ function renderForge(
     });
   } else {
     const name = nameOf(wallets, next);
-    rebuildOn(controls, `turn:${next}:${name}:${Boolean(ours)}`, () => {
+    const key = `turn:${next}:${name}:${ours?.address}:${later?.validator}`;
+    rebuildOn(controls, key, () => {
       const button = el("button", {
         className: "stake",
-        textContent: ours ? `Forge as ${ours.name}` : "Not your turn",
+        textContent: !ours
+          ? "Not your turn"
+          : standingIn
+            ? `Stand in as ${ours.name}`
+            : `Forge as ${ours.name}`,
         disabled: !ours,
       });
       button.onclick = () => forgeAs(page, button, ours);
@@ -162,9 +189,13 @@ function renderForge(
             el("div", { className: "who", textContent: `${name}'s turn` }),
             el("div", {
               className: "sub",
-              textContent: ours
-                ? "Their key is in this browser."
-                : "Their key isn't in this browser, so only they can forge.",
+              textContent: !ours
+                ? later
+                  ? `Their key isn't in this browser. If they haven't forged by ${new Date(later.from).toLocaleTimeString()}, ${nameOf(wallets, later.validator)} may stand in.`
+                  : "Their key isn't in this browser, so only they, or a validator further in line once their turn has passed, can forge."
+                : standingIn
+                  ? `They haven't forged for ${turnSecs}s, so ${ours.name}, further in line, may stand in.`
+                  : "Their key is in this browser.",
             }),
           ),
         ),
@@ -218,8 +249,9 @@ function renderForge(
       `When you first stake, this page commits to the end of a secret hash chain made from your key. Each block you forge must reveal the next link back, which anyone can check by hashing it once.`,
       `Reveals are fixed the moment you commit, so a forger can't try different timestamps or contents to make the draw pick them again. Each reveal is mixed into the beacon, which picks the next validator.`,
       `That validator signs the block instead of doing work. Anyone can check the signature, and a block from the wrong validator is rejected.`,
+      `If they're away, the chain doesn't stop: after ${turnSecs}s the next validator in line, drawn the same way from the rest, may forge instead, and another every ${turnSecs}s after that. A block's time can't be set ahead to claim a turn early.`,
       `The validator earns the reward plus the block's fees, so more stake means more turns and more income.`,
-      `When forks disagree, the one with the most stake behind its blocks wins, not the longest. A long chain nobody staked on can't outweigh a short one backed by real stake.`,
+      `When forks disagree, the one with the most stake behind its blocks wins, not the longest. A long chain nobody staked on can't outweigh a short one backed by real stake, and a block forged in turn outweighs any stand-in's, so nobody gains by waiting out the drawn validator.`,
     ),
   );
   about.replaceChildren(...children);

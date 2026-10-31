@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use chrono::{DateTime, Utc};
+
 use crate::domain::accounting::Coins;
 use crate::domain::accounting::TransactionError;
 use crate::domain::crypto::address::Address;
@@ -13,8 +15,12 @@ pub enum BlockError {
     NotProofOfWork,
     /// Forging was asked of a proof-of-work chain.
     NotProofOfStake,
-    /// Someone other than the selected validator tried to forge, or signed the block.
+    /// Someone who isn't in line to forge tried to, or signed the block. `expected` is the
+    /// validator drawn first.
     NotYourTurn { expected: Address },
+    /// A validator in line, but further back than the block's time lets forge, or whose turn
+    /// comes later than this node's clock says it is. It may forge `from` then.
+    TurnNotYet { from: DateTime<Utc> },
     /// A forger's reveal doesn't open their commitment, or is missing or not due.
     BadReveal,
     /// It doesn't build on the current tip, usually because another block won.
@@ -56,6 +62,9 @@ impl fmt::Display for BlockError {
             Self::NotProofOfWork => write!(f, "this chain uses proof of stake: forge, don't mine"),
             Self::NotProofOfStake => write!(f, "this chain uses proof of work: mine, don't forge"),
             Self::NotYourTurn { expected } => write!(f, "the next block is {expected}'s to forge"),
+            Self::TurnNotYet { from } => {
+                write!(f, "this validator may only forge the next block from {from}, as a stand-in")
+            }
             Self::BadReveal => {
                 write!(f, "the reveal doesn't open the validator's commitment, or isn't due")
             }

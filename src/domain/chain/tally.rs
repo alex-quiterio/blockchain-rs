@@ -46,6 +46,13 @@ pub(super) struct TallyLog {
     keep: usize,
 }
 
+impl Snapshot {
+    /// Whether its tally was worked out the way this build works them out.
+    pub(super) fn is_current(&self) -> bool {
+        self.version == SNAPSHOT_VERSION
+    }
+}
+
 impl TallyLog {
     /// A log of `tallies`, the first being after the block at height `first`, the last after the
     /// tip. Only the last `keep` are kept.
@@ -105,6 +112,7 @@ impl TallyLog {
             return None;
         }
         Some(Snapshot {
+            version: SNAPSHOT_VERSION,
             height: self.first,
             hash: blocks[self.first].hash.clone(),
             rules,
@@ -126,10 +134,18 @@ impl TallyLog {
     }
 }
 
+/// How tallies are worked out, as of this build. Snapshots from another way of working them out
+/// are replayed instead of trusted. 1: proof-of-stake blocks weigh the stake in line, halved for
+/// each turn skipped, where they weighed their forger's stake before.
+const SNAPSHOT_VERSION: u32 = 1;
+
 /// What the chain adds up to after a block no fork may undo any more, with that block's height
 /// and hash. Saved now and then, so a restart replays only the blocks after it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// How its tally was worked out; see `SNAPSHOT_VERSION`. Missing from the first ones: 0.
+    #[serde(default)]
+    pub(super) version: u32,
     pub height: usize,
     pub hash: BlockHash,
     /// The rules it was made under; a snapshot is only used under the same ones.

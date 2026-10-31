@@ -31,6 +31,9 @@ export interface Consensus {
   reward: number;
   max_block_transfers: number | null;
   next_validator: string | null;
+  /** Everyone in line to forge the next block, the drawn validator first, from when. */
+  turns: { validator: string; from: string }[];
+  turn_secs: number | null;
   stakes: { address: string; amount: number }[];
   total_stake: number;
   beacon: string | null;

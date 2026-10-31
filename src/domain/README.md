@@ -52,7 +52,8 @@ Both aggregates use these, so they live outside both.
 | --- | --- |
 | `rules.rs` | `ChainRules`, `Consensus` and `Retarget` (**value objects**): what every node on a network must share. `select_validator` (**domain service**) draws the next validator from the stakes. |
 | `capacity.rs` | `BlockCapacity` (**value object**): how many transfers a block may hold. |
-| `weight.rs` | `ChainWeight` (**value object**): what a fork is worth, as total work or total stake. |
+| `weight.rs` | `ChainWeight` (**value object**): what a fork is worth, as total work, or the stake behind its blocks' turns, halved for each turn skipped. |
+| `turns.rs` | **Domain service**: the line of validators who may forge the next block, drawn first to last from the beacon, and when each one's turn opens. |
 | `difficulty.rs` | **Domain service**: work targets, retargeting, and the timestamp rules. It reads any `Timeline`, so it runs over a chain's blocks, or our blocks followed by a peer's headers. |
 | `randao.rs` | **Domain service**: commit-reveal hash chains, after Ethereum's RANDAO. |
 | `beacon.rs` | `Commitment`, `Reveal` and `Beacon` (**value objects**): the values commit-reveal works with. |

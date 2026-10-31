@@ -48,7 +48,9 @@ impl From<ApplicationError> for ApiError {
                 | TransactionError::AlreadyPending,
             ) => StatusCode::BAD_REQUEST,
             ApplicationError::Transaction(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            ApplicationError::Block(BlockError::NotYourTurn { .. }) => StatusCode::FORBIDDEN,
+            ApplicationError::Block(
+                BlockError::NotYourTurn { .. } | BlockError::TurnNotYet { .. },
+            ) => StatusCode::FORBIDDEN,
             ApplicationError::Block(
                 BlockError::NotProofOfWork | BlockError::NotProofOfStake | BlockError::StaleBlock,
             ) => StatusCode::CONFLICT,

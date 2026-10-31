@@ -1,5 +1,6 @@
 //! Bodies for mining, forging, and who may add the next block.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::accounting::Coins;
@@ -40,8 +41,13 @@ pub struct ConsensusResponse {
     pub reward: Coins,
     /// The most transfers a block may hold. `null` means no limit.
     pub max_block_transfers: Option<u64>,
-    /// Proof of stake only: who must forge the next block. `null` means anyone may.
+    /// Proof of stake only: who is drawn to forge the next block. `null` means anyone may.
     pub next_validator: Option<String>,
+    /// Proof of stake only: everyone in line to forge the next block, and from when. The drawn
+    /// validator may at once; if they haven't by `turn_secs` later, the next may too, and so on.
+    pub turns: Vec<TurnEntry>,
+    /// Proof of stake only: how long each validator in line has before the next may forge.
+    pub turn_secs: Option<i64>,
     pub stakes: Vec<StakeEntry>,
     pub total_stake: Coins,
     /// Proof of stake only: the randomness the next validator is drawn from.
@@ -55,6 +61,13 @@ pub struct ConsensusResponse {
     pub retarget_interval: Option<u64>,
     /// Proof of work with retargeting: the next height whose work is adjusted.
     pub next_retarget: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct TurnEntry {
+    pub validator: Address,
+    pub from: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

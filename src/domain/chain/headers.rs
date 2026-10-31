@@ -94,7 +94,7 @@ impl Blockchain {
             work = difficulty::next_work(&before, work, self.rules.retarget());
             self.check_header(header, height, prev_hash, &before, work, now)
                 .map_err(|reason| ChainError::InvalidBlock { height: height as u64, reason })?;
-            weight = weight.with_block(&self.rules, Coins::ZERO, work);
+            weight = weight.with_block(&self.rules, Coins::ZERO, 0, work);
         }
 
         if self.rules.is_proof_of_stake() {

@@ -9,13 +9,14 @@ use axum::{extract::State, http::StatusCode, Json};
 use super::error::ApiError;
 use super::gossip_chain;
 use crate::api::dto::blocks::{
-    ConsensusResponse, ForgeRequest, MineRequest, ProposalRequest, StakeEntry,
+    ConsensusResponse, ForgeRequest, MineRequest, ProposalRequest, StakeEntry, TurnEntry,
 };
 use crate::api::AppState;
 use crate::application::off_runtime;
 use crate::domain::accounting::Coins;
 use crate::domain::chain::block::Block;
 use crate::domain::consensus::rules::Consensus;
+use crate::domain::consensus::turns::TURN_SECS;
 use crate::domain::crypto;
 use crate::domain::crypto::address::Address;
 
@@ -47,6 +48,12 @@ pub async fn get_consensus(State(state): State<AppState>) -> Json<ConsensusRespo
         reward: consensus.rules.reward,
         max_block_transfers: consensus.rules.block_capacity.max(),
         next_validator: consensus.next_validator.map(|a| a.to_string()),
+        turns: consensus
+            .turns
+            .into_iter()
+            .map(|(validator, from)| TurnEntry { validator, from })
+            .collect(),
+        turn_secs: pos.then_some(TURN_SECS),
         // Stakes are coins people own, so together they're never more than all there are.
         total_stake: Coins::total(consensus.stakes.iter().map(|(_, n)| *n)).unwrap_or_default(),
         stakes: consensus

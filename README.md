@@ -22,7 +22,7 @@ Proof of work *or* proof of stake · keys that never leave your browser · fees 
 | --- | --- |
 | 🔐 **Wallets** | ed25519 keys made, used and encrypted in your browser. The node only sees signatures. |
 | ⛏️ **Proof of work** | Find a hash below a target. The difficulty adjusts to keep blocks coming at a steady pace. |
-| 🪙 **Proof of stake** | Stake coins; each block's validator is drawn by stake from a randomness beacon nobody can steer. |
+| 🪙 **Proof of stake** | Stake coins; each block's validator is drawn by stake from a randomness beacon nobody can steer, and if they're away, the next in line stands in. |
 | 💸 **Fees** | Blocks have a size limit, so the highest fees go in first. `GET /fees` says what fee gets in now. |
 | 🌐 **Peers** | Nodes gossip new blocks and transactions, catch up headers first, meet the peers of their peers, forget those gone for good, ban those that keep sending invalid chains, and heal links after a restart. |
 | 🏆 **Forks** | The heaviest valid chain wins (most work or most stake), never undoing more than `MAX_REORG_DEPTH` blocks. |
@@ -112,6 +112,7 @@ Each block names the hash of the one before it, so changing an old block breaks 
 - **Replays.** Every transfer names its chain, the hash of its genesis block, and the signature covers it. Networks with different rules have different genesis blocks, so a transfer signed on one is refused on another even where its nonce is still free. `GET /status` gives the id to sign with. Transfers in blocks from before 1 November 2026 may name none, so older chains still load.
 - **Difficulty.** Every `RETARGET_BLOCKS` blocks, the work is scaled by how far the last ones were from the target pace, by at most 4×. As in Bitcoin, a block's time must be after the median of the last 11 and at most 2 hours ahead, so miners can't fake the pace.
 - **Validator turns.** Like Ethereum's RANDAO, a validator commits to the end of a secret hash chain when they first stake, and each block they forge reveals the next link back. Reveals are fixed in advance and mixed into the beacon that picks the next validator, so no choice of timestamp or contents can steer the draw.
+- **Stand-ins.** The beacon draws a whole line, not one validator: the first may forge at once, and if they haven't after 30 seconds the next may too, and so on, so a validator who's away delays the chain by a turn instead of stopping it. A block's timestamp says whose turn it came in, and a stand-in's may be at most 15 seconds ahead of the checking node's clock, so nobody jumps the line. A block forged in turn weighs the whole stake in line, and each turn skipped halves that, so it beats any stand-in's at the same height and nobody gains by waiting out the drawn validator.
 - **Catching up.** A node behind a peer fetches its headers first and checks them: hashes, links, times, and the work or the validator's signature. It fetches blocks only if they hold up, only from where the peer's chain leaves its own, and under proof of work only if they're heavier, so a peer that claims more than it has costs just its headers. A peer whose headers or blocks break a rule `BAN_AFTER` (3) syncs in a row is banned for an hour: not pulled from, gossiped to or asked for its peers, and its pushes are refused. Only what the node fetched itself counts, since a push names its sender in a header anyone could forge.
 - **Storage.** One block of JSON per line, appended as the chain grows and rewritten atomically after a fork, with a snapshot of the balances every `SNAPSHOT_BLOCKS` blocks.
 
@@ -155,7 +156,7 @@ Each file's doc comment says what it holds and which building block it is.
 | GET | `/transactions/:signature/proof` | A Merkle proof that a confirmed transaction is in its block. |
 | GET | `/addresses/:address/transactions` | An address's history, pending first. |
 | GET | `/fees` | The fee sure to get in the next block, and what recent blocks took. |
-| GET | `/consensus` | The rules, the next block's work, stakes, the beacon and whose turn it is. |
+| GET | `/consensus` | The rules, the next block's work, stakes, the beacon, and who is in line to forge next and from when. |
 | POST | `/mine` | Proof of work: `{miner}`. |
 | POST | `/forge/proposal` | Proof of stake: the unsigned block a validator should sign next. |
 | GET · POST | `/peers` | List peers, or add one with `{url}`. |
@@ -181,6 +182,6 @@ CI runs all of it, plus `cargo fmt`, `clippy -D warnings` and Prettier, on every
 
 Nothing here is built yet:
 
-- **Consensus:** slashing for double-signing, finality checkpoints, skipping absent validators.
+- **Consensus:** slashing for double-signing, finality checkpoints, dropping validators who keep missing their turns.
 - **Wallets:** HD wallets from a seed phrase, multisig addresses.
 - **Load generator:** partition a node mid-run, or add miners part way, and watch forks and retargeting react.

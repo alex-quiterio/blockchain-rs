@@ -19,7 +19,8 @@ use crate::domain::chain::block::BlockError;
 use crate::domain::chain::block::BlockHash;
 use crate::domain::consensus::difficulty;
 use crate::domain::consensus::randao;
-use crate::domain::consensus::rules::{select_validator, ChainRules};
+use crate::domain::consensus::rules::ChainRules;
+use crate::domain::consensus::turns::{opens_at, turn_order};
 use crate::domain::consensus::validators::ValidatorState;
 use crate::domain::consensus::weight::ChainWeight;
 use crate::domain::consensus::{Beacon, Reveal};
@@ -35,7 +36,7 @@ mod tally;
 mod validation;
 
 use tally::{Tally, TallyLog};
-use validation::{apply_block, links_up, payout, replay_from, replay_kept};
+use validation::{apply_block, check_place, links_up, payout, replay_from, replay_kept};
 
 pub use error::ChainError;
 pub use events::ChainEvent;
@@ -137,7 +138,8 @@ impl Blockchain {
     ) -> Result<(Self, Option<usize>), ChainError> {
         let keep = limit.tallies_to_keep();
         let fits = snapshot.filter(|s| {
-            s.rules == rules
+            s.is_current()
+                && s.rules == rules
                 && blocks.get(s.height).is_some_and(|block| block.hash == s.hash)
                 && links_up(&blocks[..=s.height], &rules)
         });
@@ -248,17 +250,31 @@ impl Blockchain {
         self.tally().ledger.stakes()
     }
 
-    /// Who must forge the next block. `None` on proof-of-work chains, and on proof-of-stake chains
-    /// where nobody with reveals left has staked, when anyone may forge.
+    /// Who is drawn to forge the next block, first in line. `None` on proof-of-work chains, and
+    /// on proof-of-stake chains where nobody with reveals left has staked, when anyone may forge.
     ///
     /// The draw is seeded by the randomness beacon, which only validators' committed reveals
     /// move. The block hash isn't involved, so a forger can't steer the next turn by trying
     /// different timestamps or contents.
     pub fn next_validator(&self) -> Option<Address> {
+        self.turn_order().into_iter().next()
+    }
+
+    /// The order validators may forge the next block in: the drawn one at once, then each one
+    /// after it a turn later, in case those before it are away. Empty on proof-of-work chains,
+    /// and while anyone may forge.
+    pub fn turn_order(&self) -> Vec<Address> {
         if !self.rules.is_proof_of_stake() {
-            return None;
+            return Vec::new();
         }
-        select_validator(&self.tally().ledger.validator_stakes(), self.tally().ledger.beacon())
+        turn_order(&self.tally().ledger.validator_stakes(), self.tally().ledger.beacon())
+    }
+
+    /// When each in `turn_order` may forge the next block: one turn apart from the tip's time.
+    pub fn turns_open_at(&self) -> Vec<(Address, DateTime<Utc>)> {
+        let after = self.tip().timestamp;
+        let order = self.turn_order().into_iter().enumerate();
+        order.map(|(place, validator)| (validator, opens_at(after, place))).collect()
     }
 
     /// The randomness beacon the next validator is drawn from.
@@ -311,35 +327,47 @@ impl Blockchain {
     #[cfg(test)]
     fn mine_at(&mut self, miner: &Address, at: DateTime<Utc>) -> Result<&Block, BlockError> {
         let work = self.next_work();
-        self.append(miner, &[], |index, _, prev, txs| Block::mine(index, at, prev, txs, work))
+        self.append(miner, &[], at, |index, at, prev, txs| Block::mine(index, at, prev, txs, work))
     }
 
-    /// Proof of stake: the selected validator signs the next block with `key`, revealing the
-    /// next link of their reveal chain, which `key` also lets us work out.
+    /// Proof of stake: a validator whose turn has come signs the next block with `key`,
+    /// revealing the next link of their reveal chain, which `key` also lets us work out.
     pub fn forge(
         &mut self,
         key: &SigningKey,
         pending: &[Transaction],
     ) -> Result<&Block, BlockError> {
+        self.forge_at(key, pending, Utc::now())
+    }
+
+    /// Proof of stake, as `forge` does, but stamped `at`: now, or any time in tests.
+    fn forge_at(
+        &mut self,
+        key: &SigningKey,
+        pending: &[Transaction],
+        at: DateTime<Utc>,
+    ) -> Result<&Block, BlockError> {
         let validator = Address::of(key);
-        self.check_turn(&validator)?;
+        self.check_turn(&validator, at)?;
         let reveal = self
             .due_reveal(&validator)
             .map(|(epoch, remaining)| randao::reveal(key, epoch, remaining));
-        self.append(&validator, pending, |index, now, prev, txs| {
-            Block::forge(index, now, prev, txs, key, reveal)
+        self.append(&validator, pending, at, |index, at, prev, txs| {
+            Block::forge(index, at, prev, txs, key, reveal)
         })
     }
 
-    /// Proof of stake, without the key: the block the selected `validator` should sign next,
-    /// carrying their `reveal`. It changes nothing; sign its hash and hand it to `append_forged`.
+    /// Proof of stake, without the key: the block `validator`, whose turn has come, should sign
+    /// next, carrying their `reveal`. It changes nothing; sign its hash and hand it to
+    /// `append_forged`.
     pub fn propose(
         &self,
         validator: &Address,
         reveal: Option<Reveal>,
         pending: &[Transaction],
     ) -> Result<Block, BlockError> {
-        self.check_turn(validator)?;
+        let now = Utc::now();
+        self.check_turn(validator, now)?;
         match (self.due_reveal(validator), &reveal) {
             (Some(_), None) => return Err(BlockError::BadReveal),
             (None, Some(_)) => return Err(BlockError::BadReveal),
@@ -350,7 +378,7 @@ impl Blockchain {
         }
         let (index, transactions) = self.next_contents(validator, pending);
         let prev_hash = self.tip().hash.clone();
-        Ok(Block::propose(index, Utc::now(), prev_hash, transactions, validator, reveal))
+        Ok(Block::propose(index, now, prev_hash, transactions, validator, reveal))
     }
 
     /// The commitment epoch and reveals left that `validator`'s next block must reveal from, or
@@ -364,7 +392,7 @@ impl Blockchain {
     /// Proof of stake: appends a block signed elsewhere, after checking it like any other block.
     pub fn append_forged(&mut self, block: Block) -> Result<&Block, BlockError> {
         let validator = block.validator.clone().ok_or(BlockError::BadSignature)?;
-        self.check_turn(&validator)?;
+        self.check_turn(&validator, block.timestamp)?;
         self.append_sealed(block)
     }
 
@@ -381,15 +409,12 @@ impl Blockchain {
         Ok(self.tip())
     }
 
-    /// Under proof of stake, whether it's `validator`'s turn to forge.
-    fn check_turn(&self, validator: &Address) -> Result<(), BlockError> {
+    /// Under proof of stake, whether `validator`'s turn to forge the next block has come by `at`.
+    fn check_turn(&self, validator: &Address, at: DateTime<Utc>) -> Result<(), BlockError> {
         if !self.rules.is_proof_of_stake() {
             return Err(BlockError::NotProofOfStake);
         }
-        match self.next_validator() {
-            Some(expected) if expected != *validator => Err(BlockError::NotYourTurn { expected }),
-            _ => Ok(()),
-        }
+        check_place(&self.turn_order(), validator, self.tip().timestamp, at).map(drop)
     }
 
     /// The next block's index and transactions: a payout of the reward plus fees to `producer`,
@@ -425,10 +450,11 @@ impl Blockchain {
         &mut self,
         producer: &Address,
         pending: &[Transaction],
+        at: DateTime<Utc>,
         seal: impl FnOnce(u64, DateTime<Utc>, BlockHash, Vec<Transaction>) -> Block,
     ) -> Result<&Block, BlockError> {
         let (index, transactions) = self.next_contents(producer, pending);
-        let block = seal(index, Utc::now(), self.tip().hash.clone(), transactions);
+        let block = seal(index, at, self.tip().hash.clone(), transactions);
         let mut tally = self.tally().clone();
         apply_block(&self.blocks, &block, &mut tally, &self.rules)?;
         self.blocks.push(Arc::new(block));

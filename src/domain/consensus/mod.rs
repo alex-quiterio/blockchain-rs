@@ -11,6 +11,7 @@ mod capacity;
 pub mod difficulty;
 pub mod randao;
 pub mod rules;
+pub mod turns;
 pub mod validators;
 pub mod weight;
 
